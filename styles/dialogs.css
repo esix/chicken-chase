@@ -1,0 +1,140 @@
+/* Chicken Chase — HTML dialog styles.
+ *
+ * This is a STRUCTURAL skeleton: it positions/sizes/centers the dialogs and
+ * makes them usable (clickable, readable), but the visual look is yours to
+ * own. Replace the placeholder frames/buttons with the game art — e.g. use
+ * dialog.png as a 9-slice border-image (see the commented .cc-box rule), the
+ * dialog_btn.png for .cc-btn, etc.
+ *
+ * Layout model: every .cc-dialog covers the 800x600 game area and centers its
+ * .cc-box. Modal dialogs dim the game behind them; .cc-dialog-bare ones don't.
+ * Hooks come from index.html: data-bind (fields), data-action (buttons),
+ * data-list/data-template (rows), data-visible (toggled elements).
+ */
+
+/* ---- overlay + show/hide ---- */
+#ui-layer [hidden],
+#ui-layer [data-template] { display: none !important; }
+
+.cc-dialog {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;            /* catch clicks; blocks the canvas behind */
+    background: rgba(0, 0, 0, 0.45);  /* modal scrim — remove for bare dialogs */
+    font-family: "Arial Black", Arial, sans-serif;
+    user-select: none;
+    cursor: default;                  /* the in-game canvas hides the cursor */
+}
+.cc-dialog[hidden] { display: none; }
+.cc-dialog-bare { background: none; }   /* intro panel + select-level: no scrim */
+
+/* ---- the box ---- */
+.cc-box {
+    position: relative;
+    box-sizing: border-box;
+    /* PLACEHOLDER frame — replace with the real art, e.g.:
+       border: 34px solid transparent;
+       border-image: url(../app/images/dialog.png) 68 22 28 22 fill / 68px 22px 28px 22px stretch;
+    */
+    background: #d8a23e;
+    border: 6px solid #7a4a14;
+    border-radius: 10px;
+    padding: 14px 18px 18px;
+    min-width: 300px;
+    color: #3a2410;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* per-dialog box sizing (decompiled rects; tweak freely) */
+.cc-box-options      { width: 346px; }
+.cc-box-quit         { width: 346px; }
+.cc-box-newplayer    { width: 300px; }
+.cc-box-changeplayer { width: 300px; }
+.cc-box-hint         { width: 400px; }
+.cc-box-upgrade      { width: 500px; }
+.cc-box-shop         { width: 420px; }
+.cc-box-complete     { width: 500px; }
+.cc-box-failed       { width: 400px; }
+.cc-box-introletter  { width: 590px; }
+.cc-box-intropanel   { padding: 0; border: 0; background: none; box-shadow: none; }
+.cc-box-selectlevel  { width: 444px; }
+
+/* ---- title plate ---- */
+.cc-plate {
+    margin: -4px -6px 12px;
+    padding: 6px 10px;
+    background: #b9842b;
+    border: 2px solid #634518;
+    border-radius: 6px;
+    text-align: center;
+}
+.cc-plate-green { background: #4caf26; border-color: #2a6a18; }
+.cc-title { font-size: 18px; color: #fff; letter-spacing: .5px; }
+.cc-caption { font-size: 14px; }
+
+/* ---- body + rows ---- */
+.cc-body { display: flex; flex-direction: column; gap: 10px; }
+.cc-text { text-align: center; color: #3a1a05; font-size: 13px; line-height: 1.35; }
+.cc-error { text-align: center; color: #c33; font-size: 11px; min-height: 1em; }
+.cc-info { text-align: center; color: #bb2222; font-size: 13px; min-height: 1em; }
+
+.cc-row { display: flex; align-items: center; gap: 12px; }
+.cc-label { color: #3a2410; font-size: 12px; }
+.cc-slider-row input[type="range"] { flex: 1; }
+.cc-check-row { gap: 10px; }
+
+/* ---- buttons ---- */
+.cc-buttons { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.cc-buttons-row { flex-direction: row; justify-content: center; }
+.cc-btn {
+    cursor: pointer;
+    padding: 8px 18px;
+    font: inherit;
+    font-size: 13px;
+    color: #fff;
+    background: #5cb830;
+    border: 2px solid #3a7a18;
+    border-radius: 16px;
+}
+.cc-btn:hover { background: #6ccb3a; }
+.cc-btn:active { transform: translateY(1px); }
+.cc-input {
+    font: inherit; font-size: 16px; padding: 6px 8px;
+    border: 1px solid #000; background: #fafaf3; color: #222; border-radius: 3px;
+}
+
+/* ---- lists (players, shop rows, upgrade slots, bullets) ---- */
+.cc-list { list-style: none; max-height: 220px; overflow-y: auto; background: #fff; border: 1px solid #222; }
+.cc-list-item { padding: 4px 8px; cursor: pointer; color: #1aa0a0; }
+.cc-list-item.cc-selected { background: #c8c8c8; }
+
+.cc-pager { display: flex; align-items: center; justify-content: center; gap: 16px; }
+.cc-page { font-size: 13px; color: #3a1a05; }
+.cc-nav { width: 40px; height: 24px; cursor: pointer; border: 0; background: #5cb830; border-radius: 6px; }
+.cc-nav:disabled { opacity: .4; cursor: default; }
+
+.cc-shop-head { display: flex; justify-content: flex-end; gap: 70px; font-size: 12px; color: #3a1a05; }
+.cc-shop-row, .cc-buy-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.cc-age { display: inline-block; width: 60px; height: 12px; background: #5a3010; }
+.cc-age-bar { display: block; height: 100%; background: #5cb830; }
+
+.cc-slots { list-style: none; display: flex; justify-content: space-around; gap: 16px; }
+.cc-slot { cursor: pointer; text-align: center; }
+.cc-slot-icon { width: 98px; height: 97px; object-fit: contain; }
+
+.cc-bullets { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.cc-bullet { display: flex; align-items: center; gap: 8px; }
+.cc-dot { width: 10px; height: 10px; border-radius: 50%; background: #2f6fd0; }
+.cc-bullet-icon { width: 24px; height: 24px; object-fit: contain; }
+
+/* ---- images ---- */
+.cc-letter-img { display: block; margin: 0 auto; }     /* native size, not stretched */
+.cc-intro-img { display: block; }                       /* Introduction.jpg, native */
+.cc-buttons-intro { margin-top: 8px; align-items: center; }
+
+/* ---- two-column time rows (level complete) ---- */
+.cc-times { display: flex; flex-direction: column; gap: 8px; }
+.cc-time-row { display: flex; justify-content: space-between; color: #fff; }
