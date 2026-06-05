@@ -23,8 +23,8 @@
     align-items: center;
     justify-content: center;
     pointer-events: auto;            /* catch clicks; blocks the canvas behind */
-    background: rgba(0, 0, 0, 0.45);  /* modal scrim — remove for bare dialogs */
-    font-family: "Arial Black", Arial, sans-serif;
+    /*background: rgba(0, 0, 0, 0.45);  !* modal scrim — remove for bare dialogs *!*/
+    font-family: "Helvetica Neue", Arial, sans-serif;
     user-select: none;
     cursor: default;                  /* the in-game canvas hides the cursor */
 }
@@ -40,18 +40,19 @@
        border-image: url(../app/images/dialog.png) 68 22 28 22 fill / 68px 22px 28px 22px stretch;
     */
     background: #d8a23e;
-    border: 6px solid #7a4a14;
-    border-radius: 10px;
-    padding: 14px 18px 18px;
-    min-width: 300px;
+    border: 8px solid #7a4a14;
+    border-radius: 16px;
+    padding: 8px 0 16px 0;
+    /*min-width: 300px;*/
     color: #3a2410;
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+
 }
 
 /* per-dialog box sizing (decompiled rects; tweak freely) */
 .cc-box-options      { width: 346px; }
 .cc-box-quit         { width: 346px; }
-.cc-box-newplayer    { width: 300px; }
+.cc-box-newplayer    { width: 294px; }
 .cc-box-changeplayer { width: 300px; }
 .cc-box-hint         { width: 400px; }
 .cc-box-upgrade      { width: 500px; }
@@ -64,15 +65,88 @@
 
 /* ---- title plate ---- */
 .cc-plate {
-    margin: -4px -6px 12px;
-    padding: 6px 10px;
+    margin: 0px 36px 14px 36px;
+    padding: 9px 0;
     background: #b9842b;
-    border: 2px solid #634518;
-    border-radius: 6px;
+    border: 1px solid #634518;
     text-align: center;
+    position: relative;
+    border-radius: 12px;
+
+
+    background: linear-gradient(
+        to bottom,
+        #e8b84a 0%,
+        #d4a035 15%,
+        #c48e2a 50%,
+        #b0781e 85%,
+        #9e6a18 100%
+    );
+    box-shadow:
+        inset 0 1px 1px rgba(255,255,255,0.35),
+        inset 0 -1px 1px rgba(0,0,0,0.25),
+        0 0 0 1px #8b5e0f,
+        0 0 0 1px #6b4508,
+        0 0 0 2px rgba(0,0,0, 1);
 }
+.cc-plate::before {
+    content: '';
+    position: absolute;
+    inset: 6px;
+    border-radius: 8px;
+    background: linear-gradient(
+        to bottom,
+        rgba(255,255,255,0.15) 0%,
+        rgba(255,255,255,0.05) 50%,
+        rgba(0,0,0,0.05) 100%
+    );
+    pointer-events: none;
+}
+
+.rivet {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    border: 1px solid #634518;
+    background: radial-gradient(
+        circle at 30% 30%,
+        #f5d78e 0%,
+        #c49a3b 40%,
+        #8b5e0f 70%,
+        #5a3a08 100%
+    );
+    box-shadow:
+        0 1px 2px rgba(0,0,0,0.5),
+        inset 0 1px 1px rgba(255,255,255,0.4);
+    z-index: 3;
+}
+
+/*.rivet::after {*/
+/*    content: '';*/
+/*    position: absolute;*/
+/*    top: 50%;*/
+/*    left: 50%;*/
+/*    transform: translate(-50%, -50%);*/
+/*    width: 2px;*/
+/*    height: 2px;*/
+/*    border-radius: 50%;*/
+/*    background: radial-gradient(*/
+/*        circle at 30% 30%,*/
+/*        #3a2405 0%,*/
+/*        #5a3a08 100%*/
+/*    );*/
+/*    box-shadow: inset 0 1px 1px rgba(0,0,0,0.6);*/
+/*}*/
+
+.rivet-tl { top: 8px; left: 8px; }
+.rivet-tr { top: 8px; right: 8px; }
+.rivet-bl { bottom: 8px; left: 8px; }
+.rivet-br { bottom: 8px; right: 8px; }
+
+
 .cc-plate-green { background: #4caf26; border-color: #2a6a18; }
-.cc-title { font-size: 18px; color: #fff; letter-spacing: .5px; }
+.cc-title { font-size: 20px; color: #fff; letter-spacing: 1px; font-weight: bold; }
 .cc-caption { font-size: 14px; }
 
 /* ---- body + rows ---- */
@@ -87,23 +161,47 @@
 .cc-check-row { gap: 10px; }
 
 /* ---- buttons ---- */
-.cc-buttons { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.cc-buttons { display: flex; flex-direction: column; gap: 8px; margin: 0 16px; }
 .cc-buttons-row { flex-direction: row; justify-content: center; }
 .cc-btn {
     cursor: pointer;
-    padding: 8px 18px;
+    padding: 2px 0;
     font: inherit;
-    font-size: 13px;
+    font-size: 18px;
     color: #fff;
     background: #5cb830;
-    border: 2px solid #3a7a18;
-    border-radius: 16px;
+    border: 1px solid #3a7a18;
+    border-radius: 8px;
+    margin: 0;
+    flex-grow:1;
+    font-weight: bold;
+    text-transform: uppercase;
+
+    background-image: linear-gradient(-180deg, #5cb830 0%, #3a7a18 100%);
+    box-shadow:
+        0 0.5rem 0.625rem 0 rgba(0,0,0,0.2),
+        0 -0.125rem 0.75rem rgba(58, 122, 24,  1) inset,
+        0 0.375rem 0.125rem rgba(255,255,255, 0.4) inset,
+        0 0.125rem 0.25rem 0 rgba(92, 184, 48, 1) inset;
 }
-.cc-btn:hover { background: #6ccb3a; }
-.cc-btn:active { transform: translateY(1px); }
+/*.cc-btn:hover { background: #6ccb3a; }*/
+/*.cc-btn:active { transform: translateY(1px); }*/
+
+
 .cc-input {
-    font: inherit; font-size: 16px; padding: 6px 8px;
-    border: 1px solid #000; background: #fafaf3; color: #222; border-radius: 3px;
+    font: inherit;
+    font-size: 22px;
+    padding: 0px 8px;
+    margin: 0 16px;
+    border: 1px solid #000;
+    background: #636163;
+    color: #ffffff;
+    border-radius: 0;
+    font-weight: 900;
+    outline: none;
+    -webkit-text-stroke-color: #000000;
+    -webkit-text-stroke-width: 3px;
+    paint-order: stroke fill;
 }
 
 /* ---- lists (players, shop rows, upgrade slots, bullets) ---- */

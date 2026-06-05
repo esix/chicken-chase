@@ -1,4 +1,12 @@
 # Runtime assets
 /app
 
+# Game screenshots
+/screenshots
+
 .DS_Store
+
+# npm / Vite dev server
+/node_modules
+/dist
+.vite
