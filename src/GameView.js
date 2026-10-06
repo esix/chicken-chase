@@ -170,7 +170,6 @@ export class GameView extends Widget {
         this.mHandLeftLatch = false;
         this.mHandTick = 0;
         this.mHandLastActionTick = 0;
-        this._endShown = false;
         this._offersUpgrade = false;
 
         // Core::StartLevel FUN_00406069 allocates a fresh HintController
@@ -252,9 +251,7 @@ export class GameView extends Widget {
         // (mDoFinger, FUN_0043e9f1 writes +0x78 = 1) the cursor is CURSOR_HAND,
         // whose image slot is empty -> system finger cursor. HTML dialogs own
         // their cursor.
-        const modalShown = anyModal
-            || this.mFieldController.mIsLevelComplete
-            || this.mFieldController.mIsLevelFailed;
+        const modalShown = anyModal;
         const overButton = this._buttonAt(this.mHand.mX, this.mHand.mY) !== -1;
         if (!modalShown && !overButton) {
             this.mHand.draw(g);
@@ -280,70 +277,63 @@ export class GameView extends Widget {
         // state+4 == 0: +8 tick++, FUN_0040907e, ravens .. pets, hint
         // FUN_0040d281 (7472), risk FUN_0041b901 (7477), hand FUN_0040cc71
         // (7478), level FUN_00421b21 (7479). state+4 != 0: FUN_0040907e only.
+        // No other gate: a finished level keeps ticking once space unpauses
+        // it under the end dialog (FUN_00421948 / FUN_00421a66 only pause).
         const wasPaused = fc.mIsPaused;
         const spaceEdge = this._pollSpace();
-        let level = 0, maxUnlockedBefore = 1;
         if (wasPaused) {
-            if (spaceEdge) this._togglePause(true);
+            if (spaceEdge) this._togglePause();
         } else {
-            // FUN_00421948 computes the LevelCompleted "upgrade" flag BEFORE
-            // the time is recorded (FUN_0041111b @0x4219d6), which the level
-            // update below does: sample maxUnlocked first.
-            maxUnlockedBefore = (this.mGameApp && this.mGameApp.getMaxUnlocked)
+            // FUN_00421948 computes the LevelCompleted "upgrade" flag
+            // (FUN_0041614b <= level, rwg:41366-41372) BEFORE the time is
+            // recorded (FUN_0041111b @0x4219d6): sample maxUnlocked first.
+            const maxUnlockedBefore = (this.mGameApp && this.mGameApp.getMaxUnlocked)
                 ? this.mGameApp.getMaxUnlocked() : 1;
-            level = fc.mCurrentLevel;
-            // The port freezes a finished level (FieldController skips its
-            // tick once mIsLevelComplete / mIsLevelFailed is set).
-            const running = !fc.mIsLevelComplete && !fc.mIsLevelFailed;
+            const endCount = fc.mLevelEndCount;
+            // FUN_0040907e runs FIRST (rwg:7469): on a space edge +0xd = 0,
+            // +4 = 1, FUN_004090b9 (hand mode 0), +0xd = 1. Nothing in the
+            // tick body re-reads +4, but the port's FieldController.update()
+            // returns early when mIsPaused is set — so +4 is written after
+            // the body (below); +0xd now. The hand reset is overridden by the
+            // hand tick (asm 0x40cd04 re-picks the mode every call).
+            if (spaceEdge) this.mPauseTextShown = true;
             // +8 tick, ravens, world, seeds, eggs, gems, store, money
             // effects, pets.
             fc.update();
-            if (running) {
-                // FUN_0040d281 hint bar tick (rwg:7472).
-                this.mHintController.update();
-                // Risk cooldown tick — RiskController FUN_0041b901 (rwg:7477).
-                this.mRiskController.update();
-                // Hand controller FUN_0040cc71 (rwg:7478): hover + click dispatch.
-                this._handTick();
-                // FUN_00421b21 task progress + level end (rwg:7479), last.
-                fc.runLevelUpdate();
-                // FUN_00421b21 rwg:41522-41530: while a task is open and the
-                // level is not lost it runs the L1 slot unlock and the
-                // tutorial dispatcher FUN_00422036 (= the complete/failed
-                // branches did not trip).
-                if (!fc.mIsLevelComplete && !fc.mIsLevelFailed && this.mLevelTutorial) {
-                    this.mLevelTutorial.tick({
-                        fc,
-                        hint: this.mHintController,
-                        core: this.mGameApp && this.mGameApp.mCore,
-                        riskReady: this.mRiskController.isReady(),
-                        // FUN_0041eae5(0): list of special-shop items not empty.
-                        specialShopAvailable: () => (typeof fc.getSpecialShopItems === 'function')
-                            && fc.getSpecialShopItems().length > 0,
-                    });
-                }
+            // FUN_0040d281 hint bar tick (rwg:7472).
+            this.mHintController.update();
+            // Risk cooldown tick — RiskController FUN_0041b901 (rwg:7477).
+            this.mRiskController.update();
+            // Hand controller FUN_0040cc71 (rwg:7478): hover + click dispatch.
+            this._handTick();
+            // FUN_00421b21 task progress + level end (rwg:7479), last.
+            fc.runLevelUpdate();
+            const ended = fc.mLevelEndCount !== endCount;
+            // FUN_00421b21 rwg:41522-41530: while a task is open and the
+            // level is not lost it runs the L1 slot unlock and the tutorial
+            // dispatcher FUN_00422036 (= neither end branch was taken).
+            if (!ended && this.mLevelTutorial) {
+                this.mLevelTutorial.tick({
+                    fc,
+                    hint: this.mHintController,
+                    core: this.mGameApp && this.mGameApp.mCore,
+                    riskReady: this.mRiskController.isReady(),
+                    // FUN_0041eae5(0): list of special-shop items not empty.
+                    specialShopAvailable: () => (typeof fc.getSpecialShopItems === 'function')
+                        && fc.getSpecialShopItems().length > 0,
+                });
             }
-            // FUN_0040907e runs FIRST in the original tick, but no call of
-            // the tick body reads state+4 while the port's FieldController
-            // returns early when mIsPaused is set — so the toggle's write is
-            // applied after the body. Its FUN_004090b9 hand reset is skipped
-            // when the hand tick ran (it re-picks the mode at asm 0x40cd04).
-            if (spaceEdge) this._togglePause(!running);
-        }
-
-        // Level end: FUN_00421948 / FUN_00421a66 open the dialog (and pause,
-        // see _syncModalPause) inside the level update.
-        if (fc.mIsLevelComplete) {
-            if (!this._endShown) {
-                this._endShown = true;
-                this._offersUpgrade = !!(this.mGameApp && this.mGameApp.levelOffersUpgrade
-                    && this.mGameApp.levelOffersUpgrade(level, maxUnlockedBefore));
-                this._openCompleteHtml();
+            if (spaceEdge) fc.mIsPaused = true;   // FUN_0040907e +4 = 1 (see above)
+            if (ended) {
+                // FUN_00421948 rwg:41348-41351 / FUN_00421a66 rwg:41431-41434:
+                // +4 = 1 (FieldController), +0xd = 0, FUN_004090b9 (hand
+                // mode 0); then AddDialog id 0 (FUN_00441f11 kills an open
+                // id-0 dialog first) — on every trip, also when space had
+                // unpaused the game under the previous end dialog.
+                this.mPauseTextShown = false;
+                this.mHand.setMode(HandMode.SEEDS);
+                this._openLevelEndDialog(fc.mLevelEndKind, maxUnlockedBefore);
             }
-        } else if (fc.mIsLevelFailed) {
-            if (!this._endShown) { this._endShown = true; this._openFailedHtml(); }
-        } else {
-            this._endShown = false;
         }
         // Dialogs opened by the tick paused at once in the original.
         this._syncModalPause();
@@ -405,12 +395,13 @@ export class GameView extends Widget {
 
     // FUN_0040907e (rwg:11489-11496) toggle: +0xd = 0; +4 = !+4; when it
     // now pauses, FUN_004090b9 -> FUN_0040cc01(hand, 0) (asm 0x4090c4
-    // `xorl %eax,%eax`); +0xd = 1.
-    _togglePause(resetHand) {
+    // `xorl %eax,%eax`); +0xd = 1. (Paused branch of the tick; the unpaused
+    // branch applies the same writes around the tick body, see update().)
+    _togglePause() {
         const fc = this.mFieldController;
         this.mPauseTextShown = false;
         fc.mIsPaused = !fc.mIsPaused;
-        if (fc.mIsPaused && resetHand) this.mHand.setMode(HandMode.SEEDS);
+        if (fc.mIsPaused) this.mHand.setMode(HandMode.SEEDS);
         this.mPauseTextShown = true;
     }
 
@@ -509,8 +500,8 @@ export class GameView extends Widget {
     // rwg:33746-33751). See SurpriseDialog.js.
     _clickRiskIcon(x, y) {
         const fc = this.mFieldController;
-        if (this.mRiskController.isReady() && fc._riskIconRect
-            && rectContains(fc._riskIconRect, x, y)) {
+        if (this.mRiskController.isReady()
+            && rectContains(fc.getRiskIconRect(), x, y)) {   // FUN_00409af0
             if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
             this._openSurprise();
             return true;
@@ -611,7 +602,11 @@ export class GameView extends Widget {
             // else egg FUN_004072fa, else seeds FUN_0041bfe2 when y >= 0x15f
             // (repeat-ok is always set on a left edge). No y gate besides
             // those inside the dispatch (FieldController.handleClick).
-            fc.handleClick(x, y, this.mHand.getModeString());
+            // After a cure (mode 1, no gem under the cursor) asm
+            // 0x40d1af-0x40d1b4 resets the hand: FUN_0040cc01(hand, 0).
+            if (fc.handleClick(x, y, this.mHand.getModeString()) === true) {
+                this.mHand.setMode(HandMode.SEEDS);
+            }
             return;
         }
         // Right hold (rwg:16164-16180): seeds only, mode 0, repeat-ok and
@@ -675,10 +670,9 @@ export class GameView extends Widget {
             if (btn === 0) this.mHintController.handleClick(x, y);
             return true;
         }
-        // Level completed / failed: the HTML dialogs own the input.
-        if (this.mFieldController.mIsLevelComplete || this.mFieldController.mIsLevelFailed) {
-            return true;
-        }
+        // Any other modal dialog (HTML) owns the input (Sexy AddDialog =
+        // base modal); the overlay normally keeps the event off the canvas.
+        if (HtmlDialogs.isOpen()) return true;
 
         // A press over MENU/SELL/BUY goes to that ButtonWidget, whatever the
         // mouse button: ButtonWidget::MouseDown FUN_0043db80 (rwg:73845-
@@ -819,17 +813,38 @@ export class GameView extends Widget {
         });
     }
 
-    // LEVEL COMPLETED — HTML dialog (FUN_0040dc45) opened on the flag transition.
+    // AddDialog id 0 from FUN_00421948 / FUN_00421a66 (vt+0x114 =
+    // FUN_00441f11: KillDialog of the open id-0 dialog first, then add).
+    _openLevelEndDialog(kind, maxUnlockedBefore) {
+        HtmlDialogs.close('level-complete');
+        HtmlDialogs.close('level-failed');
+        if (kind === 'complete') {
+            // Upgrade flag (dialog +0x15c), computed on every call.
+            this._offersUpgrade = !!(this.mGameApp && this.mGameApp.levelOffersUpgrade
+                && this.mGameApp.levelOffersUpgrade(this.mFieldController.mCurrentLevel,
+                    maxUnlockedBefore));
+            this._openCompleteHtml();
+        } else if (kind === 'failed') {
+            this._openFailedHtml();
+        }
+    }
+
+    // LEVEL COMPLETED — HTML dialog (FUN_0040dc45, texts FUN_0040dde4).
     _openCompleteHtml() {
         const fc = this.mFieldController;
         const core = this.mGameApp.mCore;
         const isBonus = fc.mLevelConfig && fc.mLevelConfig.isBonus;
         const level = fc.mCurrentLevel;
         const best = (core && core.getBestTimeRecord) ? core.getBestTimeRecord(level) : null;
+        // FUN_0040bebb (asm 0x40bebb-0x40bf55): t = ticks / 100 (idiv),
+        // < 0 -> 0; "%i:" / "0%i:" (0x4dcdc0/0x4dcdc4) for minutes > 9 / <= 9,
+        // "%i" / "0%i" (0x4dcda8/0x4dcdcc) for seconds. JS times are ms
+        // (ticks * 10).
         const fmt = (ms) => {
-            if (!ms || ms <= 0) return '--:--';
-            const s = Math.floor(ms / 1000), m = Math.floor(s / 60), r = s % 60;
-            return String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0');
+            let t = Math.trunc(Math.trunc(ms / 10) / 100);
+            if (t < 0) t = 0;
+            const m = Math.trunc(t / 60), r = t - m * 60;
+            return (m > 9 ? '' : '0') + m + ':' + (r > 9 ? '' : '0') + r;
         };
         HtmlDialogs.open('level-complete', {
             binds: {

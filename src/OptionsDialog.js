@@ -114,11 +114,6 @@ export class OptionsDialog {
             // (unpause) — GameView's modal tracking unpauses once the dialog
             // is gone. asm 0x40fdce: KillDialog.
             this._close();
-            // Browser port: the original keeps the volumes in the app and
-            // writes them to the registry at shutdown; a page has no
-            // shutdown, so persist here.
-            const core = this.mGameApp && this.mGameApp.mCore;
-            if (core && core.save) core.save();
             if (this.mOnClose) this.mOnClose();
             return;
         }
@@ -181,6 +176,14 @@ export class OptionsDialog {
     }
 
     _close() {
+        // Browser port: the original keeps the volumes in the app and writes
+        // them to the registry at shutdown; a page has no shutdown, so they
+        // are persisted whenever the dialog goes away (CLOSE / Escape, and
+        // the QUIT? YES path FUN_0040fe56).
+        if (this.mIsActive) {
+            const core = this.mGameApp && this.mGameApp.mCore;
+            if (core && core.save) core.save();
+        }
         this.mIsActive = false;
         this._detach();
         if (sActive === this) sActive = null;

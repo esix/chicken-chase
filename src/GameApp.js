@@ -444,14 +444,6 @@ export class GameApp extends SexyAppBase {
         this.mCurrentView = new CreditsView(this, 'win');
     }
 
-    // unlockNextLevel — kept for FieldController's call order only. The
-    // original has no separate unlock: completing level L appends its time to
-    // the current player's times vector (FUN_0041111b rwg:21406, called from
-    // FUN_00421948 rwg:41372 only when a current player exists), and
-    // maxUnlocked = min(50, count + 1) (FUN_0041614b:28638). Core.recordLevelTime
-    // does both, so this is intentionally a no-op.
-    unlockNextLevel(level) {}
-
     // Override input handling to route to current view
     _setupInput() {
         this.mCanvas.addEventListener('mousemove', (e) => {
@@ -482,6 +474,15 @@ export class GameApp extends SexyAppBase {
         // Mirrors original Sexy framework's WidgetManager::KeyDown dispatch.
         const handleKey = (e) => {
             const tag = (e.target && e.target.tagName) || '';
+            // Browser-only: a focused HTML checkbox / range input would toggle
+            // or step on space/arrows. The original's Checkbox and Slider are
+            // driven by the mouse handlers ported in OptionsDialog/HintController,
+            // so the browser default is blocked here.
+            // The key is still recorded by GameView (FUN_00438a14).
+            if (tag === 'INPUT' && (e.target.type === 'checkbox' || e.target.type === 'range')) {
+                e.preventDefault();
+                return;
+            }
             if (tag === 'INPUT' || tag === 'TEXTAREA') return;
             if (this.mCurrentView && typeof this.mCurrentView.keyDown === 'function') {
                 if (this.mCurrentView.keyDown(e.key)) {

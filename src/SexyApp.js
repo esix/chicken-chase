@@ -340,19 +340,37 @@ export class SoundManager {
         return SoundManager.volumeToGain(SoundManager.mMasterVolume * master);
     }
 
-    // AudiereMusicInterface::SetVolume FUN_00477d50 stores the float and hands
-    // it to audiere's OutputStream::setVolume. UNKNOWN — audiere.dll's
-    // volume→DirectSound mapping is not in the decompiled RWG; linear is used.
+    // AudiereMusicInterface::SetVolume FUN_00477d50 stores the float (+0x14)
+    // and hands it to audiere's OutputStream::setVolume. The device is
+    // AdrOpenDevice("") (rwg:123736 → autodetect; app/audiere.dll lists
+    // "directsound" first). DSOutputStream::setVolume (audiere.dll asm
+    // 0x10006e00: fstps → float32, IDirectSoundBuffer::SetVolume vt+0x3c) with
+    // the conversion at 0x10006490: v == 0.0 → -10000, else
+    // ftol(-(ln(1.0 / v) * 1000.0)) (0x1005e3d8 = 1.0f, 0x1005e3d0 = 1000.0,
+    // _ftol 0x10050a20 truncates). Amplitude = 10^(dB100 / 2000).
+    static musicVolumeToGain(v) {
+        v = Math.fround(v);
+        if (v === 0) return 0;
+        const db100 = Math.trunc(-(Math.log(1.0 / v) * 1000.0));
+        return Math.pow(10, db100 / 2000);
+    }
+
     static _musicGain() {
-        return SoundManager.mMuteCount > 0 ? 0 : SoundManager.mMusicVolume;
+        // SetMusicVolume FUN_0044a9ff passes 0 while mMuteCount > 0.
+        return SoundManager.musicVolumeToGain(
+            SoundManager.mMuteCount > 0 ? 0 : SoundManager.mMusicVolume);
     }
 
     // MusicInterface PlayMusic(id, offset 0, noLoop false) as called by
     // FUN_00408799 / FUN_00408dae after `if (!IsPlaying(id)) StopAllMusic()`.
     // AudierePlayMusic FUN_004779ae: if the stream is not playing →
     // setVolume, setRepeat(!noLoop), play(). It never calls reset(), and
-    // StopAllMusic FUN_00477b27 only calls stop() — so a track that was
-    // stopped earlier resumes from where it stopped (audiere stop() pauses).
+    // StopAllMusic FUN_00477b27 only calls stop() (vt+0xc) — so a track that
+    // was stopped earlier resumes from where it stopped. Verified in
+    // app/audiere.dll: DSOutputStream stop (0x10006c80 → 0x10007100) and
+    // DSOutputBuffer stop (0x10006820) only call IDirectSoundBuffer::Stop
+    // (vt+0x48); play (0x10006c60 / 0x10006800) calls Play(0,0,flags) without
+    // SetCurrentPosition; only reset() (vt+0x14, 0x10006ca0) rewinds.
     static playMusic(sound) {
         if (!sound) return;
         // IsPlaying(id) FUN_00477a43 → nothing to do.

@@ -12,7 +12,8 @@
 //   [1] +0x04 Update             FUN_0040344c (Broody FUN_00403de4, Holy FUN_0040d912)
 //   [2] +0x08 showHungryIcon     FUN_00403ac8 (Magic FUN_0040e36f → 0)
 //   [3] +0x0c canBeSickTarget    FUN_0040e36f → 0 (Layer FUN_00403e3c)
-//   [4] +0x10                    FUN_0040325a
+//   [4] +0x10 healthyActive      FUN_0040325a (asm 0x40325a: !FUN_00402342 && vt[5];
+//                                ported inline by ShopDialogs/RiskController/HintController)
 //   [5] +0x14 isActive           FUN_0040327c (Broody FUN_00403dec)
 //   [6] +0x18 inHurry            FUN_00403ae9 (Broody FUN_00402700)
 //   [7] +0x1c decideState        FUN_004037e8 (Broody FUN_00402369)

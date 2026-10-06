@@ -95,6 +95,8 @@ export class FieldController {
         this.mIsLevelComplete = false;
         this.mIsLevelFailed = false;
         this.mFailReason = null;            // 'chickens' | 'time' | null
+        this.mLevelEndCount = 0;            // FUN_00421948/FUN_00421a66 calls
+        this.mLevelEndKind = null;          // 'complete' | 'failed' (last call)
         this.mLevelConfig = null;
         this.mLevelAceTime = 0;
         this.mRavenCtl = null;              // app+0x10 (see _setupRavenController)
@@ -148,6 +150,8 @@ export class FieldController {
         this.mIsLevelComplete = false;
         this.mIsLevelFailed = false;
         this.mFailReason = null;
+        this.mLevelEndCount = 0;
+        this.mLevelEndKind = null;
         this.mIsPaused = false;
         this.mBonusAchieved = false;
 
@@ -273,6 +277,9 @@ export class FieldController {
         // Exact field point (avoid the screen round-trip rounding).
         c.mPos[0] = fx;
         c.mPos[1] = fy;
+        // Constructor tail FUN_004032ca rwg:3481-3497 runs at creation, before
+        // the list insert (same as Field.hatchEgg).
+        if (c._runCtor) c._runCtor(this.mField);
         this.mField.addChick(c);
         return c;
     }
@@ -488,12 +495,13 @@ export class FieldController {
     }
 
     // Core::Update FUN_00405fcf (rwg_functions.c:7445) — runs once per tick.
+    // The only gate is state+4 (paused, rwg:7465). A finished level is not
+    // frozen: FUN_00421948 / FUN_00421a66 merely pause (state+4 = 1) and
+    // open their dialog; if space unpauses under that dialog (FUN_0040907e)
+    // the next tick runs in full and FUN_00421b21 trips again.
     update() {
         if (this.mIsPaused) return;   // state+4 paused → only FUN_0040907e
-        const gameLogicPaused = this.mIsLevelComplete || this.mIsLevelFailed;
-        if (!gameLogicPaused) {
-            this._tickGameLogic();
-        }
+        this._tickGameLogic();
     }
 
     _tickGameLogic() {
@@ -527,9 +535,9 @@ export class FieldController {
         if (!this.mDeferTaskCheck) this._checkTasks();
     }
 
-    // FUN_00421b21 entry for GameView (rwg:7479).
+    // FUN_00421b21 entry for GameView (rwg:7479). Called inside the tick
+    // body, which never re-reads state+4 (rwg:7465-7479), so no gate here.
     runLevelUpdate() {
-        if (this.mIsPaused || this.mIsLevelComplete || this.mIsLevelFailed) return;
         this._checkTasks();
     }
 
@@ -659,7 +667,14 @@ export class FieldController {
     }
 
     // FUN_00421b21 (rwg_functions.c:41489): task check, called every tick.
+    // mIsLevelComplete / mIsLevelFailed report what THIS call did (the
+    // original keeps no such flag); mLevelEndCount counts every
+    // FUN_00421948 / FUN_00421a66 call — each one AddDialogs a new dialog
+    // id 0, replacing the open one (vt+0x114 = FUN_00441f11, which first
+    // calls KillDialog vt+0x11c with the same id).
     _checkTasks() {
+        this.mIsLevelComplete = false;
+        this.mIsLevelFailed = false;
         this._updateTaskProgress();
         const bonus = this._isBonus();
         for (let i = 0; i < this.mTasks.length; i++) {
@@ -687,6 +702,12 @@ export class FieldController {
     // FUN_00421948 (rwg_functions.c:41320): level completed.
     _levelCompleted() {
         this.mIsLevelComplete = true;
+        this.mLevelEndKind = 'complete';
+        this.mLevelEndCount++;
+        // rwg:41348-41351: state+4 = 1 (paused), state+0xd = 0, FUN_004090b9
+        // (hand mode 0) — +0xd and the hand belong to GameView, which applies
+        // them when mLevelEndCount changes.
+        this.mIsPaused = true;
         if (this._isBonus()) {
             // FUN_00423d5b (rwg_functions.c:43870): perfect = chicken count == level +0x50.
             const perfect = this._chickListCount() === this._bonusStartChicks;
@@ -712,6 +733,11 @@ export class FieldController {
     // (chicken count != 0) → time ran out, else chickens lost (:41443-41446).
     _levelFailed() {
         this.mIsLevelFailed = true;
+        this.mLevelEndKind = 'failed';
+        this.mLevelEndCount++;
+        // rwg:41431-41434: state+4 = 1, state+0xd = 0, FUN_004090b9 (see
+        // _levelCompleted).
+        this.mIsPaused = true;
         this.mFailReason = this._chickListCount() !== 0 ? 'time' : 'chickens';
         // DAT_004fed7c (rwg_functions.c:41452).
         if (SOUNDS.SOUND_LEVEL_FAILED) SOUNDS.SOUND_LEVEL_FAILED.play();
@@ -1099,28 +1125,20 @@ export class FieldController {
         const ms = String(this.mMoney);
         text(ms, 0x314 - strW(ms, HUD_FONT_16), 0x46, HUD_FONT_16, WHITE);
 
-        // Risk icon — shown when (app+0x48)+9 (ready) is set (rwg:13899).
-        // Rect FUN_00409af0 (rwg:12452-12457, asm 0x409b6a-0x409b98):
-        // x = 0x2da, y = (count-1) * DAT_004fffc4(IMAGE_NUMBER_SLOT_TASK)+8
-        // (height) + 0x75, w/h = DAT_00500014 (IMAGE_ICON_RISK) +4/+8 = the
-        // whole image width/height (asm 0x409b88/0x409b8b). Drawn by
+        // Risk icon — shown when (app+0x48)+9 (ready) is set (rwg:13899);
+        // rect FUN_00409af0 (rwg:13900, see getRiskIconRect). Drawn by
         // FUN_0041742b at rect x,y with cel = phase(+0x10) * numCols
         // (rwg:13901-13905; RiskController.getIconCel).
         const risk = this.mRiskController;
         if (this.mRiskReady && risk) {
-            const ry = (taskIdx - 1) * slotH + 0x75;
             const riskImg = IMAGES.IMAGE_ICON_RISK;
             if (ready(riskImg)) {
+                const rr = this.getRiskIconRect();
                 const fw = riskImg.getCelWidth();
                 const fh = riskImg.getCelHeight();
                 const cel = risk.getIconCel(riskImg.mNumCols || 1);
-                ctx.drawImage(riskImg.img, cel * fw, 0, fw, fh, 0x2da, ry, fw, fh);
-                this._riskIconRect = { x: 0x2da, y: ry, w: riskImg.mWidth, h: riskImg.mHeight };
-            } else {
-                this._riskIconRect = null;
+                ctx.drawImage(riskImg.img, cel * fw, 0, fw, fh, rr.x, rr.y, fw, fh);
             }
-        } else {
-            this._riskIconRect = null;
         }
 
         // Money effects (asm 0x40b87b-0x40b965): FONT_16, colourised; per
@@ -1191,6 +1209,31 @@ export class FieldController {
         if (lc.specialShopButton) drawHudButton(this._hudButtons.buy);
     }
 
+    // FUN_00409af0 (rwg:12415-12457, asm 0x409af0-0x409b9d), computed
+    // whenever it is needed (HUD draw rwg:13900, risk-icon click FUN_00409c38):
+    // k = number of level task entries whose target (+0) > 0; rect =
+    // (0x2da, (k - 1) * IMAGE_NUMBER_SLOT_TASK(DAT_004fffc4)+8 + 0x75,
+    //  IMAGE_ICON_RISK(DAT_00500014)+4, +8) — whole image width/height.
+    getRiskIconRect() {
+        let k = 0;
+        for (const task of this.mTasks) {
+            if (this._taskTarget(task) > 0) k++;
+        }
+        const slot = IMAGES.IMAGE_NUMBER_SLOT_TASK;
+        const icon = IMAGES.IMAGE_ICON_RISK;
+        return {
+            x: 0x2da,
+            y: (k - 1) * (slot ? slot.mHeight : 0) + 0x75,
+            w: icon ? icon.mWidth : 0,
+            h: icon ? icon.mHeight : 0,
+        };
+    }
+
+    // Kept for GameView._clickRiskIcon (FUN_00409c38): computed at access.
+    get _riskIconRect() {
+        return this.getRiskIconRect();
+    }
+
     // FUN_00404ea0 (rwg_functions.c:6001, asm 0x404ea0-0x404f1a): true when
     // some world chick passes vt[4] FUN_0040325a (!FUN_00402342 sick action
     // && vt[5] isActive) and its food +0x34 (Chick.mFoodCounter) equals
@@ -1216,8 +1259,11 @@ export class FieldController {
     // Hand click — FUN_0040cc71 (rwg_functions.c:15843-16190). Modes:
     // 0 seeds, 1 cure, 2 gun (FUN_0040cc01). The hovered raven/wolf/sick chick is
     // picked by the auto-cursor (GameView); this applies the "fire" action.
+    // Returns true only when the cure path ran FUN_0040490a, after which the
+    // caller must apply FUN_0040cc01(hand, 0) (asm 0x40d1b4).
     handleClick(x, y, handMode) {
-        if (this.mIsPaused || this.mIsLevelComplete || this.mIsLevelFailed) return;
+        // Only reached from the hand tick, i.e. while state+4 == 0.
+        if (this.mIsPaused) return;
 
         if (handMode === 'gun') {
             // Raven/wolf hover only below y 0x82 (:15893). Crosshair 8x8, or
@@ -1306,7 +1352,10 @@ export class FieldController {
             if (!sick) return;
             if (this._collectGemAt(x, y)) return;
             this._cureChick(sick);
-            return;
+            // asm 0x40d1af-0x40d1b4: after FUN_0040490a (whether or not the
+            // cure was affordable) FUN_0040cc01(hand, 0) resets the hand to
+            // mode 0 — the hand belongs to GameView, so report it.
+            return true;
         }
 
         // Mode 0 (:16155-16170): gem → egg → seeds (y >= 0x15f).

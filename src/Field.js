@@ -685,7 +685,6 @@ export class Field {
         this._ravensDone = false;       // JS: raven tick already ran this tick
         this.mSeeds = [];
         this.mFieldController = null;
-        this.mUpgradeLevel = 0;
         this.mDecorations = [];         // set by GameView (core.getUpgradeIds)
         this.mDog = new Dog();
         // World fields (FUN_00404022 asm, rwg_functions.c:4787-4797):
