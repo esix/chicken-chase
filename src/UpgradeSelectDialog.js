@@ -11,6 +11,26 @@
 
 import { IMAGES, SOUNDS } from './Res.js';
 import { drawFitText, wrapText } from './TextUtil.js';
+import { HtmlDialogs } from './HtmlDialogs.js';
+
+// The global literal at rwg:44151 is unnamed; text transcribed from screenshot 25.
+export const UPGRADE_PROMPT = 'Youve earned enough money for your farm upgrade! Please select, what you would like to improve:';
+
+// Shared by the game and development preview; selection effects stay with caller.
+export function openUpgradeChoices(options, onSelect) {
+    HtmlDialogs.open('upgrade', {
+        binds: { desc: UPGRADE_PROMPT },
+        actions: { select: ({ index }) => {
+            if (options[index]) onSelect(options[index]);
+        } },
+    });
+    HtmlDialogs.fillList('upgrade', 'options', options, (opt, row) => {
+        const image = IMAGES[opt.previewIconKey || opt.iconKey];
+        const icon = row.querySelector('.cc-slot-icon');
+        if (image?.mPath) icon.src = image.mPath;
+        row.querySelector('.cc-slot').setAttribute('aria-label', opt.label || opt.key);
+    });
+}
 
 const BOX = { x: 150, y: 150, w: 500, h: 300 };
 
@@ -143,11 +163,12 @@ export class UpgradeSelectDialog {
 // Could be expanded with verified data from FUN_00423f8a per upgrade tier.
 export const UPGRADE_TIERS = [
     [
-        { key: 'house_1', label: 'Coop Upgrade I', iconKey: 'IMAGE_OFFENSIVE_SEEDS_COUNT1',
+        // Screenshot 25 displays native upgrade preview icons 5, 1, 2.
+        { key: 'house_1', label: 'Coop Upgrade I', iconKey: 'IMAGE_OFFENSIVE_SEEDS_COUNT1', previewIconKey: 'IMAGE_UPGRADE_PREVIEW5',
           description: 'Upgrade your coop visuals (tier 1).' },
-        { key: 'seeds_1', label: 'Better Seeds', iconKey: 'IMAGE_OFFENSIVE_SEEDS_CALORIES1',
+        { key: 'seeds_1', label: 'Better Seeds', iconKey: 'IMAGE_OFFENSIVE_SEEDS_CALORIES1', previewIconKey: 'IMAGE_UPGRADE_PREVIEW1',
           description: 'Seeds restore more hunger.' },
-        { key: 'gun_1', label: 'Stronger Slingshot', iconKey: 'IMAGE_OFFENSIVE_GUN_POWER',
+        { key: 'gun_1', label: 'Stronger Slingshot', iconKey: 'IMAGE_OFFENSIVE_GUN_POWER', previewIconKey: 'IMAGE_UPGRADE_PREVIEW2',
           description: 'Scares ravens with one hit.' },
     ],
     [

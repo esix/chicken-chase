@@ -36,7 +36,7 @@ export class GameApp extends SexyAppBase {
     // Port of Sexy::GameApp - vtable at 004dcbfc
     // Constructor: FUN_0040826e
 
-    constructor(canvasId) {
+    constructor(canvasId, { core = new Core() } = {}) {
         super(canvasId);
         this.mState = GameState.LOADING;
         this.mGameView = null;
@@ -45,7 +45,7 @@ export class GameApp extends SexyAppBase {
         this.mLoadProgress = 0;
 
         // Player profile data — Sexy::Core (DECOMPILED_MAP.md section 14)
-        this.mCore = new Core();
+        this.mCore = core;
         this.mCore.load();
 
         // Registry values - DAT_004fecbc-DAT_004feccc

@@ -226,8 +226,10 @@ export class Res {
             ['IMAGE_PET_WALK_MOUSE', 'images/pets/mouse/walk.png', 14],
             ['IMAGE_PET_IDLE_ELEPHANT', 'images/pets/elephant/idle.png', 10],
             ['IMAGE_PET_WALK_ELEPHANT', 'images/pets/elephant/walk.png', 10],
-            ['IMAGE_PET_WALK_WOLF', 'images/pets/wolf/walk.jpg', 9],
-            ['IMAGE_PET_SPECIAL_WOLF', 'images/pets/wolf/eat.jpg', 9],
+            // Native wolf cels are 135x110: walk 1350px = 10 frames,
+            // eat 1755px = 13 frames. The old 9-column split leaked adjacent cels.
+            ['IMAGE_PET_WALK_WOLF', 'images/pets/wolf/walk.jpg', 10],
+            ['IMAGE_PET_SPECIAL_WOLF', 'images/pets/wolf/eat.jpg', 13],
             // Additional
             ['IMAGE_INTRODUCTION', 'images/Introduction.jpg'],
             ['IMAGE_INTRODUCTION_LETTER', 'images/letter.jpg'],

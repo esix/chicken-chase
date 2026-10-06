@@ -1,10 +1,7 @@
 /* Chicken Chase — HTML dialog styles.
  *
- * This is a STRUCTURAL skeleton: it positions/sizes/centers the dialogs and
- * makes them usable (clickable, readable), but the visual look is yours to
- * own. Replace the placeholder frames/buttons with the game art — e.g. use
- * dialog.png as a 9-slice border-image (see the commented .cc-box rule), the
- * dialog_btn.png for .cc-btn, etc.
+ * Shared frame, title plate and buttons use the original game art.
+ * Remaining per-dialog controls/layout will be refined against screenshots.
  *
  * Layout model: every .cc-dialog covers the 800x600 game area and centers its
  * .cc-box. Modal dialogs dim the game behind them; .cc-dialog-bare ones don't.
@@ -24,220 +21,376 @@
     justify-content: center;
     pointer-events: auto;            /* catch clicks; blocks the canvas behind */
     /*background: rgba(0, 0, 0, 0.45);  !* modal scrim — remove for bare dialogs *!*/
-    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-family: "Arial Black", Arial, sans-serif;
+    font-weight: 900;
     user-select: none;
     cursor: default;                  /* the in-game canvas hides the cursor */
 }
 .cc-dialog[hidden] { display: none; }
 .cc-dialog-bare { background: none; }   /* intro panel + select-level: no scrim */
 
-/* ---- the box ---- */
+/* ---- shared original-art frame ---- */
+/* StdDialog: FUN_00421251 (rwg:40838), images loaded at rwg:31352-31372.
+   Art and alpha masks are extracted by tools/prepare_dialog_art.py.
+   Insets measured in dialog.png: 30px includes the four corner rivets;
+   screenshots/04.png and 06.png show fixed-width edges on resized boxes. */
 .cc-box {
     position: relative;
     box-sizing: border-box;
-    /* PLACEHOLDER frame — replace with the real art, e.g.:
-       border: 34px solid transparent;
-       border-image: url(../app/images/dialog.png) 68 22 28 22 fill / 68px 22px 28px 22px stretch;
-    */
-    background: #d8a23e;
-    /*border: 1px solid #7a4a14;*/
-    border-radius: 12px;
-    padding: 16px 8px 24px 8px;
-    /*min-width: 300px;*/
+    background: none; /* The frame fill includes dialog.png's original gold. */
+    border-radius: 18px; /* dialog.png outer corner, including its shadow */
+    /* screenshots/04.png, 06.png: title at +18, controls at +27,
+       standard bottom button inset 28; common StdDialog layout. */
+    padding: 18px 27px 28px;
+    display: flex;
+    flex-direction: column;
     color: #3a2410;
-    box-shadow:
-        inset 1px 1px 2px #BE9D6B,
-        inset -1px -1px 2px #BE9D6B,
-        inset 1px -1px 2px #BE9D6B,
-        inset -1px 1px 2px #BE9D6B,
-
-        inset 3px 3px 2px #CE923A,
-        inset -3px -3px 2px #CE923A,
-        inset 3px -3px 2px #CE923A,
-        inset -3px 3px 2px #CE923A,
-
-        inset 6px 6px 2px #634418,
-        inset -6px -6px 2px #634418,
-        inset 6px -6px 2px #634418,
-        inset -6px 6px 2px #634418,
-
-
-        0 0 0 2px rgba(222, 190, 132, 0.6),
-        0 0 0 2px rgba(139, 102, 33, 0.6),
-        1px 1px 3px 5px #4A3311;
-
+    isolation: isolate;
+}
+.cc-box::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 30px solid transparent;
+    border-image: url("assets/dialog-frame.png") 30 fill / 30px stretch;
+    pointer-events: none;
+    z-index: -1;
 }
 
-/* per-dialog box sizing (decompiled rects; tweak freely) */
-.cc-box-options      { width: 346px; }
-.cc-box-quit         { width: 346px; }
-.cc-box-newplayer    { width: 286px; }
-.cc-box-changeplayer { width: 300px; }
-.cc-box-hint         { width: 400px; }
-.cc-box-upgrade      { width: 500px; }
-.cc-box-shop         { width: 420px; }
-.cc-box-complete     { width: 500px; }
-.cc-box-failed       { width: 400px; }
-.cc-box-introletter  { width: 590px; }
-.cc-box-intropanel   { padding: 0; border: 0; background: none; box-shadow: none; }
-.cc-box-selectlevel  { width: 444px; }
+/* Gold backing inside the opaque frame prevents subpixel slice seams.
+   12px is the inner frame edge in dialog.png; outer shadow stays transparent. */
+.cc-box::after {
+    content: "";
+    position: absolute;
+    inset: 12px;
+    background: #e7ae39; /* dialog.png (125,100), RGB565 as screenshots 04/06/15 */
+    pointer-events: none;
+    z-index: -2;
+}
+
+/* Per-dialog box sizing; individual layouts are refined separately. */
+/* FUN_0040fbff, rwg:19209-19214: 346x315, or 346x389 in-game. */
+.cc-box-options { width: 346px; height: 315px; }
+.cc-box-options:has([data-visible="ingame"]:not([hidden])) { height: 389px; }
+/* Widget rects: FUN_0040fbff, rwg:19453-19462. Body starts at +80,
+   checkbox at +40,+155, then +40,+195; native checkbox cells are 40px. */
+.cc-box-options .cc-body { gap: 0; }
+.cc-box-options .cc-check-row { margin-left: 13px; }
+.cc-box-options .cc-slider-row + .cc-check-row { margin-top: -5px; }
+/* Screenshots 06/31: footer starts at +248; extra buttons advance by
+   37px (36px art + 1px gap), leaving a 31px bottom inset. */
+.cc-box-options .cc-buttons { gap: 1px; }
+/* Generic quit dialog: screenshot 32 measured rect (250,150,300,300). */
+.cc-box-quit { width: 300px; height: 300px; }
+/* FUN_0040f117 (rwg:18703): NewPlayerDialog rect (250, 200, 300, 200). */
+.cc-box-newplayer    { width: 300px; min-height: 200px; }
+/* FUN_00402e3f, rwg:2947-2952: (200,125,300,350), list 244x155.
+   Screenshot 08: NEW/DELETE at +245, full-width OK at +285. */
+.cc-box-changeplayer { width: 300px; height: 350px; transform: translateX(-50px); padding-bottom: 29px; }
+.cc-box-changeplayer .cc-selection-list { width: 244px; height: 155px; margin-left: -1px; }
+.cc-box-changeplayer .cc-buttons { gap: 4px; }
+/* HintDialog: FUN_0040d557, rwg:16540: (200,100,400,400).
+   Screenshot 15: body ink at +83, OK art at +336; checkbox rect
+   (+40,+280) also follows FUN_0040d7d0, rwg:16686-16690. */
+.cc-box-hint { width: 400px; height: 400px; }
+.cc-box-hint .cc-body { gap: 0; }
+/* Screenshot 15: label starts immediately after the native 40px cell;
+   the 13px gap below it keeps both controls fixed for every hint length. */
+.cc-box-hint .cc-dontshow { margin: auto 0 0 13px; gap: 0; }
+.cc-box-hint .cc-buttons { margin-top: 13px; }
+/* FUN_0042434b, rwg:44337/44359: 500x300, images at relative y=150;
+   native icons 98x98, integer spacing (500-3*98)/4 = 51px. */
+.cc-box-upgrade { width: 500px; height: 300px; }
+.cc-box-upgrade .cc-slots { position: absolute; top: 70px; left: 24px; }
+.cc-box-shop { width: 400px; height: 550px; padding-bottom: 31px; }
+/* SHOP: FUN_0041f031:38486, (200,25,400,550).
+   FUN_0041f889:39017-39031: nav +75, SELL (+276,+145), 100x30,
+   row stride 32. No shop screenshot supplied: column decoration follows
+   shared chrome and the existing canvas shop's approximate columns. */
+.cc-box-shop .cc-body { gap: 0; }
+.cc-box-shop .cc-pager { position: absolute; top: -5px; left: 3px; right: 3px; justify-content: space-between; }
+.cc-box-shop .cc-page { color: #fff; font-size: 16px; }
+.cc-box-shopsell .cc-shop-head { position: absolute; top: 30px; left: 123px; display: grid; grid-template-columns: 80px 46px; gap: 0; color: #fff; font-size: 14px; }
+.cc-box-shopsell .cc-list { position: absolute; top: 65px; left: -3px; right: -3px; height: 320px; max-height: none; border: 0; background: none; overflow: visible; }
+.cc-box-shopsell .cc-shop-row { display: grid; grid-template-columns: 126px 80px 46px 100px; height: 32px; gap: 0; padding: 0; color: #fff; font-size: 14px; }
+.cc-box-shopsell .cc-cell-type { padding-left: 8px; }
+.cc-box-shopsell .cc-cell-price { font-size: 12px; }
+.cc-box-shopsell .cc-age { border: 1px solid #5a3010; border-radius: 3px; overflow: hidden; box-shadow: inset 0 1px 2px #302008; }
+.cc-box-shopsell .cc-age-bar { background: linear-gradient(#b8df63, #5cb830); }
+.cc-box-shopsell .cc-shop-row[data-juvenile="true"] .cc-age-bar { background: linear-gradient(#ffe794, #ffcc55); }
+.cc-box-shopsell .cc-btn-sell { height: 30px; min-height: 30px; font-size: 14px; padding: 0 12px; }
+.cc-box-shop .cc-info { position: absolute; bottom: 42px; left: -3px; right: -3px; font-size: 12px; line-height: 14px; }
+/* SPECIAL SHOP: FUN_00420232:39763, (150,25,500,550).
+   FUN_00420a27:40271-40285: BUY (+376,+165), 100x30, stride 116.
+   FUN_00420758:40114: content starts y=130. Missing screenshot: icon/text
+   columns follow the existing canvas approximation (shared shop decoration). */
+.cc-box-shopbuy { width: 500px; }
+.cc-box-shopbuy .cc-list { position: absolute; top: 25px; left: -3px; right: -3px; height: 348px; max-height: none; border: 0; background: none; overflow: visible; }
+.cc-box-shopbuy .cc-buy-row { position: relative; height: 116px; padding: 0; color: #fff; }
+.cc-box-shopbuy .cc-buy-icon { position: absolute; left: 31px; top: 26px; width: 56px; height: 56px; object-fit: contain; }
+.cc-box-shopbuy .cc-buy-name { position: absolute; left: 111px; top: 23px; font-size: 16px; line-height: 23px; }
+.cc-box-shopbuy .cc-buy-price { position: absolute; left: 111px; top: 51px; font-size: 14px; line-height: 23px; }
+/* User-requested adaptation: center BUY vertically in its 116px product row. */
+.cc-box-shopbuy .cc-btn-buy { position: absolute; left: 352px; top: 50%; transform: translateY(-50%); width: 100px; height: 30px; min-height: 30px; padding: 0 12px; font-size: 14px; }
+/* FUN_0040dc45, rwg:17054-17071: normal 500x400, bonus 450x300.
+   Screenshot 17 shares HINT's bottom button inset and body ink offset. */
+.cc-box-complete { width: 500px; height: 400px; }
+.cc-box-complete:has([data-visible="bonus"]:not([hidden])) { width: 450px; height: 300px; }
+/* FUN_0040e0ea, rwg:17428: centered (200,185,400,230).
+   Uses the standard two-button footer (FUN_0043e6c1, rwg:74617-74631). */
+.cc-box-failed { width: 400px; height: 230px; }
+/* Shared standard footer/text offsets, measured in screenshots 06/15/17/32.
+   LEVEL FAILED uses the same StdDialog controls and FONT_DLG_LINES. */
+.cc-box-options, .cc-box-quit, .cc-box-hint, .cc-box-complete, .cc-box-failed { padding-bottom: 31px; }
+.cc-box-quit .cc-text, .cc-box-hint .cc-text,
+.cc-box-complete .cc-text, .cc-box-failed .cc-text,
+.cc-box-upgrade .cc-text { margin-top: -3px; }
+/* FUN_0040d936:16856: (105,20,590,560). The second page grows by
+   90px (FUN_0040daeb:16940-16943), screenshot 11: (60,20,680,560). */
+.cc-box-introletter { width: 590px; height: 560px; padding-bottom: 31px; }
+.cc-box-intropanel { width: 680px; height: 560px; padding-bottom: 31px; }
+/* Screenshot 10: caption ink starts y=109, letter native art at (246,132).
+   Screenshot 11: illustration at (92,35), retaining native 616x462 size. */
+.cc-intro-caption { margin-top: 3px; }
+.cc-letter-img { position: absolute; top: 32px; left: 50%; transform: translateX(-50%); width: 307px; height: 372px; }
+.cc-intro-img { position: absolute; top: 15px; left: 32px; width: 616px; height: 462px; }
+/* FUN_0041c48a:34755: (178,77,444,445). Screenshot 12 matches the
+   standard footer at +378; navigation y=height-107 (FUN_0041c860:34937). */
+.cc-box-selectlevel { width: 444px; height: 445px; padding-bottom: 31px; transform: translateY(-0.5px); }
+.cc-box-selectlevel .cc-desc { margin-top: -3px; }
+.cc-box-selectlevel .cc-level-nav { position: absolute; top: 258px; left: -4px; right: -2px; gap: 5px; }
+.cc-level-nav .cc-nav { flex: 0 0 74px; height: 36px; }
+.cc-level-nav .cc-range { flex: 1; width: 0; }
+/* User-requested HTML text adaptation (DECOMPILED_MAP.md): text flows first; legends settle above the navigation without
+   overlapping longer descriptions. The 46px footer gap reserves its controls. */
+.cc-box-selectlevel .cc-body { gap: 0; }
+.cc-box-selectlevel .cc-bullets { margin: auto 0 0 2px; gap: 0; }
+.cc-box-selectlevel .cc-buttons { margin-top: 46px; }
+.cc-box-selectlevel[data-level="1"] .cc-bullet { align-items: start; }
+.cc-box-selectlevel[data-level="1"] .cc-bullet-art { height: 32px; }
 
 /* ---- title plate ---- */
+/* CSS plate: colors sampled down the center of dialog-plate.png (RGB565),
+   shape and rivet positions from screenshots 04/15/25. Fixed-size details
+   keep their proportions as dialog widths change. */
 .cc-plate {
-    margin: 0px 36px 14px 36px;
-    padding: 9px 0;
-    background: #b9842b;
-    /*border: 1px solid #524931;*/
+    margin: 0 18px 12px;
+    min-height: 50px;
+    flex-shrink: 0;
+    padding: 10px 12px;
     text-align: center;
     position: relative;
-    border-radius: 8px;
-
-    background: linear-gradient(
-        to bottom,
-        #E7C38D 0%,
-        #D69E4A 5%,
-        #CE8F31 50%,
-        #b0781e 95%,
-        #9e6a18 100%
-    );
-    box-shadow:
-        inset 0 1px 1px rgba(255,255,255,0.35),
-        inset 0 -1px 1px rgba(0,0,0,0.25),
-        0 0 0 1px #8b5e0f,
-        0 0 0 1px #6b4508,
-        1px 1px 3px 2px #191100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 .cc-plate::before {
-    content: '';
+    content: "";
     position: absolute;
-    inset: 6px;
-    border-radius: 12px;
-    background: linear-gradient(
-        to bottom,
-        rgba(255,255,255,0.15) 0%,
-        rgba(255,255,255,0.05) 50%,
-        rgba(0,0,0,0.05) 100%
-    );
+    inset: 1px 2px 2px 0;
+    border: 1px solid #524931;
+    border-radius: 9px;
+    background: linear-gradient(to bottom,
+        #948673 0, #e7c38c 2px, #e7be8c 3px, #deb273 4px,
+        #d69e4a 6px, #ce8e31 10px, #ce8e31 37px,
+        #ad7929 41px, #6b4d18 43px, #312008 46px);
+    box-shadow: 1px 2px 1px #302008, inset 1px 0 2px #f4d28e, inset -2px 0 2px #7b591f;
+    pointer-events: none;
+    z-index: -1;
+}
+.cc-plate::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    /* Native rivets occupy 6x6px at (8,7)/(144,7) and (8,35)/(144,35)
+       in the 160x50 plate crop. Four CSS circles remain anchored to edges. */
+    --cc-rivet: radial-gradient(circle at 40% 30%, #ffe4a1 0 12%, #be934c 30%, #73521c 60%, #4e3a18 72%, #e2b367 82%, transparent 95%);
+    background-image: var(--cc-rivet), var(--cc-rivet), var(--cc-rivet), var(--cc-rivet);
+    background-size: 6px 6px;
+    background-repeat: no-repeat;
+    background-position: left 8px top 7px, right 10px top 7px, left 8px bottom 9px, right 10px bottom 9px;
     pointer-events: none;
 }
 
-.rivet {
-    position: absolute;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    border: 1px solid #634518;
-    background: radial-gradient(
-        circle at 30% 30%,
-        #f5d78e 0%,
-        #c49a3b 40%,
-        #8b5e0f 70%,
-        #5a3a08 100%
-    );
-    box-shadow:
-        0 1px 2px rgba(0,0,0,0.5),
-        inset 0 1px 1px rgba(255,255,255,0.4);
-    z-index: 3;
-}
-
-.rivet-tl { top: 6px; left: 6px; }
-.rivet-tr { top: 6px; right: 6px; }
-.rivet-bl { bottom: 6px; left: 6px; }
-.rivet-br { bottom: 6px; right: 6px; }
-
-
 .cc-plate-green { background: #4caf26; border-color: #2a6a18; }
-.cc-title { font-size: 20px; color: #fff; letter-spacing: 1px; font-weight: bold; }
+.cc-title { font: 900 20px/27px "Arial Black", Arial, sans-serif; color: #fff; }
 .cc-caption { font-size: 14px; }
 
 /* ---- body + rows ---- */
-.cc-body { display: flex; flex-direction: column; gap: 10px; }
-.cc-text { text-align: center; color: #3a1a05; font-size: 13px; line-height: 1.35; }
-.cc-error { text-align: center; color: #c33; font-size: 11px; min-height: 1em; }
+.cc-body { position: relative; display: flex; flex: 1; flex-direction: column; gap: 10px; }
+/* FONT_DLG_LINES: resources.xml:62; native 23px line advance. */
+.cc-text { text-align: center; color: #fff; font: 900 16px/23px "Arial Black", Arial, sans-serif; white-space: pre-line; overflow-wrap: break-word; user-select: text; flex-shrink: 0; }
+/* Validation stays in the space between the input and footer (04.png/09.png). */
+.cc-error { position: absolute; top: 35px; left: 0; right: 0; text-align: center; color: #c33; font-size: 11px; line-height: 14px; }
+.cc-error:empty { display: none; }
 .cc-info { text-align: center; color: #bb2222; font-size: 13px; min-height: 1em; }
 
 .cc-row { display: flex; align-items: center; gap: 12px; }
-.cc-label { color: #3a2410; font-size: 12px; }
-.cc-slider-row input[type="range"] { flex: 1; }
-.cc-check-row { gap: 10px; }
+.cc-label { color: #fff; font: 900 16px/23px "Arial Black", Arial, sans-serif; }
+/* Native 40px control rows; screenshot 06 labels are inset 8px.
+   The range starts 113px after the body edge (+27+113=140, rwg:19453). */
+.cc-slider-row { display: grid; grid-template-columns: 101px minmax(0, 1fr); gap: 12px; height: 40px; align-items: start; }
+.cc-slider-row .cc-label { margin: 4px 0 0 8px; }
+.cc-range {
+    appearance: none;
+    -webkit-appearance: none;
+    width: calc(100% - 3px); /* 346-54-113-3 = 176, rwg:19453 */
+    height: 35px; /* slider_thumb.png native height */
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: url("assets/slider.png") center / 100% 28px no-repeat;
+    cursor: pointer;
+}
+.cc-range::-webkit-slider-runnable-track { height: 35px; background: transparent; border: 0; }
+.cc-range::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 35px;
+    height: 35px;
+    border: 0;
+    border-radius: 0;
+    background: url("assets/slider_thumb.png") center / contain no-repeat;
+}
+.cc-range::-moz-range-track { height: 35px; background: transparent; border: 0; }
+.cc-range::-moz-range-thumb {
+    width: 35px;
+    height: 35px;
+    border: 0;
+    border-radius: 0;
+    background: url("assets/slider_thumb.png") center / contain no-repeat;
+}
+/* Checkbox source is two native 40x40 cells (unchecked / checked).
+   Keep the actual input for label clicking, keyboard and data-bind callbacks. */
+.cc-check-row { display: flex; align-items: center; gap: 9px; min-height: 40px; }
+.cc-check-row input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: 0 0 40px;
+    width: 40px;
+    height: 40px;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: url("assets/checkbox-off.png") center / 40px 40px no-repeat;
+    cursor: pointer;
+}
+.cc-check-row input[type="checkbox"]:checked { background-image: url("assets/checkbox-on.png"); }
+.cc-check-row input:focus-visible, .cc-slider-row input:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
 
 /* ---- buttons ---- */
-.cc-buttons { display: flex; flex-direction: column; gap: 8px; margin: 0 16px; }
-.cc-buttons-row { flex-direction: row; justify-content: center; }
+.cc-buttons { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; margin: auto -4px 0; }
+.cc-buttons-row { display: flex; flex-direction: row; justify-content: center; gap: 10px; }
+/* DialogButton: FUN_0042149b (rwg:40983), white label + standard art.
+   Native button art: 64x46; 12px caps retain its rounded bevel and shadow.
+   Display height 36px measured in screenshots/04.png and 06.png. */
 .cc-btn {
+    position: relative;
     cursor: pointer;
-    padding: 3px 0;
-    font: inherit;
-    font-size: 18px;
+    min-height: 36px;
+    padding: 3px 12px;
+    font: 900 16px/23px "Arial Black", Arial, sans-serif;
     color: #fff;
-    background: #5AA500;
-    border: 1px solid #3a7a18;
-    border-radius: 8px;
+    background: none;
+    border: 0;
     margin: 0;
-    flex-grow:1;
-    font-weight: bold;
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     text-transform: uppercase;
-
-    background-image: linear-gradient(-180deg, #5cb830 0%, #3a7a18 100%);
-    box-shadow:
-        inset 3px 3px 2px #BDDA9C,
-        0 -0.125rem 0.75rem rgba(58, 122, 24,  1) inset,
-        0 0.375rem 0.125rem rgba(255,255,255, 0.4) inset,
-        0 0.125rem 0.25rem 0 rgba(92, 184, 48, 1) inset,
-
-        inset -2px -2px 2px #315E00,
-
-        2px 2px 1px 1px #000900;
+    isolation: isolate;
 }
-/*.cc-btn:hover { background: #6ccb3a; }*/
-/*.cc-btn:active { transform: translateY(1px); }*/
+.cc-btn::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 12px solid transparent;
+    border-image: url("assets/dialog_btn.png") 0 12 fill / 0 12px stretch;
+    pointer-events: none;
+    z-index: -1;
+}
+.cc-btn:hover::before {
+    border-image-source: url("assets/dialog_btn_over.png");
+}
+.cc-btn:active::before {
+    border-image-source: url("assets/dialog_btn_highlight_over.png");
+}
+.cc-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
 
+/* EditBox FUN_0040f117, rwg:18893: inset 27, width box-55, height 31.
+   FONT_16: resources.xml:56; gray fill and outline sampled in 04.png/09.png. */
 .cc-input {
-    font: inherit;
-    font-size: 22px;
-    padding: 0px 8px;
-    margin: 0 16px;
+    flex-shrink: 0;
+    width: calc(100% - 1px);
+    height: 31px;
+    font: 900 22px/29px "Arial Black", Arial, sans-serif;
+    padding: 0 3px;
+    margin: 0;
     border: 1px solid #000;
     background: #636163;
-    color: #ffffff;
+    color: #fff;
+    caret-color: #000;
     border-radius: 0;
-    font-weight: 900;
     outline: none;
-    -webkit-text-stroke-color: #000000;
-    -webkit-text-stroke-width: 3px;
+    user-select: text;
+    -webkit-text-stroke: 2px #000;
     paint-order: stroke fill;
 }
 
 /* ---- lists (players, shop rows, upgrade slots, bullets) ---- */
 .cc-list { list-style: none; max-height: 220px; overflow-y: auto; background: #fff; border: 1px solid #222; }
-.cc-list-item { padding: 4px 8px; cursor: pointer; color: #1aa0a0; }
-.cc-list-item.cc-selected { background: #c8c8c8; }
+/* List colors: FUN_004028ca, rwg:2669-2686: RGB(50,50,50),
+   selection RGB(128,128,128), text RGB(220,255,255). Row 26px: screenshot 08. */
+.cc-selection-list { background: #323232; border: 1px solid #000; flex-shrink: 0; }
+.cc-list-item { display: flex; align-items: center; justify-content: center; height: 26px; cursor: pointer; color: #dcffff; font: 900 16px/23px "Arial Black", Arial, sans-serif; }
+.cc-list-item.cc-selected { background: #808080; }
 
 .cc-pager { display: flex; align-items: center; justify-content: center; gap: 16px; }
 .cc-page { font-size: 13px; color: #3a1a05; }
-.cc-nav { width: 40px; height: 24px; cursor: pointer; border: 0; background: #5cb830; border-radius: 6px; }
-.cc-nav:disabled { opacity: .4; cursor: default; }
+/* Native PREV/NEXT art, 74x36, source rects FUN_0041c860:34941-34948. */
+.cc-nav { width: 74px; height: 36px; padding: 0; cursor: pointer; border: 0; background: transparent center / 74px 36px no-repeat; }
+.cc-prev { background-image: url("assets/button_prev.png"); }
+.cc-next { background-image: url("assets/button_next.png"); }
+.cc-prev:hover:not(:disabled) { background-image: url("assets/button_prev_over.png"); }
+.cc-next:hover:not(:disabled) { background-image: url("assets/button_next_over.png"); }
+.cc-nav:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.cc-nav:disabled { cursor: default; opacity: 0.55; }
 
 .cc-shop-head { display: flex; justify-content: flex-end; gap: 70px; font-size: 12px; color: #3a1a05; }
 .cc-shop-row, .cc-buy-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
 .cc-age { display: inline-block; width: 60px; height: 12px; background: #5a3010; }
 .cc-age-bar { display: block; height: 100%; background: #5cb830; }
 
-.cc-slots { list-style: none; display: flex; justify-content: space-around; gap: 16px; }
-.cc-slot { cursor: pointer; text-align: center; }
-.cc-slot-icon { width: 98px; height: 97px; object-fit: contain; }
+/* Original preview icons contain their own dark frame (screenshot 25).
+   Native buttons preserve keyboard activation; labels are accessible only. */
+.cc-slots { list-style: none; display: flex; gap: 51px; }
+.cc-slot { display: block; width: 98px; height: 98px; padding: 0; border: 0; background: none; cursor: pointer; }
+.cc-slot-icon { display: block; width: 98px; height: 98px; }
+.cc-slot:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
 .cc-bullets { list-style: none; display: flex; flex-direction: column; gap: 8px; }
-.cc-bullet { display: flex; align-items: center; gap: 8px; }
+/* Screenshots 12/18/21: legend text x=277, native images centered at x=239.
+   Two rows advance by 54px; coin legends wrap while chicken/egg ones fit. */
+.cc-bullet { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 6px; min-height: 54px; align-items: center; }
+.cc-bullet-art { position: relative; display: flex; align-items: center; justify-content: center; height: 54px; }
+.cc-bullet-value { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; font: 900 14px "Arial Black", Arial, sans-serif; color: #37434c; text-shadow: 0 1px #fff0b4; }
+.cc-bullet-text { width: 300px; max-width: 100%; text-align: left; }
 .cc-dot { width: 10px; height: 10px; border-radius: 50%; background: #2f6fd0; }
-.cc-bullet-icon { width: 24px; height: 24px; object-fit: contain; }
+/* Later levels use large pet/enemy cels. Fit them in the same legend cell;
+   the 32px coins and 56px chicken previews retain their original sizes. */
+.cc-bullet-icon { display: block; max-width: 64px; max-height: 64px; object-fit: contain; }
 
 /* ---- images ---- */
-.cc-letter-img { display: block; margin: 0 auto; }     /* native size, not stretched */
-.cc-intro-img { display: block; }                       /* Introduction.jpg, native */
-.cc-buttons-intro { margin-top: 8px; align-items: center; }
+.cc-letter-img, .cc-intro-img { display: block; }
 
 /* ---- two-column time rows (level complete) ---- */
-.cc-times { display: flex; flex-direction: column; gap: 8px; }
-.cc-time-row { display: flex; justify-content: space-between; color: #fff; }
+/* FUN_0040dde4, rwg:17246-17270: right-aligned time, 50px edge inset.
+   User-requested browser font approximates FONT_16 with a CSS stroke.
+   Screenshot 17: glyph tops 184/225/266; native FONT_16 cells are 29px,
+   followed by 12px gaps. Left/right text advances start/end at 200/600. */
+.cc-times { display: flex; flex-direction: column; gap: 12px; margin: -2px 23px 0; }
+.cc-time-row { display: flex; justify-content: space-between; color: #fff; font: 900 22px/29px "Arial Black", Arial, sans-serif; -webkit-text-stroke: 1px #302008; paint-order: stroke fill; white-space: nowrap; }
+.cc-time-row .cc-label { font: inherit; }

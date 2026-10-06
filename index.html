@@ -34,11 +34,11 @@
           <div class="cc-body">
             <label class="cc-row cc-slider-row">
               <span class="cc-label">Music</span>
-              <input type="range" min="0" max="1" step="0.01" data-bind="music">
+              <input class="cc-range" type="range" min="0" max="1" step="0.01" data-bind="music">
             </label>
             <label class="cc-row cc-slider-row">
               <span class="cc-label">Sound FX</span>
-              <input type="range" min="0" max="1" step="0.01" data-bind="sfx">
+              <input class="cc-range" type="range" min="0" max="1" step="0.01" data-bind="sfx">
             </label>
             <label class="cc-row cc-check-row">
               <input type="checkbox" data-bind="fullscreen">
@@ -72,20 +72,13 @@
       </div>
 
       <!-- NEW PLAYER -->
-      <div class="cc-dialog" data-dialog="new-player" hidden
-           onmouseenter="this.children[0].style.opacity=1"
-           onmouseleave="this.children[0].style.opacity=0;">
-        <div style="background-image: url('screenshots/04.png');position: absolute;left:0;top:0;bottom:0;right:0;z-index:100;opacity: 0;pointer-events: none;"></div>
+      <div class="cc-dialog" data-dialog="new-player" hidden>
         <div class="cc-box cc-box-newplayer">
           <div class="cc-plate">
             <h2 class="cc-title">NEW PLAYER</h2>
-            <span class="rivet rivet-tl"></span>
-            <span class="rivet rivet-tr"></span>
-            <span class="rivet rivet-bl"></span>
-            <span class="rivet rivet-br"></span>
           </div>
           <div class="cc-body">
-            <input class="cc-input" type="text" maxlength="15" data-bind="name" placeholder="Player name…">
+            <input class="cc-input" type="text" maxlength="15" data-bind="name" data-autofocus aria-label="Player name" autocomplete="off" spellcheck="false">
             <p class="cc-error" data-bind="error"></p>
             <div class="cc-buttons cc-buttons-row">
               <button class="cc-btn" data-action="ok">OK</button>
@@ -100,14 +93,16 @@
         <div class="cc-box cc-box-changeplayer">
           <div class="cc-plate"><h2 class="cc-title">WHO ARE YOU?</h2></div>
           <div class="cc-body">
-            <ul class="cc-list" data-list="players">
+            <ul class="cc-list cc-selection-list" data-list="players">
               <li class="cc-list-item" data-template data-action="select" hidden>
                 <span data-bind="name"></span>
               </li>
             </ul>
-            <div class="cc-buttons cc-buttons-row">
-              <button class="cc-btn" data-action="new">NEW</button>
-              <button class="cc-btn" data-action="delete">DELETE</button>
+            <div class="cc-buttons">
+              <div class="cc-buttons-row">
+                <button class="cc-btn" data-action="new">NEW</button>
+                <button class="cc-btn" data-action="delete">DELETE</button>
+              </div>
               <button class="cc-btn" data-action="ok">OK</button>
             </div>
           </div>
@@ -136,9 +131,10 @@
           <div class="cc-body">
             <p class="cc-text" data-bind="desc"></p>
             <ul class="cc-slots" data-list="options">
-              <li class="cc-slot" data-template data-action="select" hidden>
-                <img class="cc-slot-icon" alt="">
-                <span class="cc-slot-label"></span>
+              <li data-template hidden>
+                <button class="cc-slot" type="button" data-action="select">
+                  <img class="cc-slot-icon" alt="">
+                </button>
               </li>
             </ul>
           </div>
@@ -147,13 +143,13 @@
 
       <!-- SHOP (sell) -->
       <div class="cc-dialog" data-dialog="shop-sell" hidden>
-        <div class="cc-box cc-box-shop">
+        <div class="cc-box cc-box-shop cc-box-shopsell">
           <div class="cc-plate"><h2 class="cc-title">SHOP</h2></div>
           <div class="cc-body">
             <div class="cc-pager">
-              <button class="cc-nav cc-prev" data-action="prev"></button>
+              <button class="cc-nav cc-prev" data-action="prev" aria-label="Previous page"></button>
               <span class="cc-page" data-bind="page"></span>
-              <button class="cc-nav cc-next" data-action="next"></button>
+              <button class="cc-nav cc-next" data-action="next" aria-label="Next page"></button>
             </div>
             <div class="cc-shop-head"><span>AGE</span><span>PRICE</span></div>
             <ul class="cc-list" data-list="rows">
@@ -172,13 +168,13 @@
 
       <!-- SPECIAL SHOP (buy) -->
       <div class="cc-dialog" data-dialog="shop-buy" hidden>
-        <div class="cc-box cc-box-shop">
+        <div class="cc-box cc-box-shop cc-box-shopbuy">
           <div class="cc-plate"><h2 class="cc-title">SPECIAL SHOP</h2></div>
           <div class="cc-body">
             <div class="cc-pager">
-              <button class="cc-nav cc-prev" data-action="prev"></button>
+              <button class="cc-nav cc-prev" data-action="prev" aria-label="Previous page"></button>
               <span class="cc-page" data-bind="page"></span>
-              <button class="cc-nav cc-next" data-action="next"></button>
+              <button class="cc-nav cc-next" data-action="next" aria-label="Next page"></button>
             </div>
             <ul class="cc-list" data-list="rows">
               <li class="cc-buy-row" data-template hidden>
@@ -216,7 +212,6 @@
           <div class="cc-plate"><h2 class="cc-title">LEVEL FAILED</h2></div>
           <div class="cc-body">
             <p class="cc-text" data-bind="reason"></p>
-            <p class="cc-text">Press main menu or restart</p>
             <div class="cc-buttons cc-buttons-row">
               <button class="cc-btn" data-action="restart">RESTART LEVEL</button>
               <button class="cc-btn" data-action="mainmenu">MAIN MENU</button>
@@ -228,38 +223,39 @@
       <!-- INTRODUCTION — letter page -->
       <div class="cc-dialog" data-dialog="intro-letter" hidden>
         <div class="cc-box cc-box-introletter">
-          <div class="cc-plate"><h2 class="cc-title cc-caption">One day, you receive a letter from your grandparents</h2></div>
+          <div class="cc-plate" aria-hidden="true"></div>
           <div class="cc-body">
-            <img class="cc-letter-img" src="app/images/letter.jpg" alt="Letter from grandparents">
+            <p class="cc-text cc-intro-caption">One day, you receive a letter from your grandparents</p>
+            <img class="cc-letter-img" src="styles/assets/letter.png" alt="Letter from grandparents">
             <div class="cc-buttons"><button class="cc-btn" data-action="next">OK</button></div>
           </div>
         </div>
       </div>
 
-      <!-- INTRODUCTION — panel page (Introduction.jpg is its own framed art) -->
+      <!-- INTRODUCTION — original illustrated panel inside the shared frame -->
       <div class="cc-dialog cc-dialog-bare" data-dialog="intro-panel" hidden>
         <div class="cc-box cc-box-intropanel">
           <img class="cc-intro-img" src="app/images/Introduction.jpg" alt="Introduction">
-          <div class="cc-buttons cc-buttons-intro"><button class="cc-btn" data-action="ok">OK</button></div>
+          <div class="cc-buttons"><button class="cc-btn" data-action="ok">OK</button></div>
         </div>
       </div>
 
       <!-- SELECT LEVEL (overlays the main-menu background) -->
       <div class="cc-dialog cc-dialog-bare" data-dialog="select-level" hidden>
         <div class="cc-box cc-box-selectlevel">
-          <div class="cc-plate cc-plate-green"><h2 class="cc-title" data-bind="level">LEVEL 1</h2></div>
+          <div class="cc-plate"><h2 class="cc-title" data-bind="level">LEVEL 1</h2></div>
           <div class="cc-body">
             <p class="cc-text cc-desc" data-bind="desc"></p>
             <ul class="cc-bullets" data-list="bullets">
               <li class="cc-bullet" data-template hidden>
-                <span class="cc-dot"></span>
-                <img class="cc-bullet-icon" alt="">
-                <span class="cc-bullet-text"></span>
+                <span class="cc-bullet-art"><img class="cc-bullet-icon" alt=""><span class="cc-bullet-value"></span></span>
+                <span class="cc-text cc-bullet-text"></span>
               </li>
             </ul>
             <div class="cc-pager cc-level-nav">
-              <button class="cc-nav cc-prev" data-action="prev"></button>
-              <button class="cc-nav cc-next" data-action="next"></button>
+              <button class="cc-nav cc-prev" data-action="prev" aria-label="Previous level"></button>
+              <input class="cc-range" type="range" min="1" max="50" step="1" data-bind="selectedlevel" aria-label="Level">
+              <button class="cc-nav cc-next" data-action="next" aria-label="Next level"></button>
             </div>
             <div class="cc-buttons"><button class="cc-btn cc-btn-start" data-action="start">START LEVEL</button></div>
           </div>

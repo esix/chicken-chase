@@ -18,7 +18,7 @@ import { IMAGES, SOUNDS } from './Res.js';
 // Static imports for the modal dialogs — eliminates the dynamic-import delay
 // on first open. These modules don't form import cycles with GameView.
 import { OptionsDialog } from './OptionsDialog.js';
-import { UpgradeSelectDialog, UPGRADE_TIERS } from './UpgradeSelectDialog.js';
+import { UpgradeSelectDialog, UPGRADE_TIERS, openUpgradeChoices } from './UpgradeSelectDialog.js';
 import { ShopDialog, SpecialShopDialog } from './ShopDialogs.js';
 import { drawFitText } from './TextUtil.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
@@ -1531,7 +1531,9 @@ export class GameView extends Widget {
     _openFailedHtml() {
         const fc = this.mFieldController;
         HtmlDialogs.open('level-failed', {
-            binds: { reason: fc.mFailReason === 'time' ? 'Time up' : 'You lost all your chickens' },
+            // FUN_0040e0ea, rwg:17418-17427: one body with an explicit newline.
+            binds: { reason: (fc.mFailReason === 'time' ? 'Time up' : 'You lost all your chickens')
+                + '\nPress main menu or restart' },
             actions: {
                 restart: () => { HtmlDialogs.close('level-failed'); this.startLevel(fc.mCurrentLevel); },
                 mainmenu: () => { HtmlDialogs.close('level-failed'); this.mGameApp.showMainMenu(); },
@@ -1545,30 +1547,16 @@ export class GameView extends Widget {
         const core = this.mGameApp.mCore;
         const tier = Math.min(UPGRADE_TIERS.length - 1, Math.floor((fc.mCurrentLevel - 1) / 3));
         const opts = UPGRADE_TIERS[tier] || UPGRADE_TIERS[0];
-        HtmlDialogs.open('upgrade', {
-            binds: { desc: "You've earned enough money for your farm upgrade! Please select, what you would like to improve:" },
-            actions: {
-                select: ({ index }) => {
-                    const opt = opts[index];
-                    if (!opt) return;
-                    if (core && opt.key) {
-                        core.mUpgradesPurchased = core.mUpgradesPurchased || [];
-                        if (!core.mUpgradesPurchased.includes(opt.key)) core.mUpgradesPurchased.push(opt.key);
-                        if (core.save) core.save();
-                    }
-                    if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
-                    this._applyUpgradeEffect(opt.key);
-                    HtmlDialogs.close('upgrade');
-                    if (onComplete) onComplete();
-                },
-            },
-        });
-        HtmlDialogs.fillList('upgrade', 'options', opts, (opt, row) => {
-            const img = IMAGES[opt.iconKey];
-            const iconEl = row.querySelector('.cc-slot-icon');
-            if (iconEl && img && img.mPath) iconEl.src = img.mPath;
-            const lbl = row.querySelector('.cc-slot-label');
-            if (lbl) lbl.textContent = opt.label || '';
+        openUpgradeChoices(opts, opt => {
+            if (core && opt.key) {
+                core.mUpgradesPurchased = core.mUpgradesPurchased || [];
+                if (!core.mUpgradesPurchased.includes(opt.key)) core.mUpgradesPurchased.push(opt.key);
+                if (core.save) core.save();
+            }
+            if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
+            this._applyUpgradeEffect(opt.key);
+            HtmlDialogs.close('upgrade');
+            if (onComplete) onComplete();
         });
     }
 

@@ -36,6 +36,13 @@ function el(name) {
     return root ? root.querySelector(`[data-dialog="${name}"]`) : null;
 }
 
+// Screenshots 09/32: a newly opened modal stays above its parent regardless
+// of index.html source order (New Player is declared before Change Player).
+function syncStack() {
+    let order = 0;
+    for (const { el } of _open.values()) el.style.zIndex = String(++order);
+}
+
 // Read a value into a [data-bind] element.
 function _applyBind(node, value) {
     if (node.tagName === 'INPUT') {
@@ -89,6 +96,7 @@ export const HtmlDialogs = {
         // Wire via event DELEGATION on the dialog root, so rows added later by
         // fillList() are handled too. (idempotent: replace any prior handlers.)
         const prev = _open.get(name);
+        const returnFocus = prev ? prev.returnFocus : document.activeElement;
         if (prev && prev._cleanup) prev._cleanup();
         const listeners = [];
         const add = (target, type, fn) => { target.addEventListener(type, fn); listeners.push([target, type, fn]); };
@@ -115,8 +123,12 @@ export const HtmlDialogs = {
 
         node.hidden = false;
         node.classList.add('cc-open');
-        _open.set(name, { el: node, cfg, _cleanup: () => listeners.forEach(([t, ty, fn]) => t.removeEventListener(ty, fn)) });
+        _open.delete(name); // Reopening a modal brings it to the front.
+        _open.set(name, { el: node, cfg, returnFocus, _cleanup: () => listeners.forEach(([t, ty, fn]) => t.removeEventListener(ty, fn)) });
+        syncStack();
         if (_pauseHook) _pauseHook();
+        // Browser port: each newly shown EditBox receives keyboard focus.
+        node.querySelector('[data-autofocus]')?.focus({ preventScroll: true });
         return node;
     },
 
@@ -157,10 +169,16 @@ export const HtmlDialogs = {
 
     close(name) {
         const rec = _open.get(name);
+        const restoreFocus = rec && rec.el.contains(document.activeElement);
         if (rec) { if (rec._cleanup) rec._cleanup(); _open.delete(name); }
         const node = el(name);
-        if (node) { node.hidden = true; node.classList.remove('cc-open'); }
+        if (node) { node.hidden = true; node.classList.remove('cc-open'); node.style.removeProperty('z-index'); }
+        syncStack();
         if (_pauseHook) _pauseHook();
+        if (restoreFocus && rec.returnFocus?.isConnected
+            && !rec.returnFocus.closest('[hidden]')) {
+            rec.returnFocus.focus({ preventScroll: true });
+        }
     },
 
     closeAll() {

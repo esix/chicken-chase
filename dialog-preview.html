@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Chicken Chase — dialog preview</title>
+  <link rel="stylesheet" href="styles/dialogs.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+    #game-wrap { position: relative; width: 800px; height: 600px; }
+    #gameCanvas { display: block; }
+    #ui-layer { position: absolute; inset: 0; pointer-events: none; }
+    /* Development controls only; outside the native 800x600 game layout. */
+    .preview-tools { position: fixed; top: 12px; right: 12px; z-index: 100; color: #eee; font: 13px/1.4 Arial, sans-serif; }
+    .preview-tools summary { padding: 7px 10px; border: 1px solid #555; border-radius: 5px; background: #222; cursor: pointer; }
+    .preview-tools form { width: 280px; margin-top: 6px; padding: 12px; background: #222; border: 1px solid #555; border-radius: 5px; display: flex; flex-direction: column; gap: 10px; }
+    .preview-tools label { display: flex; flex-direction: column; gap: 4px; }
+    .preview-tools select, .preview-tools input, .preview-tools button { font: inherit; padding: 6px; border: 1px solid #777; border-radius: 3px; }
+    .preview-tools button { cursor: pointer; }
+    .preview-tools [hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <details class="preview-tools">
+    <summary>Диалоги</summary>
+    <form id="preview-picker">
+      <label>Окно <select name="dialog" aria-label="Диалог"></select></label>
+      <label id="preview-level-row" hidden>Номер уровня <input name="level" type="number" min="1" max="50" step="1" value="1"></label>
+      <label id="preview-hint-row" hidden>Подсказка <select name="hint" aria-label="Подсказка"></select></label>
+      <button type="submit">Показать заново</button>
+      <small>Предпросмотр использует отдельные данные и не меняет сохранения игры.</small>
+    </form>
+  </details>
+  <script type="module" src="src/DialogPreview.js"></script>
+</body>
+</html>

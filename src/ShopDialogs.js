@@ -45,6 +45,20 @@ function sellPrice(chickType, isJuvenile) {
 const SHOP_BOX = { x: 200, y: 25, w: 400, h: 550 };
 const SPECIAL_BOX = { x: 150, y: 25, w: 500, h: 550 };
 
+// HTML icons use the already composited resource and one native cel, including
+// its alpha mask. Resource objects do not provide the former mPath property.
+const htmlIconCache = new WeakMap();
+function htmlIconSource(resource) {
+    if (!resource?.img) return '';
+    if (!htmlIconCache.has(resource)) {
+        const cel = document.createElement('canvas');
+        cel.width = resource.getCelWidth(); cel.height = resource.getCelHeight();
+        cel.getContext('2d').drawImage(resource.img, 0, 0, cel.width, cel.height, 0, 0, cel.width, cel.height);
+        htmlIconCache.set(resource, cel.toDataURL());
+    }
+    return htmlIconCache.get(resource);
+}
+
 export class ShopDialog {
     // SELL UI. Title "SHOP", 10 chickens per page, button per row "SELL".
     constructor(fieldController, onClose) {
@@ -92,8 +106,13 @@ export class ShopDialog {
         this._visible = all.slice(this.mPage * 10, this.mPage * 10 + 10);
         HtmlDialogs.set('shop-sell', 'page', `${this.mPage + 1} / ${maxPage}`);
         HtmlDialogs.set('shop-sell', 'info', (this.mInfoText && this.mInfoTimer > 0) ? this.mInfoText : '');
+        const dialog = document.querySelector('[data-dialog="shop-sell"]');
+        // Original pagination boundaries; keep keyboard-visible native buttons.
+        dialog.querySelector('[data-action="prev"]').disabled = this.mPage === 0;
+        dialog.querySelector('[data-action="next"]').disabled = this.mPage === maxPage - 1;
         HtmlDialogs.fillList('shop-sell', 'rows', this._visible, (c, row) => {
             const isJuv = !c.mIsAdult;
+            row.dataset.juvenile = String(isJuv);
             const t = row.querySelector('.cc-cell-type'); if (t) t.textContent = TYPE_NAMES[c.mType] || '?';
             const p = row.querySelector('.cc-cell-price'); if (p) p.textContent = '$' + sellPrice(c.mType, isJuv);
             const bar = row.querySelector('.cc-age-bar');
@@ -424,6 +443,9 @@ export class SpecialShopDialog {
             'IMAGE_CHICK_PREVIEW_ROOSTER', 'IMAGE_CHICK_PREVIEW_MAGIC', 'IMAGE_CHICK_PREVIEW_HOLY'];
         HtmlDialogs.set('shop-buy', 'page', `${this.mPage + 1} / ${maxPage}`);
         HtmlDialogs.set('shop-buy', 'info', (this.mInfoText && this.mInfoTimer > 0) ? this.mInfoText : '');
+        const dialog = document.querySelector('[data-dialog="shop-buy"]');
+        dialog.querySelector('[data-action="prev"]').disabled = this.mPage === 0;
+        dialog.querySelector('[data-action="next"]').disabled = this.mPage === maxPage - 1;
         HtmlDialogs.fillList('shop-buy', 'rows', this._visible, (type, row) => {
             const isPet = type === PET_MOUSE || type === PET_ELEPHANT;
             let imgKey;
@@ -431,7 +453,7 @@ export class SpecialShopDialog {
             else if (type === PET_ELEPHANT) imgKey = 'IMAGE_OFFENSIVE_ELEPHANT';
             else imgKey = previewKeys[type];
             const img = IMAGES[imgKey];
-            const ic = row.querySelector('.cc-buy-icon'); if (ic && img && img.mPath) ic.src = img.mPath;
+            const ic = row.querySelector('.cc-buy-icon'); if (ic) ic.src = htmlIconSource(img);
             const nm = row.querySelector('.cc-buy-name'); if (nm) nm.textContent = isPet ? PET_NAMES[type] : TYPE_NAMES[type];
             const price = this._priceFor(type);
             const pr = row.querySelector('.cc-buy-price'); if (pr) pr.textContent = price < 1 ? 'FREE' : '$' + price;

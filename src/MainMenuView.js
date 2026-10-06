@@ -11,6 +11,7 @@ import { NewPlayerDialog } from './PlayerDialogs.js';
 import { getLevelDescription } from './LevelData.js';
 import { drawFitText } from './TextUtil.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
+import { getTintedEggCel } from './Gem.js';
 
 const BTN_START = 1;       // ID 1 → start game (rwg_functions.c:18089)
 const BTN_OPTIONS = 2;     // ID 2 → OptionsDialog (line 18098)
@@ -25,15 +26,19 @@ const BTN_CREDITS = 5;     // dynamic ID, opens credits dialog id 1000
 function _getLevelBullets(level) {
     const bullets = [];
     if (level === 1) {
-        bullets.push({ iconKey: 'IMAGE_COIN_SILVER',
-            text: 'silver coins can be found by young chicken' });
-        bullets.push({ iconKey: 'IMAGE_COIN_GOLD',
-            text: 'golden coins can be found by grown up chicken' });
-    } else if (level === 2 || level === 3) {
+        bullets.push({ iconKey: 'IMAGE_COIN_SILVER', frame: 6, value: '20',
+            text: 'silver coins can be found by young chicken.' });
+        bullets.push({ iconKey: 'IMAGE_COIN_GOLD', frame: 6, value: '30',
+            text: 'golden coins can be found by grown up chicken.' });
+    } else if (level === 2) {
+        // Screenshot 18: white and broody (deep blue) eggs, not chicken previews.
+        bullets.push({ iconKey: 'IMAGE_EGG', text: 'hatches into layer chicken.' });
+        bullets.push({ iconKey: 'IMAGE_EGG', eggType: 4, text: 'hatches into broody chicken.' });
+    } else if (level === 3) {
         bullets.push({ iconKey: 'IMAGE_CHICK_PREVIEW_LAYER',
-            text: 'layer chicken, lays eggs' });
+            text: 'layer chicken, lays eggs.' });
         bullets.push({ iconKey: 'IMAGE_CHICK_PREVIEW_BROODY',
-            text: 'broody chicken, hatches eggs' });
+            text: 'broody chicken, hatches eggs.' });
     } else if (level === 4 || level === 5) {
         bullets.push({ iconKey: 'IMAGE_ALIEN_DOWN',
             text: 'raven, can steal your chickens' });
@@ -179,27 +184,28 @@ export class MainMenuView extends Widget {
             g.ctx.drawImage(logo.img, 800 - lw - 10, 0);
         }
 
-        // "Change player" link below the welcome text. Underlined to look clickable.
+        // Screenshot 06: white text with a black outline, like Welcome.
+        // Keep browser-rendered text; 14px bold is an approximation of FONT_12.
         // Hover color = green RGB(0, 0xff, 0) per rwg_functions.c:18001-18007.
         const cpColor = this._changePlayerHover ? '#0f0' : '#fff';
+        g.ctx.save();
         g.ctx.fillStyle = cpColor;
-        g.ctx.font = '13px Arial, sans-serif';
+        g.ctx.font = 'bold 14px Arial, sans-serif';
         const cpText = 'Change player';
-        const cpX = this._changePlayerRect.x + 4;
+        const cpX = this._changePlayerRect.x + 16; // screenshots/06.png: left ink at x=16
         const cpY = this._changePlayerRect.y + 18;
+        g.ctx.strokeStyle = '#000';
+        g.ctx.lineWidth = 2;
+        g.ctx.lineJoin = 'round';
+        g.ctx.strokeText(cpText, cpX, cpY);
         g.ctx.fillText(cpText, cpX, cpY);
-        // Underline so it visually reads as a link
-        const cpW = g.ctx.measureText(cpText).width;
-        g.ctx.strokeStyle = cpColor;
-        g.ctx.lineWidth = 1;
-        g.ctx.beginPath();
-        g.ctx.moveTo(cpX, cpY + 2);
-        g.ctx.lineTo(cpX + cpW, cpY + 2);
-        g.ctx.stroke();
+        g.ctx.restore();
 
         // "Credits" link (top-right)
         const crColor = this._creditsHover ? '#0f0' : '#fff';
         g.ctx.fillStyle = crColor;
+        g.ctx.font = '13px Arial, sans-serif';
+        g.ctx.lineWidth = 1;
         g.ctx.textAlign = 'right';
         const crText = 'Credits';
         const crRightX = this._creditsRect.x + this._creditsRect.w - 4;
@@ -300,6 +306,11 @@ export class SelectLevelView extends Widget {
     // Open + drive the HTML 'select-level' dialog over the main-menu background.
     openHtml() {
         HtmlDialogs.open('select-level', {
+            onBind: { selectedlevel: value => {
+                // FUN_0041c907:34968-34979 clamps the slider to unlocked levels.
+                this.mSelectedLevel = Math.max(1, Math.min(Math.round(value), this.mMaxLevel, 50));
+                this._renderHtml();
+            } },
             actions: {
                 prev: () => { if (this.mSelectedLevel > 1) { this.mSelectedLevel--; this._renderHtml(); } },
                 next: () => {
@@ -314,19 +325,37 @@ export class SelectLevelView extends Widget {
 
     _renderHtml() {
         HtmlDialogs.set('select-level', 'level', `LEVEL ${this.mSelectedLevel}`);
+        HtmlDialogs.set('select-level', 'selectedlevel', this.mSelectedLevel);
         HtmlDialogs.set('select-level', 'desc', getLevelDescription(this.mSelectedLevel));
         HtmlDialogs.fillList('select-level', 'bullets', _getLevelBullets(this.mSelectedLevel), (b, row) => {
             const ic = row.querySelector('.cc-bullet-icon');
             const img = b.iconKey ? IMAGES[b.iconKey] : null;
             if (ic) {
-                if (img && img.mPath) { ic.src = img.mPath; ic.style.display = ''; }
+                if (img?.img) {
+                    // Use composited alpha and a single native cel, not the full
+                    // sprite sheet. Screenshot 12 coin face is the full-size cel.
+                    const width = img.getCelWidth(), height = img.getCelHeight();
+                    const cel = document.createElement('canvas');
+                    cel.width = width; cel.height = height;
+                    const tinted = b.eggType ? getTintedEggCel(img, b.frame || 0, b.eggType) : null;
+                    cel.getContext('2d').drawImage(tinted || img.img,
+                        tinted ? 0 : (b.frame || 0) * width, 0, width, height, 0, 0, width, height);
+                    ic.src = cel.toDataURL();
+                    // User-reported level 27 overflow: large enemy/pet cels fit
+                    // the legend. Native 64px eggs and smaller previews stay 1:1.
+                    const scale = width > 64 || height > 64 ? Math.min(64 / width, 56 / height) : 1;
+                    ic.style.width = `${width * scale}px`; ic.style.height = `${height * scale}px`;
+                    ic.style.display = '';
+                }
                 else ic.style.display = 'none';
             }
+            row.querySelector('.cc-bullet-value').textContent = b.value || '';
             const t = row.querySelector('.cc-bullet-text');
-            if (t) t.textContent = b.text;
+            if (t) t.textContent = '- ' + b.text;
         });
         const root = document.querySelector('[data-dialog="select-level"]');
         if (root) {
+            root.querySelector('.cc-box').dataset.level = String(this.mSelectedLevel);
             const max = Math.min(this.mMaxLevel, 50);
             const p = root.querySelector('.cc-prev'); if (p) p.disabled = this.mSelectedLevel <= 1;
             const n = root.querySelector('.cc-next'); if (n) n.disabled = this.mSelectedLevel >= max;

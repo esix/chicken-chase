@@ -22,7 +22,9 @@ function makeProfile(name) {
 }
 
 export class Core {
-    constructor() {
+    // Browser adapter defaults to the real save; previews inject isolated storage.
+    constructor({ storage = localStorage } = {}) {
+        this.mStorage = storage;
         this.mPlayers = [];          // list of profiles (App's offset 0x16c)
         this.mCurrentName = null;    // current-player name (offset 0x10 indirection)
         // Active fields (point to current profile's data — kept for legacy callers)
@@ -81,7 +83,7 @@ export class Core {
         this.mDisabledHints = p.disabledHints || [];
         this.mSoundVolume = p.soundVolume ?? 0.7;
         this.mMusicVolume = p.musicVolume ?? 0.5;
-        localStorage.setItem(STORAGE_KEY_CURRENT, name);
+        this.mStorage.setItem(STORAGE_KEY_CURRENT, name);
         return true;
     }
 
@@ -119,15 +121,15 @@ export class Core {
                 p.musicVolume = this.mMusicVolume;
             }
         }
-        localStorage.setItem(STORAGE_KEY_LIST, JSON.stringify(this.mPlayers));
+        this.mStorage.setItem(STORAGE_KEY_LIST, JSON.stringify(this.mPlayers));
     }
 
     load() {
         try {
-            const raw = localStorage.getItem(STORAGE_KEY_LIST);
+            const raw = this.mStorage.getItem(STORAGE_KEY_LIST);
             if (raw) this.mPlayers = JSON.parse(raw) || [];
         } catch { this.mPlayers = []; }
-        const cur = localStorage.getItem(STORAGE_KEY_CURRENT);
+        const cur = this.mStorage.getItem(STORAGE_KEY_CURRENT);
         if (cur && this._findPlayer(cur)) {
             this.selectPlayer(cur);
         } else {
@@ -136,7 +138,7 @@ export class Core {
 
         // Migrate old single-player save (cc_core) into a profile if no list yet
         if (this.mPlayers.length === 0) {
-            const oldRaw = localStorage.getItem('cc_core');
+            const oldRaw = this.mStorage.getItem('cc_core');
             if (oldRaw) {
                 try {
                     const data = JSON.parse(oldRaw);
@@ -147,7 +149,7 @@ export class Core {
                         this.mPlayers.push(p);
                         this.selectPlayer(p.name);
                         this.save();
-                        localStorage.removeItem('cc_core');
+                        this.mStorage.removeItem('cc_core');
                     }
                 } catch { /* ignore */ }
             }
