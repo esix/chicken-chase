@@ -25,7 +25,7 @@
 //   _DAT_004e90f8 (double) = 0.015   diamond timer increment per tick
 //
 // Coordinates: the original stores gems in field units and projects them with
-// FUN_00409567 (screen = (6*fx + 10, 2.8*fy - 6*fz + 367)). The JS port keeps
+// FUN_00409567 (screen = (6*fx + 10, 2.8f*fy - 6*fz + 367)). The JS port keeps
 // every ground entity in screen pixels, so mX/mY here are the already
 // projected screen point of the gem's field position.
 
@@ -125,9 +125,16 @@ export class Gem {
         this.mIsAlive = true;           // JS: list membership (Update() result)
     }
 
-    // Field position (+0x0c/+0x10) — inverse projection FUN_00409533.
-    get mFieldX() { return (this.mX - 10) / 6.0; }
-    get mFieldY() { return (this.mY - 367) / 2.8; }
+    // Field position (+0x0c/+0x10). Field.spawnGem/spawnEgg store the exact
+    // float position of the spawning chick (setFieldPos); otherwise the
+    // inverse projection FUN_00409533 (float results; _DAT_004fc3f8 = 2.8f).
+    setFieldPos(p) { this._fieldPos = p ? [p[0], p[1]] : null; }
+    get mFieldX() {
+        return this._fieldPos ? this._fieldPos[0] : Math.fround((this.mX - 10) / 6.0);
+    }
+    get mFieldY() {
+        return this._fieldPos ? this._fieldPos[1] : Math.fround((this.mY - 367) / Math.fround(2.8));
+    }
 
     // Base Sexy::Gem slot [1] is FUN_004a2016 (purecall) — subclasses override.
     update() {}
@@ -281,8 +288,8 @@ export class CoinSilver extends Gem {
         return 0x14;
     }
 
-    // FUN_0040c2fe (rwg_functions.c:14912): 1.0 - timer
-    getProgress() { return 1.0 - this.mTimer; }
+    // FUN_0040c2fe (rwg_functions.c:14912, asm 0x40c2fe): fstps(1.0 - timer)
+    getProgress() { return Math.fround(1.0 - this.mTimer); }
 
     getImage() { return IMAGES.IMAGE_COIN_SILVER; }
 
@@ -310,8 +317,8 @@ export class CoinGold extends Gem {
         return 0x1e;
     }
 
-    // FUN_0040c2fe (rwg_functions.c:14912): 1.0 - timer
-    getProgress() { return 1.0 - this.mTimer; }
+    // FUN_0040c2fe (rwg_functions.c:14912, asm 0x40c2fe): fstps(1.0 - timer)
+    getProgress() { return Math.fround(1.0 - this.mTimer); }
 
     getImage() { return IMAGES.IMAGE_COIN_GOLD; }
 

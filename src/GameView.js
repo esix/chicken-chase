@@ -61,6 +61,11 @@ export class GameView extends Widget {
         super();
         this.mGameApp = gameApp;
         this.mFieldController = new FieldController(gameApp);
+        // Level update FUN_00421b21 runs last in the tick (rwg:7479) — after
+        // the hand tick — and MENU/SELL/BUY are child widgets drawn after
+        // GameView::Draw, i.e. over the hint bar and GAME PAUSED.
+        this.mFieldController.mDeferTaskCheck = true;
+        this.mFieldController.mDeferHudButtons = true;
         this.mHand = new Hand();
         this.mRiskController = new RiskController();
         this.mHintController = new HintController(gameApp && gameApp.mCore);
@@ -97,8 +102,24 @@ export class GameView extends Widget {
         // -> listener vtable[2] = FUN_0040bcc4). Button id pressed, or -1.
         this._pressedButton = -1;
 
-        // Right-button flag DAT_004fff01 (FUN_0040bd72 rwg:14144-14146).
+        // Left-button flag DAT_004fff00 (FUN_0040bd72 rwg:14140-14142,
+        // FUN_0040be11) and right-button flag DAT_004fff01 (rwg:14144-14146,
+        // FUN_0040be50). Both are polled: the left edge by FUN_004093d9 with
+        // the latch GameView+0xbc (rwg:11869-11883) and by the hand tick
+        // FUN_0040cc71 with the latch Hand+8 (rwg:15893-15902).
+        this.mMouseLeftDown = false;
         this.mMouseRightDown = false;
+        this.mPollLeftLatch = false;   // GameView +0xbc
+        this.mHandLeftLatch = false;   // Hand +0x08
+        // MouseUp reaches the widget that got the MouseDown (GameView) even
+        // when the button is released elsewhere; the canvas only sees ups
+        // over itself, so clear the flags from a window listener too.
+        if (typeof window !== 'undefined' && window.addEventListener) {
+            window.addEventListener('mouseup', (e) => {
+                if (e.button === 0) this.mMouseLeftDown = false;
+                if (e.button === 1 || e.button === 2) this.mMouseRightDown = false;
+            });
+        }
         // Hand controller tick (+0xc) and last-action tick (+0x10) used by the
         // right-hold repeat in FUN_0040cc71 (rwg:15890, 15900-15917).
         this.mHandTick = 0;
@@ -123,7 +144,10 @@ export class GameView extends Widget {
         this.mPendingButton = -1;
         this._pressedButton = -1;
         this.mPauseTextShown = false;
+        this.mMouseLeftDown = false;
         this.mMouseRightDown = false;
+        this.mPollLeftLatch = false;
+        this.mHandLeftLatch = false;
         this.mHandTick = 0;
         this.mHandLastActionTick = 0;
         this._endShown = false;
@@ -168,9 +192,6 @@ export class GameView extends Widget {
         // after the HUD, before GAME PAUSED. No background is drawn there.
         this.mHintController.draw(g);
 
-        // Money pop-up texts (FUN_0040693f money effect, FieldController).
-        this.mFieldController.drawFloatingTexts(g);
-
         const anyModal = (this.mHintController && this.mHintController.isShown())
             || HtmlDialogs.isOpen();
 
@@ -194,23 +215,36 @@ export class GameView extends Widget {
             ctx.restore();
         }
 
-        // Hand cursor last (on top) when no modal is up and the cursor is over
-        // the field. Framework substitute for the Sexy custom cursor.
+        // MENU/SELL/BUY child widgets: drawn after GameView::Draw (Widget
+        // children paint after their parent), over the hint bar and GAME PAUSED.
+        this.mFieldController.drawHudButtons(g);
+
+        // Cursor. The hand image is the app's CURSOR_POINTER image
+        // (FUN_0040cc01 -> FUN_004422b3: app[0xde] = app+0x378 = slot 0 of
+        // the cursor-image table read by EnforceCursor FUN_00448cbe), drawn by
+        // the software cursor wherever the pointer cursor is active — over the
+        // whole GameView, HUD included. Over the MENU/SELL/BUY DialogButtons
+        // (mDoFinger, FUN_0043e9f1 writes +0x78 = 1) the cursor is CURSOR_HAND,
+        // whose image slot is empty -> system finger cursor. HTML dialogs own
+        // their cursor.
         const modalShown = anyModal
             || this.mFieldController.mIsLevelComplete
             || this.mFieldController.mIsLevelFailed;
-        const overField = this.mHand.isOverField();
-        if (!modalShown && overField) {
+        const overButton = this._buttonAt(this.mHand.mX, this.mHand.mY) !== -1;
+        if (!modalShown && !overButton) {
             this.mHand.draw(g);
         }
         if (this.mGameApp && this.mGameApp.mCanvas) {
-            this.mGameApp.mCanvas.style.cursor = (modalShown || !overField) ? 'default' : 'none';
+            this.mGameApp.mCanvas.style.cursor = modalShown ? 'default'
+                : overButton ? 'pointer' : 'none';
         }
     }
 
     // FUN_00409372 (rwg_functions.c:11804) GameView::Update
-    //   parent Update; MarkDirty; controller->Update() (+0xb8 vtable[0]);
-    //   FUN_004093d9 (input poll, pending button); FUN_004091b8 (dog tick).
+    //   parent Update; MarkDirty; controller->Update() (+0xb8 vtable[0] =
+    //   the game tick FUN_00405fcf); FUN_004093d9 (input poll: left-click
+    //   HUD chain, pending button, keys); FUN_004091b8 (dog tick, every
+    //   Update — paused or not).
     update() {
         // Pause the field while an HTML / hint modal is displayed. The original
         // dialog openers set state+4 = 1 and +0xd = 0 and call FUN_004090b9
@@ -231,8 +265,7 @@ export class GameView extends Widget {
             fc.mIsPaused = false;
         }
 
-        // Game tick FUN_00405fcf (rwg:7464-7480) runs only when state+4 == 0;
-        // FieldController.update covers ravens/field/seeds/eggs/gems/inflation.
+        // ---- game tick FUN_00405fcf (rwg:7464-7480), only when state+4 == 0 ----
         const running = !fc.mIsPaused && !fc.mIsLevelComplete && !fc.mIsLevelFailed;
         // FUN_00421948 computes the LevelCompleted "upgrade" flag BEFORE the
         // time is recorded (FUN_0041111b @0x4219d6), which FieldController
@@ -240,48 +273,20 @@ export class GameView extends Widget {
         const maxUnlockedBefore = (this.mGameApp && this.mGameApp.getMaxUnlocked)
             ? this.mGameApp.getMaxUnlocked() : 1;
         const level = fc.mCurrentLevel;
+        const dog = fc.mField && fc.mField.mDog;
+        const dogTimer = dog ? dog.mTimer : 0, dogState = dog ? dog.mState : 0;
+        // ravens, world, seeds, eggs, gems, store, money effects, pets
         fc.update();
         if (running) {
             // FUN_0040d281 hint bar tick (rwg:7472).
             this.mHintController.update();
-        }
-
-        // Open the HTML level-end dialog once when the flag first trips.
-        if (fc.mIsLevelComplete) {
-            if (!this._endShown) {
-                this._endShown = true;
-                this._offersUpgrade = !!(this.mGameApp && this.mGameApp.levelOffersUpgrade
-                    && this.mGameApp.levelOffersUpgrade(level, maxUnlockedBefore));
-                this._openCompleteHtml();
-            }
-        } else if (fc.mIsLevelFailed) {
-            if (!this._endShown) { this._endShown = true; this._openFailedHtml(); }
-        } else {
-            this._endShown = false;
-        }
-        // Risk cooldown tick — RiskController FUN_0041b901 (rwg:7477).
-        if (running) {
+            // Risk cooldown tick — RiskController FUN_0041b901 (rwg:7477).
             this.mRiskController.update();
+            // Hand controller FUN_0040cc71 (rwg:7478): hover + click dispatch.
+            this._handTick();
         }
-
-        // Mirror the ready flag onto FieldController for HUD draw
-        // (risk icon shown when risk+9 != 0, rwg:13899).
-        fc.mRiskReady = this.mRiskController.isReady();
-        fc.mRiskController = this.mRiskController; // icon cel phase (+0x10)
-        super.update();
-
-        // FUN_004093d9 rwg:11947-11950: a pending button id is executed via
-        // FUN_0040bce7 on the next Update, then +0xc0 = -1.
-        if (this.mPendingButton !== -1) {
-            const id = this.mPendingButton;
-            this.mPendingButton = -1;
-            this._doButtonAction(id);
-        }
-
-        // Hand controller FUN_0040cc71 (rwg:15848), called only from the
-        // unpaused game update (rwg:7476), before the level update.
-        if (running) this._handTick();
-
+        // FUN_00421b21 task progress + level end (rwg:7479), after the hand.
+        if (running) fc.runLevelUpdate();
         // Level update FUN_00421b21 (rwg:7479, last in the tick): while a task
         // is open and the level is not lost it runs the tutorial dispatcher
         // FUN_00422036 (rwg:41522-41530). FieldController._checkTasks covers
@@ -297,22 +302,139 @@ export class GameView extends Widget {
                     && fc.getSpecialShopItems().length > 0,
             });
         }
+
+        // Open the HTML level-end dialog once when the flag first trips.
+        if (fc.mIsLevelComplete) {
+            if (!this._endShown) {
+                this._endShown = true;
+                this._offersUpgrade = !!(this.mGameApp && this.mGameApp.levelOffersUpgrade
+                    && this.mGameApp.levelOffersUpgrade(level, maxUnlockedBefore));
+                this._openCompleteHtml();
+            }
+        } else if (fc.mIsLevelFailed) {
+            if (!this._endShown) { this._endShown = true; this._openFailedHtml(); }
+        } else {
+            this._endShown = false;
+        }
+
+        // Mirror the ready flag onto FieldController for HUD draw
+        // (risk icon shown when risk+9 != 0, rwg:13899).
+        fc.mRiskReady = this.mRiskController.isReady();
+        fc.mRiskController = this.mRiskController; // icon cel phase (+0x10)
+        super.update();
+
+        // ---- input poll FUN_004093d9 (rwg:11869-11950), paused or not ----
+        this._inputPoll();
+
+        // Dog tick FUN_004091b8 (rwg:11815), every GameView Update. Field.update
+        // also ticks the dog while the field runs; tick it here only when
+        // Field.update did not (its timer always changes when ticked).
+        if (dog && dog.mTimer === dogTimer && dog.mState === dogState) dog.update();
     }
 
-    // Hover / right-hold part of the Hand controller FUN_0040cc71
-    // (rwg:15848-16220). The left-click "fire" part is FieldController.handleClick,
-    // called from mouseDown.
+    // FUN_004093d9 (rwg:11869-11883 / 11947-11950). The left flag edge
+    // (latch +0xbc) runs FUN_00409ba0 shop slots -> else FUN_00409c92 egg row
+    // -> else FUN_00409c38 risk icon; then a pending button id (+0xc0) is run
+    // via FUN_0040bce7 and reset to -1. (The key part is event-driven in
+    // keyDown below.)
+    _inputPoll() {
+        if (!this.mMouseLeftDown) {
+            this.mPollLeftLatch = false;
+        } else if (!this.mPollLeftLatch) {
+            this.mPollLeftLatch = true;
+            // FUN_0040be6f: current mouse position.
+            const x = this.mHand.mX, y = this.mHand.mY;
+            if (!this._clickShopSlot(x, y) && !this._clickEggRow(x, y)) {
+                this._clickRiskIcon(x, y);
+            }
+        }
+        if (this.mPendingButton !== -1) {
+            const id = this.mPendingButton;
+            this.mPendingButton = -1;
+            this._doButtonAction(id);
+        }
+    }
+
+    // FUN_00409ba0 (rwg:12469, asm 0x409ba0-0x409c36) shop slots: for
+    // i < slot-vector size (store+8, FUN_0040bfa0): rect = slot image
+    // DAT_004fff88 (IMAGE_SHOP_SLOT_OPEN, 80x81) w x h at (w*i, 0);
+    // FUN_0041e8f5 buys; on success (al != 0) THIS function plays
+    // SOUND_CHICK_BUY (DAT_004fed80, asm 0x409c16-0x409c2e). Handled either
+    // way. The vector always has 5 entries (FUN_0041e7f2 ctor loop,
+    // rwg_functions.c:37640-37660).
+    _clickShopSlot(x, y) {
+        const fc = this.mFieldController;
+        const img = IMAGES.IMAGE_SHOP_SLOT_OPEN;
+        const w = (img && img.mWidth > 1) ? img.mWidth : 80;
+        const h = (img && img.mHeight > 1) ? img.mHeight : 81;
+        const n = Array.isArray(fc.mBuySlots) ? fc.mBuySlots.length : 5;
+        for (let i = 0; i < n; i++) {
+            if (rectContains({ x: w * i, y: 0, w, h }, x, y)) {
+                if (fc.buyChick(i) && SOUNDS.SOUND_CHICK_BUY) SOUNDS.SOUND_CHICK_BUY.play();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // FUN_00409c92 (rwg:12552, asm 0x409c92-0x409d59) egg row: first slot
+    // FUN_00409ab2(i) containing the point -> FUN_00406e6a toggles brooding
+    // for that egg, then SOUND_EGG_REF (DAT_004fed78, asm 0x409d3e) — played
+    // by FieldController.startEggBrooding.
+    _clickEggRow(x, y) {
+        const eggs = this._getEggRow();
+        for (let i = 0; i < eggs.length; i++) {
+            if (rectContains(this._eggSlotRect(i), x, y)) {
+                this.mFieldController.startEggBrooding(eggs[i]);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // FUN_00409c38 (rwg:12514, asm 0x409c38-0x409c91) risk icon: needs risk+9
+    // (ready); rect = FUN_00409af0; plays SOUND_CLICK (DAT_004fed84) then
+    // FUN_0041b94a (rwg:33659): pause + "SURPRISE!" HTML dialog(s); the case
+    // is applied when the result dialog's OK is pressed (FUN_0041b9cf
+    // rwg:33746-33751). See SurpriseDialog.js.
+    _clickRiskIcon(x, y) {
+        const fc = this.mFieldController;
+        if (this.mRiskController.isReady() && fc._riskIconRect
+            && rectContains(fc._riskIconRect, x, y)) {
+            if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
+            this._openSurprise();
+            return true;
+        }
+        return false;
+    }
+
+    // Hand controller FUN_0040cc71 (rwg:15848-16220, asm 0x40cc71-0x40d240),
+    // ticked from the unpaused game update (rwg:7478).
     _handTick() {
         const fc = this.mFieldController;
         const x = this.mHand.mX, y = this.mHand.mY;
         // rwg:15890: tick (+0xc) += 1 every call.
         this.mHandTick++;
-        // rwg:15904-15917: right flag DAT_004fff01 held (and no left edge):
-        // fire when last(+0x10) + 0x14 < tick, then last = tick.
-        let rightFire = false;
-        if (this.mMouseRightDown && this.mHandLastActionTick + 0x14 < this.mHandTick) {
+        // rwg:15893-15902: left flag DAT_004fff00; latch +8 cleared while it
+        // is up; on the edge: latch = 1, fire, repeat-ok, last (+0x10) = tick.
+        let fire = false, right = false, repeatOk = false;
+        if (!this.mMouseLeftDown) this.mHandLeftLatch = false;
+        if (this.mMouseLeftDown && !this.mHandLeftLatch) {
+            this.mHandLeftLatch = true;
+            fire = true;
+            repeatOk = true;
             this.mHandLastActionTick = this.mHandTick;
-            rightFire = true;
+        }
+        // rwg:15904-15917: only without a left edge: right flag DAT_004fff01
+        // held -> fire (right); repeat-ok when last + 0x14 < tick (then
+        // last = tick).
+        if (!fire && this.mMouseRightDown) {
+            fire = true;
+            right = true;
+            if (this.mHandLastActionTick + 0x14 < this.mHandTick) {
+                this.mHandLastActionTick = this.mHandTick;
+                repeatOk = true;
+            }
         }
 
         // asm 0x40cd04-0x40cd08: FUN_0040cc01(hand, 0) — mode reset to seeds
@@ -360,7 +482,7 @@ export class GameView extends Widget {
         // -> FUN_0040cc01(1) (cure).
         if (mode === HandMode.SEEDS) {
             for (const c of fc.mField.mChickens) {
-                if (c.mIsAlive && c.mIsSick) {
+                if (!c.mRemoved && c.mIsSick) {
                     const r = c.getRect();
                     if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
                         mode = HandMode.CURE;
@@ -371,9 +493,20 @@ export class GameView extends Widget {
         }
         this.mHand.setMode(mode);
 
-        // rwg:16164-16180: right-hold fire drops seeds only in mode 0 and
+        // LAB_0040d05a (rwg:16096-16180): no fire -> done.
+        if (!fire) return;
+        if (!right) {
+            // Left edge: mode 2 -> shoot the raven / wolf; mode 1 -> gem
+            // FUN_0040c6a5 else cure FUN_0040490a; mode 0 -> gem FUN_0040c6a5,
+            // else egg FUN_004072fa, else seeds FUN_0041bfe2 when y >= 0x15f
+            // (repeat-ok is always set on a left edge). No y gate besides
+            // those inside the dispatch (FieldController.handleClick).
+            fc.handleClick(x, y, this.mHand.getModeString());
+            return;
+        }
+        // Right hold (rwg:16164-16180): seeds only, mode 0, repeat-ok and
         // y >= 0x15f (checked inside dropSeedsAt) via FUN_0041bfe2.
-        if (rightFire && mode === HandMode.SEEDS) {
+        if (repeatOk && mode === HandMode.SEEDS) {
             fc.dropSeedsAt(x, y);
         }
     }
@@ -421,8 +554,10 @@ export class GameView extends Widget {
     // FUN_0040bd72 (rwg_functions.c:14135) GameView::MouseDown
     //   clickCount 1/2 (left) -> left flag DAT_004fff00 = 1;
     //   3 (middle) / -1 / -2 (right) -> right flag DAT_004fff01 = 1.
-    // The left edge is consumed by FUN_004093d9 (rwg:11870-11883):
-    //   FUN_00409ba0 shop slots -> else FUN_00409c92 egg row -> else FUN_00409c38 risk icon.
+    // Nothing else happens here: the left edge is consumed in Update by the
+    // hand tick FUN_0040cc71 (field click, unpaused only) and by the input
+    // poll FUN_004093d9 (HUD: shop slots / egg row / risk icon, paused or
+    // not) — both see the same click.
     // A press on a MENU/SELL/BUY ButtonWidget never reaches GameView.
     mouseDown(x, y, btn) {
         // HintDialog modal — consumes all clicks while shown
@@ -445,65 +580,15 @@ export class GameView extends Widget {
             }
         }
 
-        if (btn === 2 || btn === 1) {
-            // DOM button 2 = right, 1 = middle: FUN_0040bd72 rwg:14144-14146
-            // -> FUN_0040be50(1). Seeds are dropped by the repeat in
-            // _handTick (FUN_0040cc71 rwg:15904-15917).
+        // Mouse position as stored by MouseMove (FUN_0040be96) and read by
+        // FUN_0040be6f in the polls.
+        this.mHand.move(x, y);
+        if (btn === 0) {
+            this.mMouseLeftDown = true;               // FUN_0040be11(1)
+        } else if (btn === 2 || btn === 1) {
+            // DOM button 2 = right, 1 = middle: FUN_0040be50(1).
             this.mMouseRightDown = true;
-            return true;
         }
-        if (btn !== 0) return true;
-
-        const fc = this.mFieldController;
-
-        // --- FUN_00409ba0 (rwg:12469, asm 0x409bab-0x409c36) shop slots ---
-        // for i < slot-vector size (store+8, FUN_0040bfa0): rect = slot image
-        // DAT_004fff88 (IMAGE_SHOP_SLOT_OPEN, 80x81) w x h at (w*i, 0);
-        // FUN_0041e8f5 buys; on success (al != 0) THIS function plays
-        // SOUND_CHICK_BUY (DAT_004fed80, asm 0x409c16-0x409c2e) — FUN_0041e8f5
-        // itself plays none. Handled either way. The vector always has 5
-        // entries (FUN_0041e7f2 ctor loop, rwg_functions.c:37640-37660).
-        for (let i = 0; i < 5; i++) {
-            if (rectContains({ x: 80 * i, y: 0, w: 80, h: 81 }, x, y)) {
-                if (fc.buyChick(i) && SOUNDS.SOUND_CHICK_BUY) SOUNDS.SOUND_CHICK_BUY.play();
-                return true;
-            }
-        }
-
-        // --- FUN_00409c92 (rwg:12552, asm 0x409c92-0x409d59) egg row ---
-        // FUN_00406e6a toggles brooding for the egg, then SOUND_EGG_REF
-        // (DAT_004fed78, asm 0x409d3e) — played by FieldController.startEggBrooding.
-        const eggs = this._getEggRow();
-        for (let i = 0; i < eggs.length; i++) {
-            if (rectContains(this._eggSlotRect(i), x, y)) {
-                fc.startEggBrooding(eggs[i]);
-                return true;
-            }
-        }
-
-        // --- FUN_00409c38 (rwg:12514) risk icon ---
-        // Needs risk+9 (ready); rect = FUN_00409af0; plays SOUND_CLICK then
-        // FUN_0041b94a (rwg:33659): pause + "SURPRISE!" HTML dialog(s); the
-        // case is applied when the result dialog's OK is pressed (FUN_0041b9cf
-        // rwg:33746-33751). See SurpriseDialog.js.
-        if (this.mRiskController.isReady() && fc._riskIconRect
-            && rectContains(fc._riskIconRect, x, y)) {
-            if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
-            this._openSurprise();
-            return true;
-        }
-
-        // Left click on field — Hand controller FUN_0040cc71 (rwg:15893-15902:
-        // left edge records +0x10 = tick). Field action dispatch is
-        // FieldController.handleClick.
-        if (this.mHand.isOverField()
-            && !fc.mIsPaused
-            && !fc.mIsLevelComplete
-            && !fc.mIsLevelFailed) {
-            this.mHandLastActionTick = this.mHandTick;
-            fc.handleClick(x, y, this.mHand.getModeString());
-        }
-
         return true;
     }
 
@@ -540,6 +625,8 @@ export class GameView extends Widget {
             if (this._buttonAt(x, y) === b) this.buttonDepress(b);
             return;
         }
+        // FUN_0040be11(0) / FUN_0040be50(0)
+        if (btn === 0) this.mMouseLeftDown = false;
         if (btn === 2 || btn === 1) this.mMouseRightDown = false;
         super.mouseUp(x, y, btn);
     }
@@ -562,7 +649,6 @@ export class GameView extends Widget {
         if (key === ' ' || key === 'Spacebar') {
             if (this._spaceHeld) return true;
             this._spaceHeld = true;
-            if (fc.mIsLevelComplete || fc.mIsLevelFailed) return true;
             this.mPauseTextShown = false;               // +0xd = 0
             fc.mIsPaused = !fc.mIsPaused;               // +4 = !+4
             // When pausing (rwg:11494-11495), FUN_004090b9 -> FUN_0040cc01

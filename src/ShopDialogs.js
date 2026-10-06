@@ -215,11 +215,14 @@ export class ShopDialog {
         } else {
             fc.mMoney += price;
         }
-        // JS bookkeeping only: release a claimed egg (the original's smart
-        // pointers drop the reference with the chick).
-        if (chick._endBrooding) chick._endBrooding();
-        chick.mIsAlive = false;
-        fc.mField.mSoldCount++;
+        // FUN_0040466e: FUN_0040342b (state 6, action 13, no sound) + list
+        // erase. FUN_00404b3b (broody get-up / re-decide) is NOT called; only
+        // the JS-side egg claim back-pointer is dropped with the chick.
+        const egg = chick.mBroodingEgg;
+        if (egg && egg._claimedBy === chick) egg._claimedBy = null;
+        if (chick.removeFromField) chick.removeFromField();
+        else chick.mIsAlive = false;
+        fc.mField.mSoldCount++;              // world +0x260
     }
 
     // FUN_0041f325 (rwg:38656) button visibility + Draw FUN_0041f462 rows.

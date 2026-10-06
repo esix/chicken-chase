@@ -87,9 +87,19 @@ export class RiskCaseOffensive extends RiskCase {
     //   (unsigned divl, asm 0x41af2d-0x41af34), +0x20 = item id,
     //   description = DAT_004decf4 "You've earned a free upgrade: " +
     //   name std::string at 0x500480 + id*0x1c (asm 0x41af79-0x41af8f).
-    //   The prefix is in index.html; mValue = the appended name. The
-    //   0x500480 initializer is UNKNOWN — not found in decompiled; names come
-    //   from LevelData.SHOP_ITEM_LIST (item 5's name is an assumption there).
+    //   The prefix is in index.html; mValue = the appended name.
+    //   0x500480 initializer: UNKNOWN — not found in decompiled or binary.
+    //   Round 4 scan: 0x500480 (8 std::strings, 0x500480-0x500560, .bss) and
+    //   the description array 0x5003a0 (shop, asm 0x420834) are each
+    //   referenced by exactly one instruction (readers); no dword in the file
+    //   points into 0x5003a0-0x500560 and the .rdata name/description
+    //   strings (0x4dd930-0x4ddaf0) are not referenced by any absolute
+    //   address either, so the static initializer is not in the visible code.
+    //   The .rdata order (reverse init order: 7 "Weapon strength upgrade",
+    //   6 "Longest-lasting seeds", 4 "Elephant", 3 "Weapon upgrade",
+    //   2 "Longer-lasting seeds", 1 "Mouse", 0 "Seed upgrade"; eight distinct
+    //   descriptions but seven names) is consistent with item 5 sharing the
+    //   pooled "Seed upgrade" literal. Names: LevelData.SHOP_ITEM_LIST.
     canApply(fc) {
         const list = fc.getRiskOffensiveItems();
         if (!list || list.length === 0) return false;
@@ -141,10 +151,14 @@ export class RiskCasePlusTime extends RiskCase {
         super(RiskCaseType.PLUS_TIME, 'PlusTime');
         this.mAvailable = true; // +0x20
     }
-    // FUN_0041b08d (rwg_functions.c:32931): +0x20 != 0 && task[0xc] > 0.
-    // JS: task 0xc's target is fc.mTimeLimit (ms). Bonus levels store their
-    // timer in task 0xd (FUN_00423cb3:43838), not 0xc — same convention as
-    // FieldController._isLost (FUN_00421afa:41473).
+    // FUN_0041b08d (rwg_functions.c:32931, asm 0x41b08d-0x41b0b2): +0x20 != 0
+    // && task[0xc]+0 (target, int) > 0 (setg). Task vector Core+0x34 (0x14-byte
+    // entries, FUN_0041b4bd) is rebuilt zeroed per level (FUN_0042166f ->
+    // FUN_00421f91, alloc 0x118 = 14 entries). JS: task 0xc's target is
+    // fc.mTimeLimit (ms). Verified round 4: bonus levels (the five FUN_00422d10
+    // switch cases that goto LAB_00422fa7 -> FUN_00423cb3) only write task
+    // 0xd (= time*100, rwg:43838) and never task 0xc, so task 0xc target is 0
+    // there and PlusTime cannot apply — hence _taskTarget() = 0 on bonus.
     _taskTarget(fc) {
         if (fc._isBonus && fc._isBonus()) return 0;
         return fc.mTimeLimit;

@@ -142,7 +142,7 @@ const BLOCKS = [WIN_LINES, [], LETTER_LINES, [], []];
 const POS_START = 600.0;          // _DAT_004e9100
 const UFO_STOP_Y = 180.0;         // _DAT_004e9104
 const SPEED_TEXT = 0.5;           // _DAT_004fc420 (states 0 and 4)
-const SPEED_LETTER = 0.3;         // _DAT_004fc424 (state 2)
+const SPEED_LETTER = Math.fround(0.3); // _DAT_004fc424 float32 0.30000001192092896 (state 2)
 const SPEED_UFO = 1.0;            // _DAT_004fc428 (states 1 and 3)
 const CREDITS_STOP = 50.0;        // (float)_DAT_004e92f8 (double 50.0)
 const LINE_FACTOR = 1.399999976158142; // double @0x4e9110, Draw line step = GetHeight * this
@@ -150,6 +150,10 @@ const SCREEN_W = 0x320;           // 800, Draw @0x41cfe9
 
 // FUN_004bed40 = float→int conversion (_ftol, truncation).
 const ftol = Math.trunc;
+// The roll position +0x90 is a float32 field: every update is
+// `flds pos; fsubs/fadds speed; fstps pos` (@0x41cbb9-0x41cc91), and the
+// Draw line cursor is a float32 local (`fstps 0x10(%esp)` @0x41d0b7/0x41d17c).
+const f32 = Math.fround;
 
 // ---------------------------------------------------------------------------
 // Sexy::DialogButton (vftable 0x4e47e4) as built by FUN_0042149b (rwg:41034+):
@@ -275,7 +279,7 @@ export class CreditsView extends Widget {
     _setState(s) {
         this.mState = s;
         let p = POS_START;                                  // s == 0
-        if (s === 1) p = -this._ufoHeight();                // -(UFO.h)
+        if (s === 1) p = f32(-this._ufoHeight());          // (float)-(UFO.h)
         else if (s === 2) p = POS_START;
         else if (s === 3) p = UFO_STOP_Y;
         else if (s === 4) p = POS_START;
@@ -311,19 +315,19 @@ export class CreditsView extends Widget {
     _step() {
         switch (this.mState) {
             case 0:
-                this.mPos -= SPEED_TEXT;
+                this.mPos = f32(this.mPos - SPEED_TEXT);     // @0x41cc80-0x41cc91
                 if (this.mPos < -this._blockHeight(BLOCKS[0])) return this._nextState();
                 return true;
             case 1:
-                this.mPos += SPEED_UFO;
+                this.mPos = f32(this.mPos + SPEED_UFO);      // @0x41cc55-0x41cc66
                 if (UFO_STOP_Y < this.mPos) return this._nextState();
                 return true;
             case 2:
-                this.mPos -= SPEED_LETTER;
+                this.mPos = f32(this.mPos - SPEED_LETTER);   // @0x41cc04-0x41cc16
                 if (this.mPos < -this._blockHeight(BLOCKS[2])) return this._nextState();
                 return true;
             case 3: {
-                this.mPos -= SPEED_UFO;
+                this.mPos = f32(this.mPos - SPEED_UFO);      // @0x41cbb9-0x41cbcf
                 const lim = -this._ufoHeight();
                 if (lim < this.mPos || lim === this.mPos) return true;
                 return this._nextState();
@@ -331,7 +335,7 @@ export class CreditsView extends Widget {
             case 4:
                 // Credits stop once pos < 50 (returns false every tick after).
                 if (this.mPos < CREDITS_STOP) return false;
-                this.mPos -= SPEED_TEXT;
+                this.mPos = f32(this.mPos - SPEED_TEXT);     // @0x41cc80-0x41cc91
                 if (this.mPos < -this._blockHeight(BLOCKS[4])) return this._nextState();
                 return true;
             default:
@@ -368,12 +372,12 @@ export class CreditsView extends Widget {
             // (@0x41d0ea-0x41d187).
             ctx.save();
             ctx.font = FONT_CSS.FONT_16;
-            let yf = this.mPos;
+            let yf = f32(this.mPos);
             for (const line of BLOCKS[this.mState]) {
                 const w = ctx.measureText(line).width;
                 const x = Math.trunc((SCREEN_W - w) / 2);
                 drawOutlinedText(ctx, line, g.mTransX + x, g.mTransY + ftol(yf), '#fff');
-                yf += step;
+                yf = f32(yf + step);   // fild H; fmull 1.4; fadds yf; fstps yf
             }
             ctx.restore();
         } else if (this.mState === 4) {
@@ -381,12 +385,12 @@ export class CreditsView extends Widget {
             // x = 0x12c, same y = ftol(yf); yf += H * 1.4 (@0x41d010-0x41d0c6).
             ctx.save();
             ctx.font = FONT_CSS.FONT_16;
-            let yf = this.mPos;
+            let yf = f32(this.mPos);
             for (let i = 0; i < CREDITS_ROLES.length; i++) {
                 const y = ftol(yf);
                 drawOutlinedText(ctx, CREDITS_ROLES[i], g.mTransX + 0x64, g.mTransY + y, '#fff');
                 drawOutlinedText(ctx, CREDITS_NAMES[i], g.mTransX + 0x12c, g.mTransY + y, '#fff');
-                yf += step;
+                yf = f32(yf + step);   // fild H; fmull 1.4; fadds yf; fstps yf
             }
             ctx.restore();
         }

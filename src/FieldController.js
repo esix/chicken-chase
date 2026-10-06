@@ -22,11 +22,11 @@ import { Field, fieldToScreen } from './Field.js';
 
 // thunk_FUN_00429891: Mersenne twister masked with 0x7fffffff (asm 0x429891).
 function mtRand() { return Math.floor(Math.random() * 0x80000000); }
-import { createChick, ChickType, foodUnit } from './Chick.js';
+import { createChick, ChickType, foodUnit, foodCap } from './Chick.js';
 import { TaskType, getLevelConfig, getInitialChicks, SHOP_ITEMS, SHOP_ITEM_LIST } from './LevelData.js';
 import { IMAGES, SOUNDS } from './Res.js';
 import { Wolf, Mouse, Elephant, randomSpawnPoint } from './Pet.js';
-import { FONT_CSS, drawOutlinedText } from './CreditsView.js';
+import { FONT_CSS, drawOutlinedText, DialogButton } from './CreditsView.js';
 
 // HUD fonts (resource loader rwg_functions.c:30926-30938; resources.xml):
 // DAT_004fff08 = FONT_8 (ArialBlack8), DAT_004fff0c = FONT_10 (ArialBlack10),
@@ -44,9 +44,10 @@ const CHICK_BASE_PRICES = [100, 200, 500, 1000, 1200];
 // DAT_0050034c seeds dropped per click, indexed by seed controller +0x20
 // (rwg_functions.c:6677-6685), read by FUN_0041bfe2 (rwg_functions.c:34304).
 const SEEDS_PER_DROP = [5, 9, 12];
-// FUN_0041bfe2 asm 0x41c01d-0x41c02f: price = ftol(count * 0.4 + 0.5)
-// (_DAT_004e93d8 = 0.4 double, _DAT_004e90c8 = 0.5 double).
-const SEED_PRICE_FACTOR = 0.4;
+// FUN_0041bfe2 asm 0x41c01d-0x41c02f: price = ftol(count * f + 0.5) with
+// _DAT_004e93d8 = 0.4000000059604645 (a double holding float 0.4f) and
+// _DAT_004e90c8 = 0.5 (double).
+const SEED_PRICE_FACTOR = 0.4000000059604645;
 // FUN_0040490a (rwg_functions.c:5444-5450): cure costs 0x32.
 const CURE_COST = 50;
 // FUN_0040cc71 (rwg_functions.c:16117-16121): raven killed → FUN_00424b5d(+0x32).
@@ -256,7 +257,7 @@ export class FieldController {
             this.mEggSellDisabled = true;
         }
         // FUN_00423cb3:43857 level +0x50 = chicken count (perfect check).
-        this._bonusStartChicks = cfg.isBonus ? this.mField.getAliveChickCount() : 0;
+        this._bonusStartChicks = cfg.isBonus ? this._chickListCount() : 0;
 
         // FUN_00422c01 / FUN_00422d10 / FUN_00423cb3 raven+wolf controller.
         this._setupRavenController(cfg.raven);
@@ -270,7 +271,7 @@ export class FieldController {
     _buyStarterUntil(n) {
         const saved = this.mMoney;
         this.mMoney = 1000000;
-        while (this.mField.getAliveChickCount() < n) {
+        while (this._chickListCount() < n) {
             if (!this._buySlot(ChickType.LAYER)) break;
         }
         this.mMoney = saved;
@@ -319,6 +320,21 @@ export class FieldController {
         };
     }
 
+    // World chick list size (app+0x14)+8. Every list entry counts — a dying
+    // chick (state 6) stays in the list until its update returns false — so
+    // this is the JS list minus already-removed entries, not "alive" chicks.
+    // Used by tasks 8 (FUN_00421bc4 asm 0x421d7d), FUN_00421afa, the fail
+    // reason FUN_00421a66 (rwg:41443), the bonus count FUN_00423cb3/
+    // FUN_00423d5b, FUN_00423deb and the raven roll FUN_0040134a/FUN_00401308.
+    _chickListCount() {
+        return this.mField.mChickens.filter(c => !c.mRemoved).length;
+    }
+
+    // FUN_00404ad0(type) (rwg_functions.c:5619): list entries of that type.
+    _chickListCountByType(type) {
+        return this.mField.mChickens.filter(c => !c.mRemoved && c.mType === type).length;
+    }
+
     _activeRavenCount() {
         return this.mField.mRavens.filter(r => r.mIsAlive).length;
     }
@@ -347,7 +363,7 @@ export class FieldController {
     // FUN_00401308 (rwg_functions.c:393): roosters needed.
     _roostersNeeded() {
         if (!(this.mRavenCtl.waveSize > 0)) return 0;
-        const t = Math.trunc((this.mField.getAliveChickCount() - 1) / 5);
+        const t = Math.trunc((this._chickListCount() - 1) / 5);
         const needed = this._hasElephant() ? t - 5 : t - 1;
         return needed > 0 ? needed : 0;
     }
@@ -436,30 +452,37 @@ export class FieldController {
         ctl.rollTick++;
         if (ctl.rollTick <= 9) return;
         ctl.rollTick = 0;
+        // local_8 is a float32 (fstps -0x4(%ebp), asm 0x401377-0x401408);
+        // every constant below is a float32 read with flds.
         let p = 0.0;
         // FUN_00404ad0(2) counts every listed chicken of type 2.
-        const roosters = this.mField.getChickCountByType(ChickType.ROOSTER);
-        if (this.mField.getAliveChickCount() > 3) {
+        const roosters = this._chickListCountByType(ChickType.ROOSTER);
+        if (this._chickListCount() > 3) {          // cmpl $4 / jl (asm 0x401395)
             const needed = this._roostersNeeded();
             if (needed < roosters) p = 0.0;
-            else if (roosters === needed) p = 0.0033333334;     // _DAT_004e93d4
-            else if (roosters === needed - 1) p = 0.033333335;  // _DAT_004e93d0
-            else if (roosters === needed - 2) p = 0.05;         // _DAT_004dc84c
-            else if (roosters === needed - 3) p = 0.1;          // _DAT_004e9170
-            else p = 0.2;                                       // _DAT_004e90e0
+            else if (roosters === needed) p = Math.fround(0.0033333334140479565);     // _DAT_004e93d4
+            else if (roosters === needed - 1) p = Math.fround(0.03333333507180214);   // _DAT_004e93d0
+            else if (roosters === needed - 2) p = Math.fround(0.05000000074505806);   // _DAT_004dc84c
+            else if (roosters === needed - 3) p = Math.fround(0.10000000149011612);   // _DAT_004e9170
+            else p = Math.fround(0.20000000298023224);                                // _DAT_004e90e0
         }
-        // +0x38 == 0: p = +0x34 * _DAT_004e93c8 (0.1 double) * 2
-        if (ctl.rateDelay === 0) p = ctl.bonusRate * 0.1 * 2;
-        if (ctl.ignoreRoosters) p = 0.02;                      // _DAT_004e93c0
+        // +0x38 == 0 (asm 0x4013ef-0x4013fa): flds +0x34; fmull _DAT_004e93c8
+        // (double 0.10000000149011612); fadd st,st (×2); fstps (float32).
+        if (ctl.rateDelay === 0) p = Math.fround(ctl.bonusRate * 0.10000000149011612 * 2);
+        if (ctl.ignoreRoosters) p = Math.fround(0.019999999552965164);               // _DAT_004e93c0
+        // asm 0x40140b-0x40141a: spawn only when rand01 < p (fcompp, C0|C3 skip).
         if (rand01() < p) this._spawnRaven();
     }
 
-    // FUN_004015f8 (rwg_functions.c:682) — controller part (the raven entity
-    // updates themselves run in Field.update).
+    // FUN_004015f8 (rwg_functions.c:682): delay--, raven entity updates
+    // (Field.updateRavens), then the spawn logic.
     _updateRavenController() {
         const ctl = this.mRavenCtl;
+        if (ctl && ctl.rateDelay > 0) ctl.rateDelay--;                // :702-704
+        // :707-735: per-raven flash--/FUN_00416db8/FUN_00416ed4, dead ravens
+        // removed — BEFORE the wave/random spawn logic below.
+        this.mField.updateRavens();
         if (!ctl) return;
-        if (ctl.rateDelay > 0) ctl.rateDelay--;                       // :702-704
         if (this.mRavenScaredTimer < 1) {
             this._ravenWaveTick();
             this._ravenRandomTick();
@@ -512,17 +535,31 @@ export class FieldController {
         // FUN_0040686e — money effects.
         this._updateMoneyEffects();
 
-        // FUN_00421b21 — task progress + level end.
+        // FUN_00421b21 — task progress + level end. It is the LAST call of
+        // the tick (rwg:7479), after the hint (7472), risk (7477) and hand
+        // (7478) updates; GameView sets mDeferTaskCheck and calls
+        // runLevelUpdate() itself at that point.
+        if (!this.mDeferTaskCheck) this._checkTasks();
+    }
+
+    // FUN_00421b21 entry for GameView (rwg:7479).
+    runLevelUpdate() {
+        if (this.mIsPaused || this.mIsLevelComplete || this.mIsLevelFailed) return;
         this._checkTasks();
     }
 
     // FUN_00424b5d (rwg_functions.c:45035, asm 0x424b5d-0x424bb4): unless the
     // money object's +0 flag is set: money += amount; clamp to the cap when
-    // 0 < cap < money; then, when the position's x >= 0 (fldz/fcomps, jp at
-    // 0x424b92), push {amount, pos, 1.0f} onto (app+0x3c)+0xc (FUN_0040693f).
-    // The original passes a field position (drawn through FUN_00409567);
-    // JS callers pass the screen point.
-    addMoney(amount, x, y) {
+    // 0 < cap < money; then, when the FIELD position's x >= 0 (fldz/fcomps
+    // [esi], testb $0x41 / jp at 0x424b92: skipped for x < 0 and NaN), push
+    // {amount, pos, 1.0f} onto (app+0x3c)+0xc (FUN_0040693f). Callers with
+    // no position pass (-1,-1,-1) (_DAT_004e9230 = -1.0f; RiskCase money
+    // FUN_0041b05f rwg:32916-32919) → no effect; JS callers omit x/y.
+    // The original stores the field position and draws it through
+    // FUN_00409567; JS callers pass the screen point (x, y) and, when they
+    // have it, the exact field x (`fieldX`) for the gate — otherwise it is
+    // recovered with the FUN_00409533 inverse (x - 10) / 6.0.
+    addMoney(amount, x, y, fieldX) {
         if (typeof amount !== 'number' || !Number.isFinite(amount)) return;
         if (this.mMoneyFrozen) return;
         this.mMoney += amount;
@@ -530,8 +567,9 @@ export class FieldController {
         if (this.mMoneyCap > 0 && this.mMoneyCap < this.mMoney) {
             this.mMoney = this.mMoneyCap;
         }
-        if (typeof x === 'number' && typeof y === 'number' && x >= 0) {
-            this.mMoneyEffects.push({ amount, x, y, timer: 1.0 });
+        if (typeof x === 'number' && typeof y === 'number') {
+            const fx = (typeof fieldX === 'number') ? fieldX : (x - 10) / 6.0;
+            if (fx >= 0) this.mMoneyEffects.push({ amount, x, y, timer: 1.0 });
         }
     }
 
@@ -542,9 +580,9 @@ export class FieldController {
         this.mMoneyEffects = this.mMoneyEffects.filter(e => !(e.timer <= 0.0));
     }
 
-    // FUN_00403e23 (rwg_functions.c:4524): spend if money >= amount.
+    // FUN_00403e23 (rwg_functions.c:4524, asm 0x403e23-0x403e39): money >=
+    // amount (cmpl / jl) → money -= amount, true; else false. No other test.
     spendMoney(amount) {
-        if (!(amount > 0)) return false;
         if (this.mMoney >= amount) {
             this.mMoney -= amount;
             return true;
@@ -575,13 +613,13 @@ export class FieldController {
             case TaskType.COLLECT_BLACK_EGGS:     // egg[2] rooster
                 return this.mCollectedBlackEggs;
             case TaskType.RAISE_CHICKENS:         // field +8 chicken count
-                return this.mField.getAliveChickCount();
+                return this._chickListCount();
             case TaskType.HATCH_MAGIC:            // FUN_00404ad0(3)
-                return this.mField.getChickCountByType(ChickType.MAGIC);
+                return this._chickListCountByType(ChickType.MAGIC);
             case TaskType.HATCH_HOLY:             // FUN_00404ad0(4)
-                return this.mField.getChickCountByType(ChickType.HOLY);
+                return this._chickListCountByType(ChickType.HOLY);
             case TaskType.RAISE_ROOSTERS:         // FUN_00404ad0(2)
-                return this.mField.getChickCountByType(ChickType.ROOSTER);
+                return this._chickListCountByType(ChickType.ROOSTER);
             case TaskType.TIME_LIMIT:             // state+8 elapsed
             case TaskType.BONUS_TIME:
                 return this.mTimeElapsed;
@@ -627,7 +665,7 @@ export class FieldController {
     // FUN_00421afa (rwg_functions.c:41460): "lost" = no chickens, or task 0xc
     // has a target and elapsed reached it (bonus levels carry no task 0xc).
     _isLost() {
-        if (this.mField.getAliveChickCount() !== 0) {
+        if (this._chickListCount() !== 0) {
             const hasTimeTask = !this._isBonus()
                 && this.mTasks.some(tk => tk.type === TaskType.TIME_LIMIT);
             const target = hasTimeTask ? this.mTimeLimit : 0;
@@ -667,7 +705,7 @@ export class FieldController {
         this.mIsLevelComplete = true;
         if (this._isBonus()) {
             // FUN_00423d5b (rwg_functions.c:43870): perfect = chicken count == level +0x50.
-            const perfect = this.mField.getAliveChickCount() === this._bonusStartChicks;
+            const perfect = this._chickListCount() === this._bonusStartChicks;
             this.mBonusAchieved = perfect;
             // :41391 DAT_004fc2f8 = level + 1 → the special-shop price (store
             // +0) is halved if that level is the next one started
@@ -676,8 +714,11 @@ export class FieldController {
         }
         // DAT_004fedbc (rwg_functions.c:41398).
         if (SOUNDS.SOUND_LEVEL_COMPLETED) SOUNDS.SOUND_LEVEL_COMPLETED.play();
-        // :41359-41372 unlock next level and record time (FUN_0041111b with
-        // state+8); their gate FUN_00402839 is UNKNOWN.
+        // :41359-41372 (asm 0x421969-0x4219d6): FUN_00402839 (rwg:2532, asm
+        // 0x402839) is the checked-iterator "== end()" test on the current
+        // player iterator app+8; when a player is selected FUN_0041111b
+        // (level, state+8) records the time — pushing it for the first
+        // completion is what unlocks the next level (FUN_0041614b = count+1).
         if (this.mGameApp && this.mGameApp.unlockNextLevel) {
             this.mGameApp.unlockNextLevel(this.mCurrentLevel + 1);
         }
@@ -690,7 +731,7 @@ export class FieldController {
     // (chicken count != 0) → time ran out, else chickens lost (:41443-41446).
     _levelFailed() {
         this.mIsLevelFailed = true;
-        this.mFailReason = this.mField.getAliveChickCount() !== 0 ? 'time' : 'chickens';
+        this.mFailReason = this._chickListCount() !== 0 ? 'time' : 'chickens';
         // DAT_004fed7c (rwg_functions.c:41452).
         if (SOUNDS.SOUND_LEVEL_FAILED) SOUNDS.SOUND_LEVEL_FAILED.play();
     }
@@ -950,33 +991,12 @@ export class FieldController {
             }
         }
 
-        // MENU / SELL / BUY are child button widgets of GameView (created in
-        // FUN_0040bbea; drawn here in this port). MENU: Resize(0x193, 0x27,
-        // 0x65, 0x26) (rwg:14005); SELL Resize(0x1FA, 0x27, 0x55, 0x26) and BUY
-        // Resize(0x1FA, 0x01, 0x55, 0x26), visible per store +0x18 / +0x19
-        // (rwg:13294-13297). Label font / offsets: UNKNOWN — not found in
-        // decompiled (ButtonWidget draw), left as is.
-        const _hudOver = (bx, by, bw, bh) => {
-            const hx = this.mHudHoverX, hy = this.mHudHoverY;
-            return typeof hx === 'number' && typeof hy === 'number'
-                && hx >= bx && hx < bx + bw && hy >= by && hy < by + bh;
-        };
-        const drawButton = (x, y, w, h, label) => {
-            const img = _hudOver(x, y, w, h) && IMAGES.IMAGE_DIALOG_BUTTON_OVER
-                ? IMAGES.IMAGE_DIALOG_BUTTON_OVER : IMAGES.IMAGE_DIALOG_BUTTON;
-            if (ready(img)) ctx.drawImage(img.img, x, y, w, h);
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 14px Arial, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText(label, x + w / 2, y + 24);
-            ctx.textAlign = 'left';
-        };
-        drawButton(403, 39, 101, 38, 'MENU');
-        const lc = this.mLevelConfig || {};
-        const showSell = lc.sellButton !== undefined ? lc.sellButton : lc.hasSell;
-        if (showSell) drawButton(506, 39, 85, 38, 'SELL');
-        const showBuy = lc.specialShopButton !== undefined ? lc.specialShopButton : lc.hasBuy;
-        if (showBuy) drawButton(506, 1, 85, 38, 'BUY');
+        // MENU / SELL / BUY: see drawHudButtons. They are child widgets, so
+        // the original draws them after the whole GameView::Draw (Sexy
+        // WidgetContainer draws children after the parent's Draw) — on top of
+        // the hint bar and "GAME PAUSED". GameView sets mDeferHudButtons and
+        // calls drawHudButtons last; otherwise they are drawn here.
+        if (!this.mDeferHudButtons) this.drawHudButtons(g);
 
         // "Level %i" (0x4dcdac) in FONT_16 (DAT_004fff14), white, at
         // (0x19a, 0x19) (asm 0x40b1ae-0x40b20b).
@@ -1138,6 +1158,73 @@ export class FieldController {
         ctx.textAlign = 'left';
     }
 
+    // MENU / SELL / BUY widgets (GameView children) — drawn after
+    // GameView::Draw FUN_0040a3d6 has finished.
+    drawHudButtons(g) {
+        // MENU / SELL / BUY are child button widgets of GameView, built by
+        // FUN_0042149b (GameView ctor FUN_004091f9 rwg:11723-11732) exactly
+        // like every DialogButton: over image (+0xb0) DAT_004fffa0
+        // IMAGE_DIALOG_BUTTON_OVER, component image (+0x128) IMAGE_DIALOG_
+        // BUTTON, font (vtable +0xdc) DAT_004fff2c = FONT_DLG_BUTTONS
+        // (resource loader rwg:30954-30956), label colours 0/1 white
+        // (rwg:41106-41112). Drawn by CreditsView.DialogButton (port of the
+        // DialogButton draw FUN_0043ea73). Layout FUN_0040bbea (rwg:14005-
+        // 14011): MENU (0x193,0x27,0x65,0x26), SELL (0x1fa,0x27,0x55,0x26),
+        // BUY (0x1fa,1,0x55,0x26). Per frame (FUN_0040a3d6 rwg:13294-13309):
+        // SELL visible = store +0x18, BUY visible = store +0x19, and SELL gets
+        // component/over = IMAGE_DIALOG_BUTTON_HIGHLIGHT / _HIGHLIGHT_OVER
+        // (DAT_004fffa4 / DAT_004fffa8) while FUN_00404ea0 finds a chick
+        // passing vt[4] whose food (+0x34) equals FUN_004058af().
+        if (!this._hudButtons) {
+            this._hudButtons = {
+                menu: new DialogButton(0, null, 'MENU'),
+                sell: new DialogButton(1, null, 'SELL'),
+                buy: new DialogButton(2, null, 'BUY'),
+            };
+            this._hudButtons.menu.resize(0x193, 0x27, 0x65, 0x26);
+            this._hudButtons.sell.resize(0x1fa, 0x27, 0x55, 0x26);
+            this._hudButtons.buy.resize(0x1fa, 0x01, 0x55, 0x26);
+        }
+        const hx = this.mHudHoverX, hy = this.mHudHoverY;
+        const drawHudButton = (btn) => {
+            btn.mIsOver = typeof hx === 'number' && typeof hy === 'number'
+                && hx >= btn.mX && hx < btn.mX + btn.mWidth
+                && hy >= btn.mY && hy < btn.mY + btn.mHeight;
+            btn.mIsDown = false;
+            g.pushState();
+            g.translate(btn.mX, btn.mY);
+            btn.draw(g);
+            g.popState();
+        };
+        drawHudButton(this._hudButtons.menu);
+        const lc = this.mLevelConfig || {};
+        const showSell = lc.sellButton !== undefined ? lc.sellButton : lc.hasSell;
+        if (showSell) {
+            const sell = this._hudButtons.sell;
+            if (this._sellHighlight()) {
+                sell.mButtonImage = IMAGES.IMAGE_DIALOG_BUTTON_HIGHLIGHT;
+                sell.mOverImage = IMAGES.IMAGE_DIALOG_BUTTON_HIGHLIGHT_OVER;
+            } else {
+                sell.mButtonImage = IMAGES.IMAGE_DIALOG_BUTTON;
+                sell.mOverImage = IMAGES.IMAGE_DIALOG_BUTTON_OVER;
+            }
+            drawHudButton(sell);
+        }
+        const showBuy = lc.specialShopButton !== undefined ? lc.specialShopButton : lc.hasBuy;
+        if (showBuy) drawHudButton(this._hudButtons.buy);
+    }
+
+    // FUN_00404ea0 (rwg_functions.c:6001, asm 0x404ea0-0x404f1a): true when
+    // some world chick passes vt[4] FUN_0040325a (!FUN_00402342 sick action
+    // && vt[5] isActive) and its food +0x34 (Chick.mFoodCounter) equals
+    // FUN_004058af() (Chick.foodCap).
+    _sellHighlight() {
+        const cap = foodCap(this.mCurrentLevel);
+        return this.mField.mChickens.some(c => !c.mRemoved && !c.mIsSick
+            && typeof c.isActive === 'function' && c.isActive()
+            && c.mFoodCounter === cap);
+    }
+
     // FUN_0040bebb (asm 0x40bebb-0x40bf55) / asm 0x40b677-0x40b70e: s =
     // ticks / 100 (negative → 0); "%i:" when s/60 > 9 else "0%i:", then "%i"
     // when s%60 > 9 else "0%i".
@@ -1174,7 +1261,7 @@ export class FieldController {
                 if (!(raven.mHP > 0)) return;
                 raven.hit(dmg);
                 if (SOUNDS.SOUND_SHOOT) SOUNDS.SOUND_SHOOT.play();
-                if (raven.mHP < 1) this.addMoney(RAVEN_KILL_REWARD, raven.mX, raven.mY);
+                if (raven.mHP < 1) this.addMoney(RAVEN_KILL_REWARD, raven.mX, raven.mY, raven.mPos[0]);
                 return;
             }
             // Crosshair rect (rwg_functions.c:15926-15936): (x - aim/2,
@@ -1198,12 +1285,14 @@ export class FieldController {
                 if (len > 0) { dx /= len; dy /= len; }
                 // FUN_0041050c (rwg_functions.c:20161): if not dead → vtable hit
                 // (power, dir), SOUND_SHOOT (DAT_004fed88), dead now → +$500
-                // (FUN_00406b22 → FUN_00424b5d).
+                // (FUN_00406b22 → FUN_00424b5d at the pet position +8 with
+                // z = 0, asm 0x410563-0x41056c).
                 if (wolf.isDead && wolf.isDead()) return;
                 if (wolf.hit) wolf.hit(dmg, dx, dy);
                 if (SOUNDS.SOUND_SHOOT) SOUNDS.SOUND_SHOOT.play();
                 if (wolf.isDead && wolf.isDead()) {
-                    this.addMoney(WOLF_KILL_REWARD, wolf.mX, wolf.mY);
+                    this.addMoney(WOLF_KILL_REWARD, wolf.mX, wolf.mY,
+                        typeof wolf.mPosX === 'number' ? wolf.mPosX : undefined);
                 }
                 return;
             }
@@ -1275,7 +1364,8 @@ export class FieldController {
     //   FUN_00406c4d removes the egg (+0x1c = 1.0, egg + brood lists;
     //   Field.removeEgg); if it was listed, FUN_004074a3 (rwg:9054) toggles
     //   the first egg of the same type not yet in the brood list into it;
-    //   sound (Egg collect sound, arg lost in the decompile).
+    //   then SOUND_COLLECT_EGG (DAT_004feda4, asm 0x407486; played by
+    //   Egg.collect in Gem.js).
     _clickEggAt(x, y) {
         for (const gem of this.mField.mGems) {
             if (gem.mType !== 4) continue;

@@ -49,18 +49,25 @@ import { IMAGES, SOUNDS } from './Res.js';
 // Projection helpers
 // ---------------------------------------------------------------------------
 
+const f32 = Math.fround;
+
+// _DAT_004fc3f8 is the float 2.8f = 2.799999952316284 (read from .data),
+// not the double 2.8.
+const PROJ_YY = f32(2.8);
+
 // FUN_00409567 (asm 0x409567-0x4095cc). _ftol truncates toward zero.
 export function fieldToScreen(fx, fy, fz) {
     const z = fz || 0;
     return {
         x: Math.trunc(fx * 6.0 + 0.5) + 10,
-        y: Math.trunc(fy * 2.8 + z * -6.0 + 0.5) + 367,
+        y: Math.trunc(fy * PROJ_YY + z * -6.0 + 0.5) + 367,
     };
 }
 
-// FUN_00409533 (rwg_functions.c:11965)
+// FUN_00409533 (asm 0x409533-0x409566): fildl (s - origin), fdivs by the
+// float matrix entries 6.0f / 2.8f, fstps (float results).
 export function screenToField(sx, sy) {
-    return { x: (sx - 10) / 6.0, y: (sy - 367) / 2.8 };
+    return { x: f32((sx - 10) / 6.0), y: f32((sy - 367) / PROJ_YY) };
 }
 
 // FUN_00408149 (rwg_functions.c:10260): z <= 0 -> 0; x,y < 0 -> 0;
@@ -97,6 +104,8 @@ function maxNorm2(x, y) {
 // Field (x, y) of a chick or pet.
 function chickXY(c) {
     if (c.mPos) return { x: c.mPos[0], y: c.mPos[1] };
+    // Pets keep their field position in mPosX/mPosY (+0x08/+0x0c).
+    if (typeof c.mPosX === 'number') return { x: c.mPosX, y: c.mPosY };
     return screenToField(c.mX, c.mY);
 }
 
@@ -106,13 +115,14 @@ function isCatchable(c) {
     return c.mIsAlive && !c.mIsCarried;
 }
 
-// FUN_0040591e (rwg_functions.c:6846): level (**(fc+4)) < 10 -> 0.45
-// (_DAT_004e9394), < 0x28 -> 0.5 (_DAT_004dc858), else 0.55 (_DAT_004e9390).
+// FUN_0040591e (rwg_functions.c:6846): level (**(fc+4)) < 10 -> 0.45f
+// (_DAT_004e9394), < 0x28 -> 0.5f (_DAT_004dc858), else 0.55f (_DAT_004e9390).
 function ravenBaseSpeed(fc) {
     const level = (fc && fc.mCurrentLevel) || 1;
-    if (level < 10) return 0.45;
+    // flds of float constants (asm 0x40592d/0x405939/0x405940).
+    if (level < 10) return f32(0.45);
     if (level < 0x28) return 0.5;
-    return 0.55;
+    return f32(0.55);
 }
 
 // Cached colorized raven cels (hit flash). Key: `${path}_${frame}`.
@@ -177,7 +187,7 @@ export class Raven {
         this.mLow = [0, 0, 0];                  // +0x38..+0x40 lowest point reached
         this.mHP = hp | 0;                      // +0x44
         this.mFlash = 0;                        // +0x48 hit-flash ticks
-        this.mSpeedMult = speedMult;            // +0x4c
+        this.mSpeedMult = f32(speedMult);       // +0x4c (float)
         this.mFlee = false;                     // +0x50
         // Field position of the carried chick (chick +0x20..+0x28); chicks
         // without a field position (none in the port now) fall back to it.
@@ -197,11 +207,13 @@ export class Raven {
     _initPoints(chick) {
         const off = (mtRand() & 1) ? 40.0 : -40.0;
         const c = chick ? chickXY(chick) : { x: 0, y: 0 };
-        const p = [c.x + off, c.y, 80.0];
+        // fadds/fstps (asm 0x416ce5-0x416cf3): float results.
+        const p = [f32(c.x + off), f32(c.y), 80.0];
         this.mSpawn = p.slice();
         this.mExit = p.slice();
         this.mLow = p.slice();
-        this.mExit[0] = this.mExit[0] - (off + off);
+        // asm 0x416d13-0x416d24: exit.x = exit.x - (off + off), fstps.
+        this.mExit[0] = f32(this.mExit[0] - (off + off));
     }
 
     // FUN_00417219 (asm 0x417219-0x4173c8): true if an Elephant (pet type 1,
@@ -219,8 +231,9 @@ export class Raven {
         const cp = chickXY(chick);
         const elephant = (field.mPets || []).find(p => p.mType === 1);
         if (elephant) {
-            const ep = screenToField(elephant.mX, elephant.mY);
-            const d = maxNorm2(ep.x - cp.x, ep.y - cp.y);
+            // Elephant field position +0x08/+0x0c (asm 0x41725d-0x41726c).
+            const ep = chickXY(elephant);
+            const d = maxNorm2(f32(ep.x - cp.x), f32(ep.y - cp.y));
             if (d < 15.0) return true;                     // _DAT_004e9288
             if (d < 24.0 && (crtRand() & 1) !== 0) return true;  // _DAT_004dc7f4
         }
@@ -229,7 +242,7 @@ export class Raven {
             // 3D difference of the +0x20..+0x28 positions (asm 0x417321-0x417354).
             const rp = r.mPos ? r.mPos : [chickXY(r).x, chickXY(r).y, 0];
             const tp = chick.mPos ? chick.mPos : [cp.x, cp.y, 0];
-            const d = maxNorm3([rp[0] - tp[0], rp[1] - tp[1], rp[2] - tp[2]]);
+            const d = maxNorm3([f32(rp[0] - tp[0]), f32(rp[1] - tp[1]), f32(rp[2] - tp[2])]);
             if (d < 10.0) return true;                     // _DAT_004dc7ec
             if (d < 15.0 && (crtRand() & 1) !== 0) return true;
             if (d < 24.0 && (crtRand() & 3) === 0) return true;
@@ -267,15 +280,19 @@ export class Raven {
             B = this.mExit.slice();
         }
         let state = (B[2] < z) ? RavenState.DOWN : RavenState.UP;
+        // _DAT_004e9290 is the double 0.019999999552965164 (a widened
+        // 0.02f); the differences are stored as floats (fstps -0x4) before
+        // FUN_00406b08 (fabs) and the result is stored float into +0x34.
+        const K = 0.019999999552965164;
         let p;
         if (state === RavenState.UP) {
-            p = Math.abs(A[2] - z) * 0.02;                // _DAT_004e9290
+            p = f32(Math.abs(f32(A[2] - z)) * K);
         } else {
-            p = 1 - Math.abs(B[2] + 15.0 - z) * 0.02;     // _DAT_004e9288 = 15
+            p = f32(1 - Math.abs(f32(B[2] + 15.0 - z)) * K);   // _DAT_004e9288 = 15.0
         }
         if (state === RavenState.DOWN && this.mChick && z < 15.0) {
             state = RavenState.CATCH;
-            p = 1 - Math.abs(B[2] - z) / 15.0;
+            p = f32(1 - Math.abs(f32(B[2] - z)) / 15.0);
         }
         if (!(0 < p)) p = 0;
         if (p >= 1) p = 1;
@@ -286,26 +303,32 @@ export class Raven {
     // FUN_004170ab (asm 0x4170ab-0x4171b0): returns true while moving, false
     // (and snaps to target) when within reach.
     _moveTo(target) {
+        // All intermediates are stored as floats (fstps) in the original.
         const base = ravenBaseSpeed(this.mField && this.mField.mFieldController);
-        let speed = base * this.mSpeedMult;
-        let zr = this.mPos[2] / 40.0;                     // _DAT_004e93b8
+        let speed = f32(base * this.mSpeedMult);
+        let zr = f32(this.mPos[2] / 40.0);                // _DAT_004e93b8 = 40.0
         if (this.mCaught && this.mState === RavenState.UP && zr < 1) {
-            zr = zr * 0.4 + 0.6;                          // _DAT_004e93b0 / _DAT_004e91a8
-            speed = zr * speed;
+            // _DAT_004e93b0 = 0.3999999761581421, _DAT_004e91a8 = 0.6000000238418579
+            zr = f32(zr * 0.3999999761581421 + 0.6000000238418579);
+            speed = f32(zr * speed);
         }
-        if (this.mHP <= 0) speed = speed + speed;
-        const d = [target[0] - this.mPos[0], target[1] - this.mPos[1], target[2] - this.mPos[2]];
+        if (this.mHP <= 0) speed = f32(speed + speed);
+        const d = [f32(target[0] - this.mPos[0]), f32(target[1] - this.mPos[1]),
+            f32(target[2] - this.mPos[2])];
         const reach = (speed < base) ? base : speed;
-        if (!(reach * 1.1 <= maxNorm3(d))) {              // _DAT_004e9260 = 1.1
+        // _DAT_004e9260 = 1.100000023841858 (double)
+        if (!(reach * 1.100000023841858 <= maxNorm3(d))) {
             this.mPos = target.slice();
             return false;
         }
-        // FUN_004173ca: normalise to length 1.0
-        const len = Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-        const k = 1.0 / len;
-        this.mPos[0] += d[0] * k * speed;
-        this.mPos[1] += d[1] * k * speed;
-        this.mPos[2] += d[2] * k * speed;
+        // FUN_004173ca (asm 0x4173ca-0x417428): len = float(sqrt(float(x²+y²+z²))),
+        // k = float(1.0 / len), d *= k (float each).
+        const len = f32(Math.sqrt(f32(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])));
+        const k = f32(1.0 / len);
+        for (let i = 0; i < 3; i++) {
+            const n = f32(d[i] * k);
+            this.mPos[i] = f32(f32(n * speed) + this.mPos[i]);
+        }
         return true;
     }
 
@@ -508,8 +531,9 @@ export class SeedCluster {
                 claim: 0,                   // +0x00
                 claimId: 0,                 // +0x04
                 pos: [f.x, f.y, 10.0],      // +0x08
-                vel: [mtRand() * 4.656612873077393e-10 - 0.5,
-                      mtRand() * 4.656612873077393e-10 - 0.5, 0],
+                // fstps -0x10/-0xc (asm 0x41c07a, 0x41c095): float velocity.
+                vel: [f32(mtRand() * 4.656612873077393e-10 - 0.5),
+                      f32(mtRand() * 4.656612873077393e-10 - 0.5), 0],
                 calLevel,                   // +0x20
                 calories,                   // +0x24
                 life: (mtRand() % 300) * 2 + 0x4b0,  // +0x28
@@ -539,10 +563,11 @@ export class SeedCluster {
                 if (g.claim > 0 && --g.claim === 0) { g.claim = 0; g.claimId = 0; }
                 g.life--;
             } else {
-                g.vel[2] = g.vel[2] - 0.05000000074505806;   // _DAT_004e9228 (double)
-                g.pos[0] = g.vel[0] + g.pos[0];
-                g.pos[1] = g.vel[1] + g.pos[1];
-                g.pos[2] = g.vel[2] + g.pos[2];
+                // Float fields (+0x08..+0x1c); every result is stored float.
+                g.vel[2] = f32(g.vel[2] - 0.05000000074505806);   // _DAT_004e9228 (double)
+                g.pos[0] = f32(g.vel[0] + g.pos[0]);
+                g.pos[1] = f32(g.vel[1] + g.pos[1]);
+                g.pos[2] = f32(g.vel[2] + g.pos[2]);
                 clampField(g.pos);
                 this._syncGrain(g);
             }
@@ -652,6 +677,11 @@ export class Field {
         this.mRavens = [];
         this.mPets = [];
         this.mWolves = [];
+        // Original pet list fc+0x44 holds mice, elephants and wolves in
+        // insertion order (FUN_00410116 update, FUN_0040a3d6 draw). mPets /
+        // mWolves are kept as views for the other files.
+        this.mPetList = [];
+        this._ravensDone = false;       // JS: raven tick already ran this tick
         this.mSeeds = [];
         this.mFieldController = null;
         this.mUpgradeLevel = 0;
@@ -732,7 +762,11 @@ export class Field {
         else if (type === 1) g = new CoinSilver(x, gy);
         else if (type === 2) g = new DiamondBlue(x, gy);
         else if (type === 3) g = new DiamondRed(x, gy, value || 0);
-        if (g) this.mGems.push(g);   // FUN_0041c449 push_back
+        if (g) {
+            // +0x0c/+0x10 = the chick's exact field x/y (rwg_functions.c:15163).
+            g.setFieldPos(this._fieldPosAt(x, gy));
+            this.mGems.push(g);   // FUN_0041c449 push_back
+        }
         return g;
     }
 
@@ -741,9 +775,24 @@ export class Field {
     // (asm 0x40711b-0x407196) are done by Chick.js (bindEggToLaySpot).
     spawnEgg(x, y, eggType) {
         const egg = new Egg(eggType, x, y);
+        // +0x08/+0x0c = the laying chick's exact field position.
+        egg.setFieldPos(this._fieldPosAt(x, y));
         egg.mHatchSlowdown = this.mHatchSlowdown;
         this.mGems.push(egg);   // FUN_00410585 push_back
         return egg;
+    }
+
+    // JS: Chick.js passes screen points (chick.mX/mY) to spawnEgg/spawnGem,
+    // while the original copies the chick's float field position (+0x20/+0x24).
+    // Recover it from the chick being updated (or any listed chick) whose
+    // projection is exactly that screen point; otherwise invert FUN_00409533.
+    _fieldPosAt(sx, sy) {
+        const match = (c) => c && c.mPos && c.mX === sx && c.mY === sy;
+        let c = match(this._updatingChick) ? this._updatingChick : null;
+        if (!c) c = this.mChickens.find(match) || null;
+        if (c) return [c.mPos[0], c.mPos[1]];
+        const f = screenToField(sx, sy);
+        return [f.x, f.y];
     }
 
     // Holy spell effect entry (FUN_00420e2e asm 0x420eeb-0x420f41):
@@ -774,7 +823,7 @@ export class Field {
         let bestD = 1000000;
         for (const e of this._eggs()) {
             if (!(e.mClaim < 1 || e.mClaimId === id)) continue;
-            const d = maxNorm2(chick.mPos[0] - e.mFieldX, chick.mPos[1] - e.mFieldY);
+            const d = maxNorm2(f32(chick.mPos[0] - e.mFieldX), f32(chick.mPos[1] - e.mFieldY));
             if (!(d < bestD) || e.mBroodStarted) continue;
             const special = e.mEggType === EggType.BLUE || e.mEggType === EggType.RED;
             if (!special) { bestD = d; best = e; }
@@ -808,21 +857,19 @@ export class Field {
     // FUN_00404865(type, eggPos) (rwg_functions.c:5400) which creates the
     // chick at the egg position, and plays DAT_004fedb4 SOUND_EGG_BROODED.
     // Task counters below are JS bookkeeping.
+    // The chick is placed at the egg's exact field position (FUN_00404865
+    // receives egg +0x08 as a float pair, asm 0x406d57-0x406d60).
+    // (The former JS hatch statistics counters had no source and were removed.)
     hatchEgg(egg, x, y) {
         const chickType = EGG_TO_CHICK[egg.mEggType] !== undefined
             ? EGG_TO_CHICK[egg.mEggType] : ChickType.LAYER;
         const chick = createChick(chickType, x, y);
+        if (chick && chick.mPos) {
+            chick.mPos[0] = egg.mFieldX;
+            chick.mPos[1] = egg.mFieldY;
+        }
         this.addChick(chick);
         if (SOUNDS.SOUND_EGG_BROODED) SOUNDS.SOUND_EGG_BROODED.play();
-        const fc = this.mFieldController;
-        if (fc) {
-            fc.mTotalRaisedChicks++;
-            if (chickType === ChickType.MAGIC) fc.mHatchedMagic++;
-            else if (chickType === ChickType.HOLY) fc.mHatchedHoly++;
-            else if (chickType === ChickType.ROOSTER) {
-                fc.mHatchedRooster = (fc.mHatchedRooster || 0) + 1;
-            }
-        }
         return chick;
     }
 
@@ -854,7 +901,8 @@ export class Field {
         for (const c of this.mSeeds) {
             for (const s of c.mSeeds) {
                 if (!(s.claim < 1 || s.claimId === id)) continue;
-                const d = maxNorm3([pos[0] - s.pos[0], pos[1] - s.pos[1], pos[2] - s.pos[2]]);
+                const d = maxNorm3([f32(pos[0] - s.pos[0]), f32(pos[1] - s.pos[1]),
+                    f32(pos[2] - s.pos[2])]);
                 if (d < bestD) { bestD = d; best = s; }
             }
         }
@@ -887,7 +935,6 @@ export class Field {
         const h = (typeof hp === 'number') ? hp : (level > 0x28 ? 2 : 1);
         const sp = (typeof speedMult === 'number') ? speedMult : 1.0;
         const raven = new Raven(target, h, sp, this);
-        raven.mFresh = true;   // JS: see updateRavens
         this.mRavens.push(raven);
         if (SOUNDS.SOUND_KAR_KAR) SOUNDS.SOUND_KAR_KAR.play();
         return true;
@@ -907,10 +954,12 @@ export class Field {
 
     addPet(pet) {
         this.mPets.push(pet);
+        this.mPetList.push(pet);
     }
 
     addWolf(wolf) {
         this.mWolves.push(wolf);
+        this.mPetList.push(wolf);
     }
 
     getAliveChickCount() {
@@ -937,7 +986,8 @@ export class Field {
         if (n > 0x14) { lo = 0xf; hi = 0x1e; }
         if (n > 0x28) { lo = 10; hi = 0x14; }
         lo *= 100; hi *= 100;
-        let v = Math.trunc((crtRand() / 32767.0) * (hi - lo) + 0.5) + lo;
+        // FUN_00401148: fstps of rand()/32767.0 (float), then *(max-min)+0.5.
+        let v = Math.trunc(f32(crtRand() / 32767.0) * (hi - lo) + 0.5) + lo;
         if (this.mFastSickness) v = Math.trunc(v / 2);
         return v;
     }
@@ -1060,8 +1110,12 @@ export class Field {
             list.push({ key: gm.mFieldY, draw: (gg) => gm.draw(gg) });
             if (gm.drawShadow) gm.drawShadow(g);
         }
-        for (const pet of this.mPets) list.push({ key: screenToField(0, pet.mY).y, draw: (gg) => pet.draw(gg) });
-        for (const wolf of this.mWolves) list.push({ key: screenToField(0, wolf.mY).y, draw: (gg) => wolf.draw(gg) });
+        // Pet list fc+0x44 (mice, elephants, wolves in insertion order), key =
+        // the float field y at pet +0x0c (asm 0x40ac42).
+        for (const pet of this.mPetList) {
+            const key = (typeof pet.mPosY === 'number') ? pet.mPosY : screenToField(0, pet.mY).y;
+            list.push({ key, draw: (gg) => pet.draw(gg) });
+        }
         list.sort((a, b) => a.key - b.key);
         for (const e of list) e.draw(g);
 
@@ -1077,16 +1131,14 @@ export class Field {
 
     // Raven list part of FUN_004015f8 (rwg_functions.c:707-730): per raven
     // flash--, FUN_00416db8, FUN_00416ed4; removed when it returns false.
-    // In the original this loop runs after the +0x38 delay-- and BEFORE the
-    // controller's spawn rolls (rwg:735+), so a raven spawned this tick is
-    // not updated until the next one. FieldController runs the spawn rolls
-    // before Field.update, so ravens spawned this tick (mFresh, set in
-    // spawnRaven) are skipped once here.
+    // FieldController._updateRavenController calls this at the original
+    // point (after the +0x38 delay--, before the spawn rolls), so a raven
+    // spawned this tick is first updated next tick. Field.update calls it
+    // only as a fallback; _ravensDone prevents a second update per tick.
     updateRavens() {
-        for (const raven of this.mRavens) {
-            if (raven.mFresh) { raven.mFresh = false; continue; }
-            raven.update();
-        }
+        if (this._ravensDone) return;
+        this._ravensDone = true;
+        for (const raven of this.mRavens) raven.update();
         this.mRavens = this.mRavens.filter(r => r.mIsAlive);
     }
 
@@ -1097,8 +1149,6 @@ export class Field {
     // ..., pets FUN_00410116.
     update() {
         this._applyLevelConfig();
-        // Dog — FUN_004091b8 from GameView::Update FUN_00409372.
-        this.mDog.update();
 
         this.updateRavens();
 
@@ -1122,7 +1172,10 @@ export class Field {
         let counter = 0;
         const keep = [];
         for (const c of this.mChickens) {
-            if (c.mRemoved || !c.update(this)) continue;
+            this._updatingChick = c;
+            const alive = !c.mRemoved && c.update(this);
+            this._updatingChick = null;
+            if (!alive) continue;
             keep.push(c);
             if (pick !== -1 && c.canBeSickTarget()) {
                 if (pick === counter) {
@@ -1161,13 +1214,22 @@ export class Field {
         for (const fx of this.mSpellFx) fx.t = Math.fround(fx.t + 0.014999999664723873);
         this.mSpellFx = this.mSpellFx.filter(fx => !(fx.t > 1.0));
 
-        for (const pet of this.mPets) {
-            pet.update(this);
+        // FUN_00410116 (rwg_functions.c): one pet list (mice, elephants,
+        // wolves) in insertion order; entries whose vt[1] Update returns
+        // false are removed afterwards.
+        const dead = [];
+        for (const pet of this.mPetList) {
+            if (pet.update(this) === false) dead.push(pet);
         }
+        if (dead.length) {
+            this.mPetList = this.mPetList.filter(p => !dead.includes(p));
+            this.mPets = this.mPets.filter(p => !dead.includes(p));
+        }
+        this.mWolves = this.mWolves.filter(w => w.mIsAlive && !dead.includes(w));
 
-        for (const wolf of this.mWolves) {
-            wolf.update(this);
-        }
-        this.mWolves = this.mWolves.filter(w => w.mIsAlive);
+        this._ravensDone = false;
+        // Dog FUN_004091b8 is NOT part of the core tick: GameView::Update
+        // FUN_00409372 calls it after the controller update (asm 0x4093ac),
+        // every frame including paused ones — GameView.js ticks Field.mDog.
     }
 }

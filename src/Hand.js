@@ -103,16 +103,10 @@ export class Hand {
         }
     }
 
-    // JS helper used by GameView to gate drawing/clicking of the hand.
-    // UNKNOWN — not found in decompiled as a single test. The related
-    // original thresholds in FUN_0040cc71 are:
-    //   mouseY > 0x82 (130)  — raven/wolf aim & chick hover tests run
-    //                          (rwg_functions.c:15953)
-    //   mouseY >= 0x15f (351) — seed drop allowed (rwg_functions.c:16164,16168)
-    // Left unchanged.
-    isOverField() {
-        return this.mY > 80 && this.mY < 580;
-    }
+    // (The former JS isOverField() — mouseY 80..580 — had no source: the
+    // original shows the hand cursor image over the whole window and
+    // FUN_0040cc71 only tests mouseY > 0x82 (rwg_functions.c:15953) for
+    // raven/wolf/chick hover and mouseY >= 0x15f (rwg:16164,16168) for seeds.)
 
     // JS: mouse move. The original samples the mouse in FUN_0040cc71.
     move(x, y) {

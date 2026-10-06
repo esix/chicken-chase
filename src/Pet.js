@@ -68,10 +68,10 @@ const BIG_DIST = 1000000.0;
 // ---------------------------------------------------------------------------
 // FUN_00409567 (rwg_functions.c:11987)
 export function fieldToScreenX(x) { return Math.trunc(x * 6.0 + 0.5) + 10; }
-export function fieldToScreenY(y, z = 0) { return Math.trunc(y * 2.8 - 6.0 * z + 0.5) + 367; }
+export function fieldToScreenY(y, z = 0) { return Math.trunc(y * 2.799999952316284 - 6.0 * z + 0.5) + 367; } // _DAT_004fc3f8 = 2.8f
 // FUN_00409533 (rwg_functions.c:11965)
 export function screenToFieldX(px) { return (px - 10) / 6.0; }
-export function screenToFieldY(py) { return (py - 367) / 2.8; }
+export function screenToFieldY(py) { return Math.fround((py - 367) / 2.799999952316284); } // _DAT_004fc3f8 = 2.8f
 
 // ---------------------------------------------------------------------------
 // Random helpers
@@ -93,6 +93,21 @@ export function randomSpawnPoint() { return [mtRand() % 128, mtRand() % 72]; }
 function chebyshev(dx, dy) {
     const ax = Math.abs(dx), ay = Math.abs(dy);
     return ay < ax ? ax : ay;
+}
+
+// All pet fields are float32 and every intermediate is stored through a
+// float (fstps) in the asm, so the port rounds with Math.fround at the
+// same points.
+const f32 = Math.fround;
+
+// FUN_00403cdf (asm 0x403cdf-0x403d29): normalize (x, y) to length 1.0:
+//   sq = (float)(x*x + y*y); s = (float)sqrt(sq); k = (float)(1.0 / s)
+//   (fdivrl); x = (float)(x*k); y = (float)(k*y).
+function normalize(x, y) {
+    const sq = f32(x * x + y * y);
+    const s = f32(Math.sqrt(sq));
+    const k = f32(1.0 / s);
+    return [f32(x * k), f32(k * y)];
 }
 
 // Chick vtable[5] isActive — FUN_0040327c (rwg_functions.c:3368):
@@ -175,9 +190,11 @@ export class Pet {
     }
 
     // FUN_00407e59 (rwg_functions.c:9882): cur += rate*f, clamped to max
+    // (asm 0x407e6f-0x407e79: flds rate, fmuls f, fadds cur, fstps cur;
+    // clamp when max <= cur, asm 0x407e7c-0x407e8c).
     _advanceAction(f) {
         if (this.mActionMax > 0 && !this._actionFinished()) {
-            this.mActionCur = this.mActionRate * f + this.mActionCur;
+            this.mActionCur = f32(this.mActionRate * f + this.mActionCur);
         }
         if (this.mActionCur > this.mActionMax) this.mActionCur = this.mActionMax;
     }
@@ -191,26 +208,27 @@ export class Pet {
 
     // vtable[7] FUN_00410037 (rwg_functions.c:19778):
     //   chebyshev(target - pos) < getRadius() * _DAT_004e9260 (1.1)
+    //   (diffs stored as float, asm 0x41003f-0x410053; 1.1 is a double)
     _isNear(tx, ty) {
-        return chebyshev(tx - this.mPosX, ty - this.mPosY) < this._getRadius() * 1.100000023841858;
+        return chebyshev(f32(tx - this.mPosX), f32(ty - this.mPosY))
+            < this._getRadius() * 1.100000023841858;
     }
 
     // vtable[6] FUN_00410081 (rwg_functions.c:19802): step toward target.
     // Returns true while still moving, false when it snapped onto the target.
+    // (asm 0x410081-0x410113; every intermediate stored as float)
     _moveTowards(tx, ty) {
-        const step = this._getSpeed();
-        let dx = tx - this.mPosX;
-        let dy = ty - this.mPosY;
+        const step = f32(this._getSpeed());
+        let dx = f32(tx - this.mPosX);
+        let dy = f32(ty - this.mPosY);
         const moving = step * 1.100000023841858 <= chebyshev(dx, dy);
         if (moving) {
             // FUN_00403cdf (rwg_functions.c:4344): normalize to length 1.0
-            const len = Math.sqrt(dx * dx + dy * dy);
-            dx = dx * (1.0 / len);
-            dy = (1.0 / len) * dy;
+            [dx, dy] = normalize(dx, dy);
             this.mDirX = dx;
             this.mDirY = dy;
-            this.mPosX = dx * step + this.mPosX;
-            this.mPosY = dy * step + this.mPosY;
+            this.mPosX = f32(dx * step + this.mPosX);
+            this.mPosY = f32(dy * step + this.mPosY);
         } else {
             this.mPosX = tx;
             this.mPosY = ty;
@@ -630,13 +648,18 @@ export class Wolf extends Pet {
     // vtable[3] FUN_00424f19 (rwg_functions.c:45439): HP -= dmg (floored at 0),
     // stun = 15, knockback += dir * _DAT_004e91a8 (0.6) * dmg.
     // dirX/dirY are the hit direction in field units.
+    // asm 0x424f19-0x424f75: kx = (float)((float)(dirX*0.6) * (float)dmg),
+    // ky = (float)((float)dmg * (float)(0.6*dirY)), knockback += (float).
     hit(damage = 1, dirX = 0, dirY = -1) {
         this.mHP -= damage;
         if (this.mHP < 0) this.mHP = 0;
         this.mStun = 0xf;
-        const k = 0.6000000238418579;
-        this.mKnockbackX = this.mKnockbackX + dirX * k * damage;
-        this.mKnockbackY = this.mKnockbackY + damage * k * dirY;
+        const k = 0.6000000238418579;   // _DAT_004e91a8 (double)
+        const fd = f32(damage);
+        const kx = f32(f32(dirX * k) * fd);
+        const ky = f32(fd * f32(k * dirY));
+        this.mKnockbackX = f32(this.mKnockbackX + kx);
+        this.mKnockbackY = f32(this.mKnockbackY + ky);
     }
 
     // vtable[8] FUN_0040eddb: radius 3.0
@@ -653,19 +676,21 @@ export class Wolf extends Pet {
 
     // vtable[6] FUN_00424fa0 (rwg_functions.c:45485): like Pet::moveTowards but
     // the knockback is added to the position while moving.
+    // asm 0x424ffb-0x42504a: sx = (float)(dx*step); sx = (float)(kx + sx);
+    // x = (float)(x + sx) (same for y).
     _moveTowards(tx, ty) {
-        const step = this._getSpeed();
-        let dx = tx - this.mPosX;
-        let dy = ty - this.mPosY;
+        const step = f32(this._getSpeed());
+        let dx = f32(tx - this.mPosX);
+        let dy = f32(ty - this.mPosY);
         const moving = step * 1.100000023841858 <= chebyshev(dx, dy);
         if (moving) {
-            const len = Math.sqrt(dx * dx + dy * dy);
-            dx = dx * (1.0 / len);
-            dy = (1.0 / len) * dy;
+            [dx, dy] = normalize(dx, dy);
             this.mDirX = dx;
             this.mDirY = dy;
-            this.mPosX = this.mPosX + this.mKnockbackX + dx * step;
-            this.mPosY = this.mKnockbackY + dy * step + this.mPosY;
+            const sx = f32(this.mKnockbackX + f32(dx * step));
+            const sy = f32(this.mKnockbackY + f32(dy * step));
+            this.mPosX = f32(this.mPosX + sx);
+            this.mPosY = f32(sy + this.mPosY);
         } else {
             this.mPosX = tx;
             this.mPosY = ty;

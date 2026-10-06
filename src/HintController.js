@@ -127,13 +127,18 @@ export class HintController {
             let b = Math.fround(this.mBob + 0.029999999329447746);
             this.mBob = b;
             if (1.0 < b) this.mBob = -1.0;
-            const a = Math.abs(this.mBob);                   // FUN_00406b08
-            // offset = 30*a + 10*(1-a) (_DAT_004fc3dc=30, _DAT_004fc3d4=10),
-            // y negated when the pointer is NOT the "down" one
+            const f = Math.fround;
+            const a = f(Math.abs(this.mBob));                // FUN_00406b08 (fstps -0x4)
+            // asm 0x40d2d6-0x40d320, every product/sum stored as float32:
+            // offset = 30*a + 10*(1-a) (_DAT_004fc3dc=30, _DAT_004fc3d4=10;
+            // 1-a: `fld1; fsubp` = DE E1 = FSUBRP -> 1.0 - a), y negated
+            // (fchs) when the pointer is NOT the "down" one
             // (_DAT_004fc3e0=-30, _DAT_004fc3d8=-10).
-            const dx = 10.0 * (1.0 - a) + 30.0 * a;
-            let dy = -10.0 * (1.0 - a) + -30.0 * a;
+            const oneMinusA = f(1.0 - a);
+            const dx = f(f(10.0 * oneMinusA) + f(30.0 * a));
+            let dy = f(f(-10.0 * oneMinusA) + f(-30.0 * a));
             if (!this.mPointDown) dy = -dy;
+            // ftol(v + 0.5) (_DAT_004e90c8 = 0.5 double) truncates toward 0.
             this.mPointerX = this.mPointX + Math.trunc(dx + 0.5);
             this.mPointerY = this.mPointY + Math.trunc(dy + 0.5);
         }
@@ -358,9 +363,12 @@ export class LevelTutorial {
             case 5:   // FUN_00404f23(world)
                 if (anyChickRatioAtLeast5(fc)) text = 'Sell chickens to earn $5,000. For each adult chicken sold, you will be able to buy some younger ones.';
                 break;
-            case 6:   // secs > 0x3c && money > store +0 (0xfa, FUN_0041e7f2) &&
-                      // FUN_0041eae5(0) (special-shop item list) not empty
-                if (secs > 0x3c && money > 0xfa && ctx.specialShopAvailable && ctx.specialShopAvailable()) {
+            case 6:   // secs > 0x3c && money > store +0 (asm 0x422ae3-0x422ae6:
+                      // `cmpl (%eax), %edx` on game+0x30 = the live special-
+                      // shop price, 0xfa at FUN_0041e7f2, doubled per purchase
+                      // by FUN_0041eb94 = fc.mUpgradePrice) && FUN_0041eae5(0)
+                      // (special-shop item list) not empty
+                if (secs > 0x3c && money > storePrice(fc) && ctx.specialShopAvailable && ctx.specialShopAvailable()) {
                     // DAT_004dfd20 (string read from app/chicken_chase.RWG; \x92 = ’)
                     text = 'To make playing easier, buy upgrades in the specialty shop. When it’s available, look for the BUY button located above the SELL button.';
                 }
@@ -406,7 +414,7 @@ export class LevelTutorial {
             this.mDelay = 800;
             return;
         }
-        const count = fc.mField.getAliveChickCount();   // world +8
+        const count = worldListSize(fc);                 // world +8 (asm 0x422186-0x422189)
         if (this.f1c && count < this.mChickCount) this.mChickCount = count;
         if (!this.f1b && anyFedChick(fc)) {
             this.f1b = true;
@@ -542,7 +550,9 @@ export class LevelTutorial {
         const fc = ctx.fc, hint = ctx.hint;
         const field = fc.mField;
         const cfg = fc.mLevelConfig || {};
-        const roosters = field.getChickCountByType(ChickType.ROOSTER);     // FUN_00404ad0(2)
+        // FUN_00404ad0(2) (asm 0x404ad0-0x404b38): world-list entries whose
+        // type (+4) == 2, no state filter.
+        const roosters = listChicks(fc).filter(c => c.mType === ChickType.ROOSTER).length;
         const needed = fc._roostersNeeded ? fc._roostersNeeded() : 0;      // FUN_00401308
         const roosterEnabled = Array.isArray(cfg.chickTypeEnabled)
             ? !!cfg.chickTypeEnabled[2] : true;                            // FUN_00404a71(2)
@@ -555,7 +565,7 @@ export class LevelTutorial {
             text = 'Your chickens are too hungry. Drop more seeds for them.';
         } else if (availableEggs(fc) < 1 && anyHungry(fc, true)) {          // FUN_00422990
             text = 'You need to lay some more eggs to feed the magic chickens. ';
-        } else if (field.getAliveChickCount() > 0x96) {
+        } else if (worldListSize(fc) > 0x96) {                          // world +8, asm 0x4228db
             text = 'You farm is too crowded! You should sell some of your chickens.';
         }
         hint.setText(text, 0, 0, 500);
@@ -563,6 +573,25 @@ export class LevelTutorial {
 }
 
 // --- helpers (original predicate -> JS state) -------------------------------
+
+// World chick list (game+0x14). Field.mChickens mirrors it: entries leave
+// the array when their update returns false (Field.update); mRemoved marks
+// ones already unlinked this tick. The list has no alive/state filter.
+function listChicks(fc) {
+    return fc.mField.mChickens.filter(c => !c.mRemoved);
+}
+
+// std::list size at world +8.
+function worldListSize(fc) {
+    return listChicks(fc).length;
+}
+
+// Store +0 (game+0x30): current special-shop price (FieldController
+// mUpgradePrice; FUN_0041e7f2 initialises it to 0xfa).
+function storePrice(fc) {
+    if (typeof fc.getSpecialShopPrice === 'function') return fc.getSpecialShopPrice();
+    return fc.mUpgradePrice;
+}
 
 // state +8 tick counter; FieldController keeps it in ms (x10).
 function elapsedTicks(fc) {
@@ -577,7 +606,7 @@ function slotValue(fc, type) {
 // FUN_00421e54 (rwg_functions.c:41686): any chick with FUN_00403a3e != 0
 // (food +0x34 >= FUN_00405899()*5) = Chick._isFed().
 function anyFedChick(fc) {
-    return fc.mField.mChickens.some(c => c.mIsAlive && typeof c._isFed === 'function' && c._isFed());
+    return listChicks(fc).some(c => typeof c._isFed === 'function' && c._isFed());
 }
 
 // FUN_00404f23 (rwg_functions.c:6054, asm 0x404f63-0x404fa4): any chick with
@@ -585,8 +614,8 @@ function anyFedChick(fc) {
 // FUN_0040327c active) and ftol(FUN_00403c75() + 0.5 (_DAT_004e90c8)) >= 5,
 // FUN_00403c75 = food / (FUN_00405899()*33) (Chick.getSellRatio).
 function anyChickRatioAtLeast5(fc) {
-    return fc.mField.mChickens.some(c => {
-        if (!c.mIsAlive || isSickAction(c)) return false;
+    return listChicks(fc).some(c => {
+        if (isSickAction(c)) return false;
         if (typeof c.isActive === 'function' && !c.isActive()) return false;
         return Math.trunc(c.getSellRatio() + 0.5) >= 5;
     });
@@ -609,15 +638,16 @@ function eggGone(egg) {
     return !egg.mIsAlive || !!egg.mCollected || (egg.mHatchProgress || 0) >= 1.0;
 }
 
-// FUN_00402342 (rwg_functions.c:2063): action +0xc is 3 or 4 (sick).
+// FUN_00402342 (rwg_functions.c:2063): action +0xc is 3 or 4 (sick) =
+// Chick.mIsSick (mAction A_SICK_START / A_SICK_IDLE).
 function isSickAction(c) {
-    return c.mState === ChickState.SICK_START || c.mState === ChickState.SICK_IDLE;
+    return !!c.mIsSick;
 }
 
 // FUN_00421ec4 (rwg_functions.c:41741): first chick of the world list in a
 // sick action (FUN_00402342 only; no other filter).
 function firstSickChick(fc) {
-    return fc.mField.mChickens.find(c => c.mIsAlive && isSickAction(c)) || null;
+    return listChicks(fc).find(c => isSickAction(c)) || null;
 }
 
 // Centre of the chick rect FUN_00409956 / Chick.getRect (asm
@@ -630,11 +660,15 @@ function chickRectCentre(c) {
 // FUN_0042290d / FUN_00422990: a chick (magic = type 3 or not) whose +0x1c
 // (Chick.mAge) < 0x5dc.
 function anyHungry(fc, magic) {
-    return fc.mField.mChickens.some(c => c.mIsAlive
-        && ((c.mType === ChickType.MAGIC) === magic) && c.mAge < 0x5dc);
+    // asm 0x42290d-0x422989 / 0x422990-0x422a1d: whole world list, no
+    // state filter.
+    return listChicks(fc).some(c =>
+        ((c.mType === ChickType.MAGIC) === magic) && c.mAge < 0x5dc);
 }
 
-// FUN_004077fa (rwg_functions.c:9252): eggs whose +0x20 flag is clear.
+// FUN_004077fa (rwg_functions.c:9252): eggs of the egg list whose +0x20
+// (sat-on flag = Gem.mBroodStarted, see FieldController._clickEggAt) is clear.
 function availableEggs(fc) {
-    return fc.mField.mGems.filter(g => g.mType === 4 && g.mIsAlive && !g.mCollected).length;
+    return fc.mField.mGems.filter(g => g.mType === 4 && g.mIsAlive && !g.mCollected
+        && !g.mBroodStarted).length;
 }

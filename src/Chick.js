@@ -57,16 +57,19 @@
 // like the original; mX/mY are screen accessors through FUN_00409567
 // (screen = (6x+10, 2.8y-6z+367)) so the rest of the port keeps working.
 //
-// Constants read from app/chicken_chase.RWG .rdata: _DAT_004e9228=0.05 (d),
+// Constants read from app/chicken_chase.RWG .rdata: _DAT_004e9228=0.05f as double,
 // _DAT_004e90c8=0.5 (d), _DAT_004e9350=1.5 (d), _DAT_004e9260=1.1 (d),
 // _DAT_004e9304=1.3 (f), _DAT_004e92a8=1.2 (f), _DAT_004dc858=0.5 (f),
-// _DAT_004e9148=0.03 (d), _DAT_004e9168=61.0 (d), _DAT_004e9238=0.11 (d),
-// _DAT_004e9230=-1.0 (f), _DAT_004e93e0=2.0 (f), _DAT_004e93e8=1.99 (d),
+// _DAT_004e9148=0.03f (d), _DAT_004e9168=61.0 (d), _DAT_004e9238=0.11f (d),
+// _DAT_004e9230=-1.0 (f), _DAT_004e93e0=2.0 (f), _DAT_004e93e8=1.99f (d),
 // _DAT_004e92c0=0.25 (d), _DAT_004e92a0=0.8 (d), _DAT_004e93f8=0.7 (d),
 // _DAT_004e93f0=510.0 (d), _DAT_004e90d8=10.0 (d), _DAT_004e9150=0.01 (d),
 // _DAT_004e9408=0.999 (d), _DAT_004e9400=0.999 (f), _DAT_004e9250=70.0 (f),
 // _DAT_004e939c=400.0 (f), _DAT_004e9234=0.001 (f), _DAT_004e9158=1000.0 (d),
-// DAT_004fc72c=1 (initial chick id).
+// DAT_004fc72c=1 (initial chick id). Most "(d)" constants hold a float value
+// widened to double (e.g. 0.05 = 0.05000000074505806, 1.1 = 1.100000023841858,
+// 0.11 = 0.11000000402331356, 1.99 = 1.9900000095367432) — the code uses
+// the exact bit values.
 
 import { IMAGES, SOUNDS } from './Res.js';
 
@@ -134,19 +137,29 @@ let gNextChickId = 1;
 // Helpers
 // ---------------------------------------------------------------------------
 
-// FUN_00409567 projection (see Field.js fieldToScreen).
+// FUN_00409567 projection (asm 0x409567-0x4095cc): matrix globals in
+// .data read from the binary: _DAT_004fc3e4 = 10, _DAT_004fc3e8 = 367,
+// _DAT_004fc3ec = 6.0f, _DAT_004fc3f8 = 2.8f (= 2.799999952316284),
+// _DAT_004fc400 = -6.0f, the other entries 0.0f;
+//   x = ftol(fx*6 + 0.5) + 10, y = ftol(fy*2.8f + fz*-6 + 0.5) + 367.
+// FUN_00409533 (rwg:11965) is the inverse: ((float)(sx-10))/6.0f,
+// ((float)(sy-367))/2.8f.
+const PROJ_Y = 2.799999952316284;   // _DAT_004fc3f8 (float 2.8)
 function projX(fx) { return Math.trunc(fx * 6.0 + 0.5) + 10; }
-function projY(fy, fz) { return Math.trunc(fy * 2.8 + (fz || 0) * -6.0 + 0.5) + 367; }
+function projY(fy, fz) { return Math.trunc(fy * PROJ_Y + (fz || 0) * -6.0 + 0.5) + 367; }
+function unprojX(sx) { return Math.fround((sx - 10) / 6.0); }
+function unprojY(sy) { return Math.fround((sy - 367) / PROJ_Y); }
 
 // thunk_FUN_00429891: Mersenne twister & 0x7fffffff.
 function mtRand() { return Math.floor(Math.random() * 0x80000000); }
 // _rand (FUN_004a082c): 0..0x7fff.
 function crtRand() { return Math.floor(Math.random() * 0x8000); }
 
-// FUN_00403207 (rwg_functions.c:3308): (base - spread) + 2*mt*2^-31*spread.
+// FUN_00403207 (asm 0x403207-0x403230): f = mt * 2^-31 (_DAT_004e9248) *
+// spread; (base - spread) + (f + f) (fadd st,st then faddp); fstps.
 function randAround(base, spread) {
     const f = mtRand() * 4.656612873077393e-10 * spread;
-    return (base - spread) + f + f;
+    return Math.fround((base - spread) + (f + f));
 }
 
 // FUN_00403c97: max(|x|,|y|);  FUN_004050cf: max(|x|,|y|,|z|).
@@ -186,7 +199,9 @@ function laySpotsOf(field) {
         for (let i = 0; i < 0x12; i++) {
             const k = i + 1;
             spots.push({
-                pos: [Math.fround(Math.fround(k * 7.111111164093018) - 3.555555582046509), 68.0],
+                // asm 0x406bc2-0x406bd4: fild k; fmull 7.111..; fsubl
+                // 3.555..; fstps — one rounding to float at the end.
+                pos: [Math.fround(k * 7.111111164093018 - 3.555555582046509), 68.0],
                 timer: 0,
                 owner: -1,
                 egg: null,
@@ -347,7 +362,7 @@ export class Chick {
         this.mAction = A_IDLE;                          // +0x0c = 1
         this.mActionElapsed = 0;                        // +0x14
         this.mActionLen = 150.0;                        // +0x10 = _DAT_004e9174
-        this.mPos = [(x - 10) / 6.0, (y - 367) / 2.8, 0];   // +0x20..+0x28
+        this.mPos = [unprojX(x), unprojY(y), 0];        // +0x20..+0x28 (FUN_00409533)
         this.mFacing = [1.0, 0];                        // +0x2c = 1.0, +0x30 = 0
         this.mHunger = 2000;                            // +0x38
         // +0x40 = layFlag ? (FUN_00405886 ? 1500 : 2000) : -1
@@ -375,9 +390,9 @@ export class Chick {
 
     // --- screen accessors (FUN_00409567 / FUN_00409533) -------------------
     get mX() { return projX(this.mPos[0]); }
-    set mX(px) { this.mPos[0] = (px - 10) / 6.0; }
+    set mX(px) { this.mPos[0] = unprojX(px); }
     get mY() { return projY(this.mPos[1], 0); }
-    set mY(py) { this.mPos[1] = (py - 367) / 2.8; }
+    set mY(py) { this.mPos[1] = unprojY(py); }
     // Facing used by the draw mirror flag (+0x2c > 0, FUN_00409d5c).
     get mDirection() { return this.mFacing[0] > 0 ? 0 : 1; }
     set mDirection(d) { this.mFacing = [d ? -1.0 : 1.0, 0]; }
@@ -412,10 +427,13 @@ export class Chick {
     // "state != 0" (Pet.js/RiskController mapping).
     get mIsAdult() { return this.mStateO !== S_HELD; }
     set mIsAdult(v) {}
-    // Draw scale FUN_00409d5c (see header). Writes are ignored.
+    // Draw scale FUN_00409d5c (asm 0x409e15-0x409e43): r = (float)
+    // FUN_00403a65 (fstps); r < 1.99 (_DAT_004e93e8 double =
+    // 1.9900000095367432) → r*0.25 + 0.5, else 1.0; stored as float (+0x18).
+    // Writes are ignored.
     get mScale() {
-        const r = this.getFoodRatio();
-        return (r >= 1.99) ? 1.0 : r * 0.25 + 0.5;
+        const r = Math.fround(this.getFoodRatio());
+        return (r < 1.9900000095367432) ? Math.fround(r * 0.25 + 0.5) : 1.0;
     }
     set mScale(v) {}
     get mGrowTimer() { return 0; }
@@ -455,9 +473,10 @@ export class Chick {
     _actionFinished() {
         return this.mActionLen > 0 && this.mActionElapsed === this.mActionLen;
     }
-    // FUN_0040918d (rwg_functions.c:11638): elapsed/length (0 if length <= 0).
+    // FUN_0040918d (asm 0x40918d-0x4091ae): length > 0 ? elapsed/length : 0,
+    // returned through a float (fstps).
     getActionProgress() {
-        return this.mActionLen <= 0 ? 0 : this.mActionElapsed / this.mActionLen;
+        return this.mActionLen > 0 ? Math.fround(this.mActionElapsed / this.mActionLen) : 0;
     }
     _endAction() { this.mActionElapsed = this.mActionLen; }
 
@@ -578,9 +597,12 @@ export class Chick {
     _onActionEnd(field) {}
 
     // FUN_0040392e (rwg_functions.c:3930): state-4 wander.
+    // asm 0x403934-0x403966: float differences (fsubs; fstps), FUN_00403c97,
+    // fcompl _DAT_004e9238 (double 0.11000000402331356).
     _wander(field) {
-        const d = maxNorm2(this.mWander[0] - this.mPos[0], this.mWander[1] - this.mPos[1]);
-        if (0.11 <= d) {
+        const d = maxNorm2(Math.fround(this.mWander[0] - this.mPos[0]),
+            Math.fround(this.mWander[1] - this.mPos[1]));
+        if (0.11000000402331356 <= d) {
             if (this.mWander[0] < 0.0 && (mtRand() & 1) !== 0 && field && field.pickRandomFieldPoint) {
                 this.mWander = field.pickRandomFieldPoint();
             }
@@ -656,20 +678,27 @@ export class Chick {
     //   step = (ratio*0.05*0.5 + 0.05) * speedMult; hurry → *1.5
     //   moving while step*1.1 <= maxNorm(t - pos): facing = normalised d,
     //   pos += facing*step; else pos = t, z = 0. Returns `moving`.
+    //   Constants (doubles in .rdata): _DAT_004e9228 = 0.05000000074505806,
+    //   _DAT_004e90c8 = 0.5, _DAT_004e9350 = 1.5, _DAT_004e9260 =
+    //   1.100000023841858. step, d and the facing are float locals (fstps).
     _step(t) {
-        let step = (this.getFoodRatio() * 0.05 * 0.5 + 0.05) * this.mSpeedMult;
-        if (this.inHurry()) step = step * 1.5;
-        let dx = t[0] - this.mPos[0];
-        let dy = t[1] - this.mPos[1];
+        const K = 0.05000000074505806;
+        let step = Math.fround((this.getFoodRatio() * K * 0.5 + K) * this.mSpeedMult);
+        if (this.inHurry()) step = Math.fround(step * 1.5);
+        let dx = Math.fround(t[0] - this.mPos[0]);
+        let dy = Math.fround(t[1] - this.mPos[1]);
         const moving = step * 1.100000023841858 <= maxNorm2(dx, dy);
         if (moving) {
-            // FUN_00403cdf: normalise (dx, dy) to length 1.0
-            const len = Math.sqrt(dx * dx + dy * dy);
-            dx = dx * (1.0 / len);
-            dy = (1.0 / len) * dy;
+            // FUN_00403cdf (asm 0x403cdf-0x403d29): len = (float)sqrt((float)
+            // (x*x + y*y)); k = (float)(1.0 / len); x = (float)(x*k),
+            // y = (float)(k*y).
+            const len = Math.fround(Math.sqrt(Math.fround(dx * dx + dy * dy)));
+            const k = Math.fround(1.0 / len);
+            dx = Math.fround(dx * k);
+            dy = Math.fround(k * dy);
             this.mFacing = [dx, dy];
-            this.mPos[0] = dx * step + this.mPos[0];
-            this.mPos[1] = dy * step + this.mPos[1];
+            this.mPos[0] = Math.fround(dx * step + this.mPos[0]);
+            this.mPos[1] = Math.fround(dy * step + this.mPos[1]);
         } else {
             this.mPos = [t[0], t[1], 0];
         }
@@ -683,7 +712,8 @@ export class Chick {
             mult = 1.2999999523162842;               // _DAT_004e9304
         }
         if (this.mActionLen > 0 && !this._actionFinished()) {
-            this.mActionElapsed = this.mSpeedMult * mult + this.mActionElapsed;
+            // asm 0x403650-0x403659: flds mult; fmuls; fadds; fstps.
+            this.mActionElapsed = Math.fround(this.mSpeedMult * mult + this.mActionElapsed);
         }
         if (this.mActionLen <= this.mActionElapsed) this.mActionElapsed = this.mActionLen;
 
@@ -742,9 +772,10 @@ export class Chick {
     }
 
     // FUN_004035c8 (rwg_functions.c:3626): fall: vz += 0.03; z -= vz; z >= 0.
+    // asm 0x4035c8-0x403601: both stores are float (fstps).
     _fall() {
-        this.mVz = this.mVz + 0.029999999329447746;
-        this.mPos[2] = this.mPos[2] - this.mVz;
+        this.mVz = Math.fround(this.mVz + 0.029999999329447746);
+        this.mPos[2] = Math.fround(this.mPos[2] - this.mVz);
         if (this.mPos[2] <= 0.0) this.mPos[2] = 0;
     }
 
@@ -782,10 +813,12 @@ export class Chick {
             if (0.0 < this.mPos[2]) return true;
         }
         this.mVz = 0;
-        // +0x64 hungry-icon timer: +0.01 per tick while vt[2], saturating at
-        // 0.999; otherwise 0.
+        // +0x64 hungry-icon timer (asm 0x4034b2-0x4034e1): v = (float)(+0x64 +
+        // _DAT_004e9150 double 0.009999999776482582); v < _DAT_004e9408
+        // (double 0.9990000128746033) ? v : _DAT_004e9400 (float 0.999).
+        // vt[2] false → 0.
         if (this.showsHungryIcon(field)) {
-            const v = this.mHungryAnim + 0.009999999776482582;
+            const v = Math.fround(this.mHungryAnim + 0.009999999776482582);
             this.mHungryAnim = (v < 0.9990000128746033) ? v : 0.9990000128746033;
         } else {
             this.mHungryAnim = 0;
@@ -1002,12 +1035,15 @@ export class LayerChick extends SimpleChick {
     }
 
     // vt[14] FUN_0040dba2 (rwg_functions.c:16958): up to 31 tries:
-    // r = mt/2147483647.0; subtract {0.35, 0.24, 0.14, 0.15, 1.0}; first index
+    // r = mt/2147483647.0; subtract the doubles (fldl, asm 0x40dbab-0x40dbd8)
+    // _DAT_004e9388 = 0.3499999940395355, _DAT_004e9380 =
+    // 0.23999999463558197, _DAT_004e9378 = 0.14, _DAT_004e9370 = 0.15, 1.0;
+    // first index
     // with r <= 0 → chick type. Accept when the level enables that type
     // (FUN_00404a71 = LevelData chickTypeEnabled); Broody (1) additionally
     // needs world+0x274 (Field.mBroodyAllowed). After 31 tries → 0.
     getEggType(field) {
-        const weights = [0.35, 0.23999999463558197, 0.14000000059604645, 0.15000000596046448, 1.0];
+        const weights = [0.3499999940395355, 0.23999999463558197, 0.14, 0.15, 1.0];
         const fc = fcOf(field);
         const enabled = fc && fc.mLevelConfig && fc.mLevelConfig.chickTypeEnabled;
         for (let tries = 0; tries <= 0x1e; tries++) {
@@ -1062,12 +1098,15 @@ export class BroodyChick extends SimpleChick {
     }
 
     // Free for a new egg (FUN_0040412c:4924-4935): not hungry, not sick,
-    // fed (tier >= 1), state != 0x14 and no egg target.
+    // fed (tier >= 1), state != 0x14 and no egg target. The candidate list
+    // (FUN_004049d4) only filters on type == 1 — no state 0/6 check; a sold
+    // chick (mRemoved) has already left the original list.
     isFreeForEgg() {
+        if (this.mRemoved) return false;
         if (this._updateHungry() || this.mIsSick) return false;
         if (this.getFoodTier() < 1 || this.mStateO === S_BROOD) return false;
         this._validateEgg();
-        return !this.mBroodingEgg && this.mIsAlive && !this.mIsCarried;
+        return !this.mBroodingEgg;
     }
 
     // vt[7] FUN_00402369
@@ -1084,7 +1123,7 @@ export class BroodyChick extends SimpleChick {
         const e = this.mBroodingEgg;
         if (!e) { this._endAction(); return; }
         // target = egg pos, y + 0.5 (_DAT_004e90c8); action 11 (60).
-        this.mTarget = [e.mFieldX, e.mFieldY + 0.5];
+        this.mTarget = [e.mFieldX, Math.fround(e.mFieldY + 0.5)];
         this._setActionLen(A_WALK, 60.0);
     }
 

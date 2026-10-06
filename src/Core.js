@@ -14,7 +14,7 @@
 //   one file per player                               (reader FUN_00410c42:21051,
 //                                                     writer FUN_00410f28:21265)
 //     = version int 100, vector<int> level times (count = completed levels),
-//       bool +0x1c, bool +0x1d, set<int> upgrade ids (< 0x11)
+//       bool +0x1c, bool +0x1d, list<int> upgrade ids (< 0x11)
 //   Player ctor FUN_00410be5:21009: +0x1c = 1, +0x1d = 1, times vector empty,
 //     upgrade set empty.
 //   +0x1c = "show hints" (cleared by the hint dialog checkbox FUN_0040d875:16741,
@@ -53,7 +53,7 @@ function makeProfile(name) {
     return {
         name,
         maxLevel: 1,          // = completed-level count + 1 (FUN_0041614b:28638)
-        upgradeIds: [],       // set<int> at +0x30/+0x34 (FUN_00410be5 rwg:21039); ids < 0x11 (rwg:21157)
+        upgradeIds: [],       // list<int> at +0x30/+0x34 (FUN_00410be5 rwg:21039); ids < 0x11 (rwg:21157)
         bestTimes: {},        // vector<int> at +0x24 (rwg:21034), index = level-1
         showHints: true,      // +0x1c = 1 (FUN_00410be5 rwg:21032)
         showSurprise: true,   // +0x1d = 1 (FUN_00410be5 rwg:21033)
@@ -68,10 +68,10 @@ export class Core {
         this.mCurrentName = null;    // current-player iterator
         // Active fields (point to current profile's data — kept for legacy callers)
         this.mMaxLevelReached = 1;
-        // Player upgrade set<int> (+0x30, copied by FUN_0040821a / FUN_00408234).
+        // Player upgrade list<int> (+0x30, copied by FUN_0040821a / FUN_00408234).
         // Upgrade id i == house decoration i (IMAGE_GAME_BACK_UPGRADE<i>, drawn
         // by FUN_004248b4) == dialog icon IMAGE_UPGRADE_PREVIEW<i> (FUN_00423f8a
-        // rwg:44128-44131). Kept sorted (std::set iteration order).
+        // rwg:44128-44131). Kept in insertion (purchase) order — std::list.
         this.mUpgradeIds = [];
         this.mPlayerName = '';
         this.mShowHints = true;
@@ -198,33 +198,34 @@ export class Core {
         return best ? { name: best.name, time: bestTime } : null;
     }
 
-    // FUN_00408234 (rwg:10397) → FUN_0040821a: copy of the current player's
-    // upgrade set (+0x30). Ascending, as std::set iterates.
+    // FUN_00408234 (rwg:10397) → FUN_0040821a → FUN_00408f48: copy of the
+    // current player's upgrade list (+0x30). It is a std::list (append
+    // FUN_0040ca85 throws "list<T> too long", find FUN_0041062d is a linear
+    // walk), iterated via next pointers (FUN_0044bda6) → PURCHASE order.
     getUpgradeIds() {
-        return (this.mUpgradeIds || []).slice().sort((a, b) => a - b);
+        return (this.mUpgradeIds || []).slice();
     }
 
     hasUpgrade(id) {
         return (this.mUpgradeIds || []).includes(id);
     }
 
-    // FUN_00423f5c (rwg:44035): current player (FUN_0043fb14) set.insert(id)
-    // (FUN_0040ca85), then save the player file (FUN_00410f28).
+    // FUN_00423f5c (rwg:44035): current player (FUN_0043fb14)
+    // list.push_back(id) (FUN_0040ca85 — no duplicate check), then save the
+    // player file (FUN_00410f28).
     addUpgrade(id) {
         if (!this.mCurrentName) return;
         this.mUpgradeIds = this.mUpgradeIds || [];
-        if (!this.mUpgradeIds.includes(id)) {
-            this.mUpgradeIds.push(id);
-            this.mUpgradeIds.sort((a, b) => a - b);
-        }
+        this.mUpgradeIds.push(id);
         this.save();
     }
 
     // FUN_00416162 (rwg:28665-28760) — upgrades the player may receive now:
     //   for i in 0..14: if i not owned and (PREREQ[i] == -1 or PREREQ[i]
     //   owned) → add i;
-    //   then, if the owned set has more than 14 entries (0xe < size,
-    //   rwg:28719): add 15 if not owned, add 16 if not owned.
+    //   then, if the owned list has more than 14 entries (0xe < size,
+    //   rwg:28719 — list size, duplicates count): add 15 if not owned, add 16
+    //   if not owned.
     // PREREQ = int table DAT_004de1c0 (rwg:28704), read from the .data of
     // app/chicken_chase.RWG.
     getAvailableUpgrades() {
@@ -235,7 +236,7 @@ export class Core {
             const pre = UPGRADE_PREREQ[i];
             if (pre === -1 || owned.has(pre)) out.push(i);
         }
-        if (owned.size > 0xe) {
+        if ((this.mUpgradeIds || []).length > 0xe) {
             if (!owned.has(15)) out.push(15);
             if (!owned.has(16)) out.push(16);
         }

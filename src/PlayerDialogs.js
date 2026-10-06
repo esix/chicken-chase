@@ -17,6 +17,26 @@ import { HtmlDialogs } from './HtmlDialogs.js';
 // AllowChar FUN_0040f43e: characters the name edit box rejects.
 const NEWPLAYER_REJECT = /[ #$%&()*+\-.:@^]/g;
 
+// "QUESTION" / "Delete user?" (FUN_00402ee5 rwg:3041-3044) is built by the
+// same YES/NO builder FUN_0040279c as the Options "QUIT?" prompt, so the
+// HTML node is cloned from 'quit-confirm' with the source strings.
+const DELETE_USER_DIALOG = 'delete-user';
+function ensureDeleteUserDialog() {
+    if (typeof document === 'undefined') return false;
+    if (document.querySelector(`[data-dialog="${DELETE_USER_DIALOG}"]`)) return true;
+    const src = document.querySelector('[data-dialog="quit-confirm"]');
+    if (!src) return false;
+    const node = src.cloneNode(true);
+    node.setAttribute('data-dialog', DELETE_USER_DIALOG);
+    node.hidden = true;
+    const title = node.querySelector('.cc-title');
+    if (title) title.textContent = 'QUESTION';
+    const text = node.querySelector('.cc-text');
+    if (text) text.textContent = 'Delete user?';
+    src.parentNode.insertBefore(node, src.nextSibling);
+    return true;
+}
+
 export class NewPlayerDialog {
     // mode: 'firstLaunch' (cancel hidden) or 'addPlayer'
     constructor(core, onComplete, mode = 'addPlayer') {
@@ -25,10 +45,10 @@ export class NewPlayerDialog {
         this.mMode = mode;
         this.mInput = '';
         this.mIsActive = true;
-        // Two-button layout (OK + CANCEL, screenshot 09) when adding a player;
-        // single OK on first launch. Mirrors the decompiled single-vs-two-button
-        // StdDialog branch (cancel field this+0x94, rwg:74599/74612).
-        this.mShowCancel = (mode !== 'firstLaunch');
+        // FUN_0040f117 @0x40f15a-0x40f17e: StdDialog button mode =
+        // (Core player list size (Core+8)+0x10 != 0) ? 2 (OK + CANCEL) : 3
+        // (footer OK only) — decided by the player COUNT, not by the caller.
+        this.mShowCancel = !!(core && core.mPlayers && core.mPlayers.length !== 0);
     }
 
     isShown() { return this.mIsActive; }
@@ -171,67 +191,10 @@ export class NewPlayerDialog {
         return { x, y, w, h };
     }
 
-    keyDown(key) {
-        if (!this.mIsActive) return false;
-        if (key === 'Enter') { this._submit(); return true; }
-        if (key === 'Escape') {
-            if (this.mMode !== 'firstLaunch') {
-                this.mIsActive = false;
-                if (this.mOnComplete) this.mOnComplete(null);
-            }
-            return true;
-        }
-        if (key === 'Backspace') {
-            this.mInput = this.mInput.slice(0, -1);
-            this.mError = null;
-            return true;
-        }
-        if (key.length === 1 && this.mInput.length < PLAYER_NAME_MAX_LEN) {
-            if (/[\w \-.]/.test(key)) {
-                this.mInput += key;
-                this.mError = null;
-                return true;
-            }
-        }
-        return true;
-    }
-
-    mouseDown(x, y, btn) {
-        if (!this.mIsActive) return false;
-        if (btn !== 0) return true;
-        const ok = this._okRect;
-        if (ok && x >= ok.x && x <= ok.x + ok.w && y >= ok.y && y <= ok.y + ok.h) {
-            this._submit();
-            return true;
-        }
-        const c = this._cancelRect;
-        if (c && x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) {
-            this.mIsActive = false;
-            if (this.mOnComplete) this.mOnComplete(null);
-            if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
-        }
-        return true; // consume all clicks
-    }
-
-    _submit() {
-        const name = this.mInput.trim();
-        if (!name) {
-            this.mError = 'Please enter a name';
-            return;
-        }
-        // Reject duplicates
-        if (this.mCore._findPlayer && this.mCore._findPlayer(name)) {
-            this.mError = 'That name is taken';
-            return;
-        }
-        const player = this.mCore.addPlayer(name);
-        if (player) {
-            this.mCore.selectPlayer(player.name);
-            this.mIsActive = false;
-            if (this.mOnComplete) this.mOnComplete(player.name);
-            if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
-        }
-    }
+    // (The former canvas keyDown/mouseDown/_submit path was dead code with
+    // invented behavior — "Please enter a name"/"That name is taken" errors,
+    // Escape-to-cancel, a different char filter — and has been removed. The
+    // live logic is openHtml/_submitHtml above.)
 }
 
 export class ChangePlayerDialog {
@@ -254,33 +217,64 @@ export class ChangePlayerDialog {
                     if (list[index] != null) this.mSelected = list[index];
                     this._renderHtml();
                 },
+                // ButtonDepress FUN_00402ee5 (rwg:2963): SOUND_CLICK
+                // (DAT_004fed84, @0x402f09) for EVERY button, then:
+                //   1000 (OK): FUN_0041580b(selected name +0x174), remove dialog.
                 ok: () => {
+                    if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
                     if (this.mSelected) this.mCore.selectPlayer(this.mSelected);
                     HtmlDialogs.close('change-player');
                     this.mIsActive = false;
                     if (this.mOnComplete) this.mOnComplete(this.mSelected || null);
-                    if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
                 },
+                //   NEW: NewPlayerDialog(listener = this) added as dialog 1.
+                //   Its listener FUN_004030d3: Core addPlayer FUN_00415924 (also
+                //   makes it current), list refresh FUN_00402b44, then select
+                //   the new name FUN_00402c43.
                 new: () => {
-                    // NewPlayer opens over change-player; on completion refresh the
-                    // list (change-player stays open underneath).
+                    if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
                     const np = new NewPlayerDialog(this.mCore, (name) => {
                         if (name) this.mSelected = name;
                         this._renderHtml();
                     }, 'addPlayer');
                     np.openHtml();
                 },
+                //   DELETE: YES/NO "QUESTION" / "Delete user?" via FUN_0040279c
+                //   (rwg:3041-3046). YES (72000, FUN_004211e9) → FUN_00403008:
+                //   Core delete FUN_0041585b (no-op unless > 1 player), then
+                //   refresh FUN_00402b44 which re-selects the CURRENT player
+                //   (FUN_0040285f → FUN_00402c43). NO → nothing.
                 delete: () => {
-                    if (this.mSelected) {
-                        this.mCore.deletePlayer(this.mSelected);
-                        const list = this.mCore.listPlayers();
-                        this.mSelected = list.length ? list[0] : null;
-                    }
-                    this._renderHtml();
+                    if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
+                    this._openDeleteConfirm();
                 },
             },
         });
         this._renderHtml();
+    }
+
+    _openDeleteConfirm() {
+        if (!ensureDeleteUserDialog()) return;
+        HtmlDialogs.open(DELETE_USER_DIALOG, {
+            actions: {
+                yes: () => {
+                    HtmlDialogs.close(DELETE_USER_DIALOG);   // KillDialog(70000)
+                    if (this.mSelected) this.mCore.deletePlayer(this.mSelected);
+                    this._refreshSelection();
+                    this._renderHtml();
+                },
+                no: () => HtmlDialogs.close(DELETE_USER_DIALOG),
+            },
+        });
+    }
+
+    // FUN_00402b44 (rwg:2738): rebuild the list, select row 0 when non-empty,
+    // then select the current player's row (FUN_0040285f + FUN_00402c43).
+    _refreshSelection() {
+        const list = this.mCore.listPlayers();
+        const cur = this.mCore.mCurrentName;
+        if (cur && list.includes(cur)) this.mSelected = cur;
+        else this.mSelected = list.length ? list[0] : null;
     }
 
     _renderHtml() {
@@ -376,62 +370,6 @@ export class ChangePlayerDialog {
         return { x, y, w, h };
     }
 
-    keyDown(key) {
-        if (this.mShowNewPlayer && this.mShowNewPlayer.isShown()) {
-            return this.mShowNewPlayer.keyDown(key);
-        }
-        if (!this.mIsActive) return false;
-        if (key === 'Enter') { this._confirm(); return true; }
-        if (key === 'Escape') { this._dismiss(null); return true; }
-        return true;
-    }
-
-    mouseDown(x, y, btn) {
-        if (this.mShowNewPlayer && this.mShowNewPlayer.isShown()) {
-            return this.mShowNewPlayer.mouseDown(x, y, btn);
-        }
-        if (!this.mIsActive || btn !== 0) return true;
-        // Row selection
-        for (const r of this._rowRects || []) {
-            if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-                this.mSelected = r.name;
-                return true;
-            }
-        }
-        // Buttons
-        if (this._okRect && this._inside(x, y, this._okRect)) { this._confirm(); return true; }
-        if (this._newRect && this._inside(x, y, this._newRect)) {
-            this.mShowNewPlayer = new NewPlayerDialog(this.mCore, (name) => {
-                if (name) this.mSelected = name;
-                this.mShowNewPlayer = null;
-            }, 'addPlayer');
-            return true;
-        }
-        if (this._delRect && this._inside(x, y, this._delRect)) {
-            if (this.mSelected) {
-                this.mCore.deletePlayer(this.mSelected);
-                const list = this.mCore.listPlayers();
-                this.mSelected = list.length > 0 ? list[0] : null;
-            }
-            return true;
-        }
-        return true;
-    }
-
-    _inside(x, y, r) { return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
-
-    _confirm() {
-        if (this.mSelected) {
-            this.mCore.selectPlayer(this.mSelected);
-            this._dismiss(this.mSelected);
-        } else {
-            this._dismiss(null);
-        }
-    }
-
-    _dismiss(result) {
-        this.mIsActive = false;
-        if (this.mOnComplete) this.mOnComplete(result);
-        if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
-    }
+    // (The former canvas keyDown/mouseDown path — Enter/Escape shortcuts,
+    // unconfirmed delete selecting row 0 — was dead code and has been removed.)
 }

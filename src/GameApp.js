@@ -27,7 +27,7 @@ import { HandMode } from './Hand.js';
 import { MainMenuView, SelectLevelView } from './MainMenuView.js';
 import { Core, DEFAULT_MUSIC_VOLUME, DEFAULT_SFX_VOLUME } from './Core.js';
 import { OptionsDialog } from './OptionsDialog.js';
-import { ChangePlayerDialog } from './PlayerDialogs.js';
+import { ChangePlayerDialog, NewPlayerDialog } from './PlayerDialogs.js';
 import { CreditsView } from './CreditsView.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
 import { UpgradesView, levelOffersUpgrade } from './UpgradesView.js';
@@ -55,6 +55,11 @@ export class GameApp extends SexyAppBase {
         this.mMainMenuView = null;
         this.mCurrentView = null;
         this.mLoadProgress = 0;
+        // Core+4 level object exists: created by StartLevel FUN_00406069
+        // (rwg:7514), freed + nulled only by FUN_00406389 (@0x406563), i.e.
+        // the Options MAIN MENU confirm FUN_0040fe56 (rwg:19601). A level that
+        // ended (completed/failed → menus) still exists.
+        this.mLevelExists = false;
 
         // Player profile data — Sexy::Core (DECOMPILED_MAP.md section 14)
         this.mCore = core;
@@ -123,7 +128,7 @@ export class GameApp extends SexyAppBase {
     // FUN_00408e2f rwg:11204-11214
     lostFocus() {
         const fc = this.mGameView && this.mGameView.mFieldController;
-        const levelExists = !!(fc && this.mState === GameState.PLAYING);
+        const levelExists = !!(fc && this.mLevelExists);
         if (levelExists && !fc.mIsPaused) {
             fc.mIsPaused = true;          // rwg:11207
             this.mGameView.mPauseTextShown = false;            // rwg:11208 +0xd = 0
@@ -137,7 +142,7 @@ export class GameApp extends SexyAppBase {
     // FUN_00408e62 rwg:11231-11238
     gotFocus() {
         const fc = this.mGameView && this.mGameView.mFieldController;
-        if (fc && this.mPausedByFocus) {
+        if (fc && this.mLevelExists && this.mPausedByFocus) {
             fc.mIsPaused = false;         // rwg:11234
             this.mGameView.mPauseTextShown = false;   // rwg:11235 +0xd = 0
         }
@@ -211,10 +216,19 @@ export class GameApp extends SexyAppBase {
     // FUN_00408799 (rwg:10760) - show MainMenuView. Music (rwg:10801-10805):
     //   if (!music->IsPlaying(0)) { music->StopAllMusic(); music->PlayMusic(0,0,false); }
     // SoundManager.playMusic is a no-op when that track is already playing.
+    // MainMenuView::AddedToManager FUN_0040e83a (rwg:18016-18028) runs only
+    // when the view is (re)added — FUN_00408799 skips the add when it is
+    // already visible (piVar4[0x14] != 0) — and opens NewPlayerDialog
+    // (FUN_0040f117) as dialog 1 when there is no current player.
     showMainMenu() {
+        const wasShown = this.mCurrentView === this.mMainMenuView;
         this.mState = GameState.MAIN_MENU;
         this.mCurrentView = this.mMainMenuView;
         this.mCanvas.style.cursor = 'default';
+        if (!wasShown && this.mCore && !this.mCore.hasCurrentPlayer()
+            && !HtmlDialogs.isDialogOpen('new-player')) {
+            new NewPlayerDialog(this.mCore, () => {}, 'firstLaunch').openHtml();
+        }
         if (SOUNDS.MUSIC_MAIN) SoundManager.playMusic(SOUNDS.MUSIC_MAIN);   // music id 0
     }
 
@@ -227,6 +241,7 @@ export class GameApp extends SexyAppBase {
         this.mCurrentView = this.mGameView;
         this.mCanvas.style.cursor = 'none';
         this.mGameView.startLevel(level);
+        this.mLevelExists = true;   // Core+4 = new level (FUN_00406069)
         this.playGameMusic();
     }
 
@@ -361,54 +376,24 @@ export class GameApp extends SexyAppBase {
         this.openOptions({ inGame: false });
     }
 
-    // Shared opener for the HTML Options dialog (menu + in-game). opts:
-    //   { inGame, onClose, onMainMenu, onRestart }. Sliders write SoundManager +
-    //   the player profile; MAIN MENU / RESTART route through a quit confirm.
+    // Shared opener for the Options dialog (menu + in-game): the logic lives
+    // in OptionsDialog.js (FUN_0040f57b / ButtonDepress FUN_0040fd44, QUIT?
+    // confirm FUN_0040279c → FUN_0040fe56). opts: { inGame, onClose,
+    // onMainMenu, onRestart }.
+    // FUN_0040fe56 (rwg:19581-19611): MAIN MENU → FUN_00408799 then free the
+    // level FUN_00406389 (Core+4 = 0); RESTART → only if a level exists
+    // (Core+4 != 0): free + StartLevel FUN_00406069 (no view/music change).
     openOptions(opts = {}) {
-        const inGame = !!opts.inGame;
-        const core = this.mCore;
-        HtmlDialogs.open('options', {
-            binds: {
-                music: core ? (core.mMusicVolume ?? DEFAULT_MUSIC_VOLUME) : DEFAULT_MUSIC_VOLUME,
-                sfx: core ? (core.mSoundVolume ?? DEFAULT_SFX_VOLUME) : DEFAULT_SFX_VOLUME,
-                fullscreen: !!(typeof document !== 'undefined' && document.fullscreenElement),
-                hwaccel: true,
+        new OptionsDialog(this, {
+            ...opts,
+            onMainMenu: () => {
+                if (opts.onMainMenu) opts.onMainMenu();
+                this.mLevelExists = false;
             },
-            visible: { ingame: inGame },
-            onBind: {
-                music: (v) => { if (core) core.mMusicVolume = v; SoundManager.setMusicVolume(v); },
-                sfx: (v) => { if (core) core.mSoundVolume = v; SoundManager.setSfxVolume(v); },
-                fullscreen: (v) => {
-                    try {
-                        if (v) document.documentElement.requestFullscreen?.();
-                        else if (document.fullscreenElement) document.exitFullscreen?.();
-                    } catch (e) { /* ignore */ }
-                },
+            onRestart: () => {
+                if (this.mLevelExists && opts.onRestart) opts.onRestart();
             },
-            actions: {
-                close: () => {
-                    HtmlDialogs.close('options');
-                    if (core && core.save) core.save();
-                    if (opts.onClose) opts.onClose();
-                },
-                mainmenu: () => this._optionsQuitConfirm('mainmenu', opts),
-                restart: () => this._optionsQuitConfirm('restart', opts),
-            },
-        });
-    }
-
-    _optionsQuitConfirm(which, opts) {
-        HtmlDialogs.open('quit-confirm', {
-            actions: {
-                yes: () => {
-                    HtmlDialogs.close('quit-confirm');
-                    HtmlDialogs.close('options');
-                    if (which === 'mainmenu' && opts.onMainMenu) opts.onMainMenu();
-                    else if (which === 'restart' && opts.onRestart) opts.onRestart();
-                },
-                no: () => HtmlDialogs.close('quit-confirm'),
-            },
-        });
+        }).openHtml();
     }
 
     // ChangePlayerDialog opener — wired by MainMenuView.buttonDepress(BTN_CHANGE_PLAYER)

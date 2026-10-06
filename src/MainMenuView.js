@@ -13,7 +13,6 @@
 
 import { Widget, ButtonWidget } from './SexyApp.js';
 import { IMAGES, SOUNDS } from './Res.js';
-import { NewPlayerDialog } from './PlayerDialogs.js';
 import { getLevelDescription } from './LevelData.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
 import { drawFieldBackground, FONT_CSS, drawOutlinedText, FONT_ASCENT } from './CreditsView.js';
@@ -120,12 +119,8 @@ export class MainMenuView extends Widget {
 
         this._layoutButtons();
 
-        // First-launch gate (AddedToManager rwg:18016-18028): when the app has
-        // no current player (*(App+8)+0x10 == 0) open NewPlayerDialog
-        // (FUN_0040f117) as dialog id 1.
-        if (gameApp && gameApp.mCore && !gameApp.mCore.hasCurrentPlayer()) {
-            new NewPlayerDialog(gameApp.mCore, () => {}, 'firstLaunch').openHtml();
-        }
+        // First-launch NewPlayer gate (AddedToManager FUN_0040e83a rwg:18016-18028)
+        // runs in GameApp.showMainMenu each time this view is re-added.
     }
 
     // MainMenuView::AddedToManager FUN_0040e83a (rwg:17988-18014).
@@ -158,14 +153,6 @@ export class MainMenuView extends Widget {
         // Images may finish loading after construction; the original lays out
         // in AddedToManager once resources exist.
         if (!this._buttonsLaidOut) this._layoutButtons();
-        // JS-only: keep the HTML NewPlayer dialog up while there is no
-        // current player (the original re-checks in AddedToManager,
-        // rwg:18016-18028, every time the view is added).
-        if (this.mGameApp && this.mGameApp.mCore
-            && !this.mGameApp.mCore.hasCurrentPlayer()
-            && !HtmlDialogs.isDialogOpen('new-player')) {
-            new NewPlayerDialog(this.mGameApp.mCore, () => {}, 'firstLaunch').openHtml();
-        }
         // DrawImage(DAT_004fff94 = IMAGE_MAIN_MENU, 0, 0)  rwg:17938
         g.drawImage(IMAGES.IMAGE_MAIN_MENU, 0, 0);
 

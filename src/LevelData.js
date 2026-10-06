@@ -127,9 +127,14 @@ export const SHOP_ITEM_LIST = [
 //   unlock : FUN_00423d75(N) argument; items:[...] for direct FUN_0040ca85
 //   e5a    : FUN_00423e5a called; rise: store+4 = 1; fix: raven +0x3c = 1
 //   bonus  : FUN_00423cb3(level, chicks, mult) with EAX = time/100
+//   Float constants (raven +0x34 / +0x40, bonus mult) are float32 fields
+//   (flds/fstps, e.g. asm 0x423512-0x423520, 0x423cee-0x423cf3), so they are
+//   stored here as Math.fround values.
 // ---------------------------------------------------------------------------
 const SETUP = {
-    // case 1 — 42994-43010 (asm 0x422d64): also field+0x264 = 0 (42997; semantic UNKNOWN)
+    // case 1 — 42994-43010 (asm 0x422d64): also field+0x264 = 0 (42997) —
+    // the sickness-enable flag tested by FUN_004040ec (rwg:4838) and set back
+    // to 1 by the level-1 tutorial (rwg:42152); consumed by Field.js.
     1: { line: 42994, tasks: [[0, 15]], types: [0, 0, 0, 0], slots: { 0: 0 },
          zr: true, zw: true, sell: 0, shop: 0, risk: 0, f264: 0, ace: 0x2c },
     // case 2 — 43011-43024 (asm 0x422dc0)
@@ -153,7 +158,7 @@ const SETUP = {
          zw: true, items: [0], ace: 0x136 },
     // case 8 — 43097-43100 → FUN_00423cb3 (asm 0x422f98: EAX=0x1e, 3 chicks,
     // _DAT_004e941c = 0.8f)
-    8: { line: 43097, bonus: { time: 0x1e, chicks: 3, mult: 0.8 } },
+    8: { line: 43097, bonus: { time: 0x1e, chicks: 3, mult: Math.fround(0.8) } },
     // case 9 — 43101-43111 → LAB_00422fe6 (asm 0x422fb2): slot3 = 0
     9: { line: 43101, tasks: [[5, 10]], types: [1, 0, 1, 0], slots: { 3: 0 },
          zr: true, zw: true, unlock: 1, ace: 0xf0 },
@@ -168,7 +173,7 @@ const SETUP = {
           zr: true, zw: true, unlock: 2, ace: 300 },
     // case 0xd — 43150-43152 (asm 0x4230c7: EAX=0x1e, 4 chicks,
     // _DAT_004e9418 = 0.9f)
-    13: { line: 43150, bonus: { time: 0x1e, chicks: 4, mult: 0.9 } },
+    13: { line: 43150, bonus: { time: 0x1e, chicks: 4, mult: Math.fround(0.9) } },
     // case 0xe — 43153-43169 (asm 0x4230d8): slots 0=5,1=5,2=5,3=2
     14: { line: 43153, tasks: [[9, 9]], types: [1, 1, 1, 0], slots: { 0: 5, 1: 5, 2: 5, 3: 2 },
           zw: true, unlock: 2, ace: 300 },
@@ -202,7 +207,7 @@ const SETUP = {
           zw: true, unlock: 6, ace: 0x1e0 },
     // case 0x19 — 43261-43263 → LAB_00423316 (asm 0x423310: EAX=0x14,
     // 4 chicks, _DAT_004e9414 = 1.1f)
-    25: { line: 43261, bonus: { time: 0x14, chicks: 4, mult: 1.1 } },
+    25: { line: 43261, bonus: { time: 0x14, chicks: 4, mult: Math.fround(1.1) } },
     // case 0x1a — 43264-43282 → LAB_00423383 (asm 0x423324): slots
     // 0=5,1=5,2=5,4=5; ravens zeroed but wolves (+0x0c) keep default
     26: { line: 43264, tasks: [[10, 15], [9, 15]], types: null, slots: { 0: 5, 1: 5, 2: 5, 4: 5 },
@@ -230,7 +235,7 @@ const SETUP = {
           broodyCap: 4, rise: true, unlock: 7, ace: 0xdc },
     // case 0x21 — 43339-43343 → LAB_00423316 (asm 0x4234dd: EAX=0x14,
     // 4 chicks, _DAT_004e92a8 = 1.2f)
-    33: { line: 43339, bonus: { time: 0x14, chicks: 4, mult: 1.2 } },
+    33: { line: 43339, bonus: { time: 0x14, chicks: 4, mult: Math.fround(1.2) } },
     // case 0x22 — 43344-43350 (asm 0x4234e8): FUN_00423e5a
     34: { line: 43344, tasks: [[10, 10]], types: null, e5a: true,
           unlock: 7, ace: 0x163 },
@@ -238,7 +243,7 @@ const SETUP = {
     // (0.4f), +0x38 = 0, +0x14 = +0x1c = 2, +0x18 = 1; FUN_00423deb(10);
     // slot2 = 0 (ESI still 2 from 0x423527)
     35: { line: 43351, tasks: [[3, 10000]], types: null, slots: { 2: 0 },
-          raven: { perWave: 2, atOnce: 2, f18: 1, f34: 0.4, f38: 0 }, fillTo: 10,
+          raven: { perWave: 2, atOnce: 2, f18: 1, f34: Math.fround(0.4), f38: 0 }, fillTo: 10,
           unlock: 7, ace: 0x96 },
     // case 0x24 — 43366-43384 (asm 0x42355d): raven +0x34 = 1.0f,
     // +0x38 = 24000; slots 0..3 = 2, 4 = 0; cap 1000
@@ -250,7 +255,7 @@ const SETUP = {
           unlock: 7, ace: 0x10e },
     // case 0x26 — 43394-43396 (asm 0x423601: EAX=0x14, 5 chicks,
     // _DAT_004e9418 = 0.9f)
-    38: { line: 43394, bonus: { time: 0x14, chicks: 5, mult: 0.9 } },
+    38: { line: 43394, bonus: { time: 0x14, chicks: 5, mult: Math.fround(0.9) } },
     // case 0x27 — 43397-43405 (asm 0x423612): store+4 = 1
     39: { line: 43397, tasks: [[10, 10], [1, 30]], types: null, rise: true,
           unlock: 7, ace: 0x118 },
@@ -607,9 +612,9 @@ export function getLevelConfig(level) {
         // No static price multiplier exists in the original; see
         // priceRisesOverTime.
         chickenPriceMultiplier: 1.0,
-        // FUN_00423e5a:43988 sets (app+0x28)+0x1c = 1. Read as "no coins" per
-        // the L37 text ("won't find any coins"); consumer not traced —
-        // exact semantic UNKNOWN.
+        // FUN_00423e5a:43988 sets gem controller (app+0x28)+0x1c = 1; the
+        // gem factory FUN_0040c4d9 (rwg:15152) then creates no coins
+        // (consumers Chick.js / Field.js).
         noPeckCoins: !!s.e5a,
 
         // --- raw original values (not yet consumed by other files) ---
@@ -632,10 +637,12 @@ export function getLevelConfig(level) {
         // FUN_00406ac9 (asm 0x406adf).
         hatchSlowdown: s.hatchSlow || 1.0,
         fastSickness: !!s.fastSick,          // field +0x26c
-        // money obj +0 = 1 and (app+0x24)+0x28 = 1 (FUN_00423e5a:43981, 43990):
-        // semantics UNKNOWN.
+        // money obj +0 = 1 (FUN_00424b5d asm 0x424b63: no money is ever
+        // added) and egg ctl (app+0x24)+0x28 = 1 (FUN_004072fa asm 0x407395:
+        // clicked eggs pay nothing) — FUN_00423e5a:43981, 43990.
         budgetFlags: !!s.e5a,
-        // field +0x264 (ctor 1); case 1 writes 0 (42997): semantic UNKNOWN.
+        // field +0x264 (ctor 1, rwg:4791); case 1 writes 0 (42997): sickness
+        // enable flag (FUN_004040ec rwg:4838).
         field264: s.f264 !== undefined ? s.f264 : 1,
         bonusChicks: s.bonus ? s.bonus.chicks : 0, // level +0x50 compare (FUN_00423d5b)
     };
