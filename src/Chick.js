@@ -268,7 +268,8 @@ function bindEggToLaySpot(field, egg, ex) {
     let best = null;
     let bestD = 1000000.0;
     for (const sp of spots) {
-        const d = Math.abs(sp.pos[0] - ex);
+        // fsubs; FUN_00406b08 (fabs); fstps → float distance (rwg:8790-8792).
+        const d = Math.abs(Math.fround(sp.pos[0] - ex));
         if (d < bestD) { bestD = d; best = sp; }
     }
     if (best) {
@@ -378,7 +379,7 @@ export class Chick {
         this.mFoodTarget = null;                        // +0x68/+0x6c
         this.mFoodCounter = 0;                          // +0x34
         this.mAge = (mtRand() % 200) * 2 + 0xce4;       // +0x1c
-        this.mLevel = level;
+        this._level = level;
         this.mStateO = S_NORMAL;                        // +0x08 = 4
         this.mRemoved = false;                          // JS: removed from the list
         // FUN_004032ca tail: wander target = FUN_004046aa (random field
@@ -396,6 +397,14 @@ export class Chick {
     // Facing used by the draw mirror flag (+0x2c > 0, FUN_00409d5c).
     get mDirection() { return this.mFacing[0] > 0 ? 0 : 1; }
     set mDirection(d) { this.mFacing = [d ? -1.0 : 1.0, 0]; }
+
+    // FUN_00405886 / FUN_00405899 / FUN_004058af read the CURRENT level
+    // (game state via FUN_00401165 +4, asm 0x405886-0x40588e) on every call.
+    get mLevel() {
+        const fc = fcOf(this._field);
+        return (fc && fc.mCurrentLevel) || this._level;
+    }
+    set mLevel(v) { this._level = v; }
 
     // --- JS compatibility views -------------------------------------------
     get mIsAlive() { return this.mStateO !== S_DEAD && !this.mRemoved; }
@@ -488,12 +497,13 @@ export class Chick {
         return this.mFoodCounter >= u * 5 ? 1 : 0;
     }
     _isFed() { return this.getFoodTier() !== 0; }
-    // FUN_00403a65 (asm 0x403a65): food >= unit*11 → 2.0 (_DAT_004e93e0),
-    // else 2*food/(unit*11).
+    // FUN_00403a65 (asm 0x403a65-0x403a99): food >= unit*11 → 2.0
+    // (_DAT_004e93e0), else fild food; fadd st,st; fidivl unit*11; fstps;
+    // flds — the quotient is rounded to float before it is returned.
     getFoodRatio() {
         const u = foodUnit(this.mLevel);
         if (this.mFoodCounter >= u * 0xb) return 2.0;
-        return (this.mFoodCounter + this.mFoodCounter) / (u * 0xb);
+        return Math.fround((this.mFoodCounter + this.mFoodCounter) / (u * 0xb));
     }
     // FUN_00403c75 (asm 0x403c75-0x403c94): fild food(+0x34);
     // fidiv (FUN_00405899()*0x21); fstps → float result.
@@ -663,7 +673,17 @@ export class Chick {
             this.mFoodCounter += Math.trunc(s.calories * s.mult + 0.5);
             const cap = foodCap(this.mLevel);
             if (this.mFoodCounter >= cap) this.mFoodCounter = cap;
+            // FUN_0041bfbe (asm 0x41bfbe-0x41bfdf, list = world+0x1c, asm
+            // 0x420017): seed life (+0x28) = 0, then FUN_004210f4 erases the
+            // seed from the world seed list at once (not at the next seed
+            // update) — later chicks of this tick no longer see it.
             s.life = 0;
+            if (field && field.mSeeds) {
+                for (const c of field.mSeeds) {
+                    const i = c.mSeeds ? c.mSeeds.indexOf(s) : -1;
+                    if (i >= 0) { c.mSeeds.splice(i, 1); break; }
+                }
+            }
         }
         this.mFoodTarget = null;
     }
@@ -847,10 +867,11 @@ export class Chick {
         return true;
     }
 
-    // FUN_00404d00 (asm 0x404d00) chick part: if state != 0 → state 1 and
-    // vt[8] (action 3, 50).
+    // FUN_00404d00 (asm 0x404d00, rwg:5810-5816) chick part: if state != 0
+    // → state 1 and vt[8] (action 3, 50). Only state 0 is tested; callers
+    // reach it through vt[3] (Field._makeSick), which rejects dead chicks.
     infect() {
-        if (this.mStateO === S_HELD || this.mStateO === S_DEAD) return;
+        if (this.mStateO === S_HELD) return;
         this.mStateO = S_SICK;
         this._start(this._field);
     }
@@ -913,8 +934,10 @@ export class Chick {
             case A_DIG: img = IMAGES[`IMAGE_CHICK_IDLE1_${p}`]; break;
             case A_SICK_START: case A_CURED: img = IMAGES[`IMAGE_CHICK_SICK_START_${p}`]; break;
             case A_SICK_IDLE: img = IMAGES[`IMAGE_CHICK_SICK_IDLE_${p}`]; break;
-            case A_SIT: case A_GETUP: img = IMAGES[`IMAGE_CHICK_BROOD_START_${p}`]; break;
-            case A_NEST: img = IMAGES[`IMAGE_CHICK_BROOD_IDLE_${p}`]; break;
+            // jump table 0x40a2f2: 6/8 → DAT_004fff44, 7 → DAT_004fff40,
+            // 12 → DAT_004fff48 — single images, not per type (rwg:31147-31167).
+            case A_SIT: case A_GETUP: img = IMAGES.IMAGE_CHICK_BROOD_START_BROODY; break;
+            case A_NEST: img = IMAGES.IMAGE_CHICK_BROOD_IDLE_BROODY; break;
             case A_LAY: img = IMAGES[`IMAGE_CHICK_LAYER_${p}`]; break;
             case A_PECK: img = IMAGES[`IMAGE_CHICK_PECK_${p}`]; break;
             case A_WALK: img = IMAGES[`IMAGE_CHICK_WALK_${p}`]; break;

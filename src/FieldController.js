@@ -86,7 +86,6 @@ export class FieldController {
         this.mMoney = 0;                    // money obj +4
         this.mMoneyCap = -1;                // money obj +8 (-1 = none, FUN_00406069:7531)
         this.mMoneyFrozen = false;          // money obj +0 (FUN_00424b5d gate)
-        this.mTotalMoney = 0;               // statistic (not used by tasks)
         this.mTimeElapsed = 0;              // state+8 ticks, stored in ms (×10)
         this.mTimeLimit = 0;                // task 0xc/0xd target, in ms
         this.mTasks = [];
@@ -112,19 +111,11 @@ export class FieldController {
         this.mCollectedRedEggs = 0;         // egg counter, holy
         this.mCollectedBlackEggs = 0;       // egg counter, rooster
         this.mCollectedGoldenEggs = 0;      // egg counter, broody
-        this.mHatchedMagic = 0;             // statistics read by Field.js (tasks use live counts)
-        this.mHatchedHoly = 0;
-        this.mHatchedRooster = 0;
-        this.mTotalRaisedChicks = 0;
         // Seed quality tag (see JS_SEED_CALORIES).
         this.mSeedCalories = JS_SEED_CALORIES[0];
         this.mSeedCount = SEEDS_PER_DROP[0];
         this.mGunPower = 1;                 // (app+0x40)+0x11 → damage 2 when set
         this.mGunArea = false;              // (app+0x40)+0x10 → 20px crosshair
-        this.mPlayerHouseUpgrade = 0;
-        this.mHasElephant = false;
-        this.mHasMouse = false;
-        this.mSicknessFactor = 0;
         this.mBonusAchieved = false;
         this.mHalfPriceLevel = -1;          // DAT_004fc2f8 (FUN_00421948:41391)
         this.mUpgradePrice = SHOP_ITEM_BASE_PRICE; // store +0
@@ -154,7 +145,6 @@ export class FieldController {
         this.mField = new Field();
         this.mField.mFieldController = this;
         this.mTimeElapsed = 0;
-        this.mSicknessFactor = cfg.sicknessFactor;
         this.mIsLevelComplete = false;
         this.mIsLevelFailed = false;
         this.mFailReason = null;
@@ -167,18 +157,13 @@ export class FieldController {
         // (app+0x44) for every level in FUN_00406069; they are only raised by
         // special-shop purchases (FUN_0041ebd3) during the level.
         // Player-profile upgrades are re-applied by GameView after this call.
-        this.mPlayerHouseUpgrade = 0;
         this.mSeedQuality = 0;              // seed ctl +0x1c
         this.mSeedCountLevel = 0;           // seed ctl +0x20
         this.mSeedCalories = JS_SEED_CALORIES[0];
         this.mSeedCount = SEEDS_PER_DROP[0];
         this.mGunPower = 1;                 // (app+0x40)+0x11 clear
         this.mGunArea = false;              // (app+0x40)+0x10 clear
-        this.mHasMouse = false;             // pet list rebuilt (app+0x44)
-        this.mHasElephant = false;
-        this.mField.mUpgradeLevel = Math.max(cfg.upgradeLevel || 0, this.mPlayerHouseUpgrade || 0);
 
-        this.mTotalMoney = 0;
         this.mCollectedCoins = 0;
         this.mCollectedBlueDiamonds = 0;
         this.mCollectedRedDiamonds = 0;
@@ -187,10 +172,6 @@ export class FieldController {
         this.mCollectedRedEggs = 0;
         this.mCollectedBlackEggs = 0;
         this.mCollectedGoldenEggs = 0;
-        this.mHatchedMagic = 0;
-        this.mHatchedHoly = 0;
-        this.mHatchedRooster = 0;
-        this.mTotalRaisedChicks = 0;
 
         // Tasks (LevelData; bonus levels carry task 0xd as TIME_LIMIT with
         // origTaskId BONUS_TIME, FUN_00423cb3:43840).
@@ -231,8 +212,9 @@ export class FieldController {
         // FUN_00423deb(N) tops up with layers (L35, bonus levels).
         this.mMoney = 1000000;
         const start = getInitialChicks(level);
-        for (let i = 0; i < start.layer; i++) this._spawnBoughtChick(ChickType.LAYER);
-        for (let i = 0; i < start.broody; i++) this._spawnBoughtChick(ChickType.BROODY);
+        // Purchase order (layer ×3, [layer, broody], [broody], [layer]) fixes
+        // the world list order — LevelData.getInitialChicks.order.
+        for (const type of start.order) this._spawnBoughtChick(type);
         // FUN_0042166f:41297-41301 (asm 0x42191c-0x42192a): level > 1 →
         // FUN_00404c34 (rwg_functions.c:5735): every chick whose food (+0x34,
         // Chick.mFoodCounter) is below FUN_00405899()*5 (Chick.foodUnit) gets
@@ -292,7 +274,6 @@ export class FieldController {
         c.mPos[0] = fx;
         c.mPos[1] = fy;
         this.mField.addChick(c);
-        this.mTotalRaisedChicks++;
         return c;
     }
 
@@ -390,9 +371,7 @@ export class FieldController {
         let n = ctl.wolvesPerAttack;
         if (n > 2 && this._hasElephant()) n = 2;
         for (let i = 0; i < n; i++) {
-            const target = this.mField._pickRavenTarget
-                ? this.mField._pickRavenTarget(true)
-                : (this.mField.getAliveChickCount() > 0);
+            const target = this.mField._pickRavenTarget(true);
             if (!target) continue;
             // FUN_00410299 wolf branch (asm 0x4102d6-0x41030b): position =
             // FUN_00408107 (rand%128, rand%72), then x = -3.0 (_DAT_004e929c)
@@ -400,7 +379,8 @@ export class FieldController {
             // HP = controller +0x10 (wolf ctor FUN_00424be6 +0x38).
             const [, fy] = randomSpawnPoint();
             const fx = rand01() < 0.5 ? -3.0 : 131.0;
-            this.mField.addWolf(new Wolf(ctl.wolfHP, fx, fy));
+            // Wolf ctor FUN_00424be6 runs vt[10]/vt[11] at once (asm 0x424c69).
+            this.mField.addWolf(new Wolf(ctl.wolfHP, fx, fy, this.mField));
         }
     }
 
@@ -523,17 +503,22 @@ export class FieldController {
         // FUN_004015f8 — raven/wolf attack controller.
         this._updateRavenController();
 
-        // FUN_004043fd et al. — field entities.
-        this.mField.update();
-
-        // Sickness (FUN_004043fd/FUN_00404caf) and brooding (FUN_0040412c)
-        // are ticked inside Field.update().
-
+        // Original order (rwg:7470-7476): world FUN_004043fd, seeds, eggs,
+        // gems, hint FUN_0040d281, inflation FUN_0041ea9a, spell fx
+        // FUN_00420d2a, money effects FUN_0040686e, pets FUN_00410116.
+        // Field.update() runs world..spell fx and pets in one call, so the
+        // inflation and money-effect ticks run just before it: nothing in the
+        // world/seed/egg/gem/spell updates reads the price factor or queues
+        // a money effect, while pets (mouse pickups, FUN_0040c75b) do — an
+        // effect queued by a pet must not be aged in the same tick.
         // FUN_0041ea9a — chicken price inflation.
         this._updateInflation();
 
         // FUN_0040686e — money effects.
         this._updateMoneyEffects();
+
+        // FUN_004043fd et al. — field entities (sickness / brooding inside).
+        this.mField.update();
 
         // FUN_00421b21 — task progress + level end. It is the LAST call of
         // the tick (rwg:7479), after the hint (7472), risk (7477) and hand
@@ -563,7 +548,6 @@ export class FieldController {
         if (typeof amount !== 'number' || !Number.isFinite(amount)) return;
         if (this.mMoneyFrozen) return;
         this.mMoney += amount;
-        this.mTotalMoney += amount;
         if (this.mMoneyCap > 0 && this.mMoneyCap < this.mMoney) {
             this.mMoney = this.mMoneyCap;
         }
@@ -719,9 +703,6 @@ export class FieldController {
         // player iterator app+8; when a player is selected FUN_0041111b
         // (level, state+8) records the time — pushing it for the first
         // completion is what unlocks the next level (FUN_0041614b = count+1).
-        if (this.mGameApp && this.mGameApp.unlockNextLevel) {
-            this.mGameApp.unlockNextLevel(this.mCurrentLevel + 1);
-        }
         if (this.mGameApp && this.mGameApp.mCore && this.mGameApp.mCore.recordLevelTime) {
             this.mGameApp.mCore.recordLevelTime(this.mCurrentLevel, this.mTimeElapsed);
         }
@@ -812,9 +793,6 @@ export class FieldController {
         this.spendMoney(price);
         this._spawnBoughtChick(type);
         if (this.mBuySlots[type] > 0) this.mBuySlots[type]--;
-        if (type === ChickType.MAGIC) this.mHatchedMagic++;
-        else if (type === ChickType.HOLY) this.mHatchedHoly++;
-        else if (type === ChickType.ROOSTER) this.mHatchedRooster++;
         // SOUND_CHICK_BUY (DAT_004fed80) is played by the caller, the shop-slot
         // click FUN_00409ba0 (asm 0x409c16) in GameView.
         return true;
@@ -910,9 +888,10 @@ export class FieldController {
         if (id === 1 || id === 4) {
             // FUN_00410299 type 0 / 1 at FUN_00408107 (rand%128, rand%72).
             const [fx, fy] = randomSpawnPoint();
-            const pet = id === 1 ? new Mouse(fx, fy) : new Elephant(fx, fy);
+            // Pet ctors run vt[10]/vt[11] at construction (asm 0x40ec7f, 0x407f50)
+            // when given the field; Pet._needsCtorActions prevents a re-run.
+            const pet = id === 1 ? new Mouse(fx, fy, this.mField) : new Elephant(fx, fy, this.mField);
             this.mField.addPet(pet);
-            if (id === 1) this.mHasMouse = true; else this.mHasElephant = true;
         }
         return true;
     }
@@ -1198,8 +1177,7 @@ export class FieldController {
         };
         drawHudButton(this._hudButtons.menu);
         const lc = this.mLevelConfig || {};
-        const showSell = lc.sellButton !== undefined ? lc.sellButton : lc.hasSell;
-        if (showSell) {
+        if (lc.sellButton) {
             const sell = this._hudButtons.sell;
             if (this._sellHighlight()) {
                 sell.mButtonImage = IMAGES.IMAGE_DIALOG_BUTTON_HIGHLIGHT;
@@ -1210,8 +1188,7 @@ export class FieldController {
             }
             drawHudButton(sell);
         }
-        const showBuy = lc.specialShopButton !== undefined ? lc.specialShopButton : lc.hasBuy;
-        if (showBuy) drawHudButton(this._hudButtons.buy);
+        if (lc.specialShopButton) drawHudButton(this._hudButtons.buy);
     }
 
     // FUN_00404ea0 (rwg_functions.c:6001, asm 0x404ea0-0x404f1a): true when
@@ -1279,10 +1256,20 @@ export class FieldController {
                 // Hit direction (rwg_functions.c:15990-16008): vector from the
                 // crosshair centre to the rect centre, normalised to length 1.0
                 // by FUN_00403cdf.
-                let dx = (r.x + Math.trunc(r.w / 2)) - (cross.x + h);
-                let dy = (r.y + Math.trunc(r.h / 2)) - (cross.y + h);
-                const len = Math.sqrt(dx * dx + dy * dy);
-                if (len > 0) { dx /= len; dy /= len; }
+                // asm 0x40cf09-0x40cf83: float32 (rect centre - crosshair
+                // centre); FUN_00403cdf (asm 0x403cdf-0x403d25): k =
+                // f32(1.0 / f32(sqrt(f32(dx*dx + dy*dy)))), dx = f32(dx*k),
+                // dy = f32(dy*k). The original has no zero test (0 * inf =
+                // NaN, later ftol'd to 0x80000000); JS keeps the zero vector
+                // since NaN would propagate differently through JS math.
+                let dx = Math.fround((r.x + Math.trunc(r.w / 2)) - (cross.x + h));
+                let dy = Math.fround((r.y + Math.trunc(r.h / 2)) - (cross.y + h));
+                const len = Math.fround(Math.sqrt(Math.fround(dx * dx + dy * dy)));
+                if (len > 0) {
+                    const k = Math.fround(1.0 / len);
+                    dx = Math.fround(dx * k);
+                    dy = Math.fround(dy * k);
+                }
                 // FUN_0041050c (rwg_functions.c:20161): if not dead → vtable hit
                 // (power, dir), SOUND_SHOOT (DAT_004fed88), dead now → +$500
                 // (FUN_00406b22 → FUN_00424b5d at the pet position +8 with
@@ -1309,7 +1296,7 @@ export class FieldController {
             // (action 3/4) whose rect FUN_00409956 (Chick.getRect) contains
             // the cursor (FUN_00407ad4: x in [rx, rx+w), y in [ry, ry+h)).
             for (const c of this.mField.mChickens) {
-                if (c.mIsAlive && c.mIsSick) {
+                if (!c.mRemoved && c.mIsSick) {
                     const r = c.getRect();
                     if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
                         sick = c; break;
@@ -1348,7 +1335,9 @@ export class FieldController {
             if (gem.mType === 4) continue;   // eggs live in the egg controller
             if (gem.mIsAlive && !gem.mCollected && gem.contains(x, y)) {
                 const value = gem.collect();
-                if (value > 0) this.addMoney(value, gem.mX, gem.mY);
+                // FUN_0040c75b → FUN_00406b22: effect at the gem's field
+                // position (+0xc) with z = 0.
+                this.addMoney(value, gem.mX, gem.mY, gem.mFieldX);
                 this._trackCollection(gem);
                 return true;
             }
@@ -1374,7 +1363,7 @@ export class FieldController {
             if (!gem.contains(x, y)) continue;
             const wasListed = !!gem.mBrooding;
             const value = gem.collect();   // plays the egg sound, marks removed
-            if (!this.mEggSellDisabled) this.addMoney(value, gem.mX, gem.mY);
+            if (!this.mEggSellDisabled) this.addMoney(value, gem.mX, gem.mY, gem.mFieldX);
             this._trackEggCollection(gem);
             // FUN_00406c4d unlinks only (no FUN_00404b3b): a broody heading
             // for the egg notices its removal itself (Chick.js).
@@ -1409,14 +1398,6 @@ export class FieldController {
     dropSeedsAt(x, y) {
         return this._feedArea(x, y);
     }
-
-    // API kept for callers (Pet.js, ShopDialogs.js) that used to show their own
-    // "+$N" popup: there is no such popup in the original — the only money
-    // text is the FUN_00424b5d effect, queued by addMoney(amount, x, y) and
-    // drawn by drawHUD. These are intentionally no-ops.
-    addFloatingText(_x, _y, _text, _color) {}
-    updateFloatingTexts() {}
-    drawFloatingTexts(_g) {}
 
     // Gem counters (gem ctl +0xc vector, FUN_0040c75b:15363): index = gem type
     // (0 gold, 1 silver, 2 blue diamond, 3 red diamond). Coins task = [0]+[1].

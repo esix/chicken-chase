@@ -71,6 +71,22 @@
         </div>
       </div>
 
+      <!-- DELETE USER — ChangePlayerDialog DELETE, FUN_00402ee5 rwg:3041-3044:
+           header "QUESTION", text "Delete user?", same YES/NO builder
+           FUN_0040279c as QUIT? (so the same classes). -->
+      <div class="cc-dialog" data-dialog="delete-user" hidden>
+        <div class="cc-box cc-box-quit">
+          <div class="cc-plate"><h2 class="cc-title">QUESTION</h2></div>
+          <div class="cc-body">
+            <p class="cc-text">Delete user?</p>
+            <div class="cc-buttons cc-buttons-row">
+              <button class="cc-btn" data-action="yes">YES</button>
+              <button class="cc-btn" data-action="no">NO</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- SURPRISE! prompt — FUN_0041b94a rwg:33711-33716 via the same
            YES/NO builder FUN_0040279c as QUIT? (screenshot 32). -->
       <div class="cc-dialog" data-dialog="surprise-ask" hidden>

@@ -265,8 +265,11 @@ export class SoundInstance {
         });
     }
 
-    // Play an SFX. Returns a handle ({source,gain} for Web Audio, or the
-    // HTMLAudio element) — callers currently ignore it.
+    // Play an SFX (Sexy PlaySample → DSoundInstance::Play). Each playing
+    // instance is registered with SoundManager so a later master-volume
+    // change (SetSfxVolume / Mute) re-applies to it, like DSoundManager::
+    // SetVolume FUN_0047600f which re-hups every playing slot (FUN_004775c5).
+    // Returns a handle — callers currently ignore it.
     play(loop = false) {
         const ctx = getAudioCtx();
         if (ctx && this.mBuffer) {
@@ -274,16 +277,19 @@ export class SoundInstance {
             src.buffer = this.mBuffer;
             src.loop = loop;
             const gain = ctx.createGain();
-            gain.gain.value = SoundManager.mMasterVolume * SoundManager.mSfxVolume;
+            gain.gain.value = SoundManager._sfxGain();
             src.connect(gain);
             gain.connect(ctx.destination);
+            const handle = { source: src, gain };
+            SoundManager.mPlayingSfx.add(handle);
+            src.onended = () => SoundManager.mPlayingSfx.delete(handle);
             try { src.start(0); } catch { /* ignore */ }
-            return { source: src, gain };
+            return handle;
         }
         // HTMLAudio fallback — replay the existing element (no re-fetch).
         if (this.audio) {
             this.audio.loop = loop;
-            this.audio.volume = SoundManager.mMasterVolume * SoundManager.mSfxVolume;
+            this.audio.volume = SoundManager._sfxGain();
             try { this.audio.currentTime = 0; } catch { /* not seekable yet */ }
             this.audio.play().catch(() => {});
             return this.audio;
@@ -293,7 +299,8 @@ export class SoundInstance {
 }
 
 export class SoundManager {
-    // Port of Sexy::SoundManager/DSoundManager - vtable at 004e6754
+    // Port of Sexy::SoundManager/DSoundManager - vtable at 004e67cc, plus the
+    // SexyAppBase volume/mute methods that drive it.
     // DSoundManager ctor rwg:121954 — master volume double = 1.0
     // (0x3ff0000000000000). The previous 0.7 was not from the source.
     static mMasterVolume = 1.0;
@@ -301,18 +308,59 @@ export class SoundManager {
     static mSfxVolume = 0.85;
     // SexyAppBase ctor FUN_00440396 rwg:77186 — mMusicVolume = _DAT_004e9348 = 0.6
     static mMusicVolume = 0.6;
+    // SexyAppBase mMuteCount (app+0x3f0): Mute FUN_0044a963 increments,
+    // Unmute FUN_0044a9a8 decrements (not below 0). While > 0, SetMusicVolume
+    // FUN_0044a9ff and SetSfxVolume FUN_0044aa3c push 0 to the devices.
+    static mMuteCount = 0;
+    static mPlayingSfx = new Set();  // live Web Audio SFX handles {source, gain}
     static mCurrentMusic = null;     // BufferSourceNode (Web Audio) or HTMLAudio (fallback)
     static mCurrentMusicGain = null; // GainNode for Web Audio music volume
     static mCurrentMusicSrc = null;  // mPath of the playing track (same-track guard)
+    static mCurrentMusicSound = null;
+    static mMusicStartCtxTime = 0;   // ctx.currentTime when the current track (re)started
+    static mMusicStartOffset = 0;    // track position (s) at that moment
+    static mMusicPos = new Map();    // mPath → paused position (s)
 
+    // DSoundManager volume → DirectSound attenuation, FUN_00475fd0 (asm
+    // 0x475fd0-0x47600c): dB100 = ftol((log10(v * 9.0 + 1.0) - 1.0) * 2333.0)
+    // (_DAT_004e90a0 = 9.0, _DAT_004e9060 = 1.0, _DAT_004e9098 = 2333.0);
+    // dB100 < -2000 → -10000 (DSBVOLUME_MIN = silence). Converted to a linear
+    // amplitude for Web Audio: 10^(dB100 / 2000).
+    static volumeToGain(v) {
+        const db100 = Math.trunc((Math.log10(v * 9.0 + 1.0) - 1.0) * 2333.0);
+        if (db100 < -2000) return 0;
+        return Math.pow(10, db100 / 2000);
+    }
+
+    // Instance volume (1.0) * base volume (1.0) * DSoundManager master
+    // (FUN_004775c5). The master is set by SexyAppBase::SetSfxVolume
+    // FUN_0044aa3c to mSfxVolume, or 0 while muted.
+    static _sfxGain() {
+        const master = SoundManager.mMuteCount > 0 ? 0 : SoundManager.mSfxVolume;
+        return SoundManager.volumeToGain(SoundManager.mMasterVolume * master);
+    }
+
+    // AudiereMusicInterface::SetVolume FUN_00477d50 stores the float and hands
+    // it to audiere's OutputStream::setVolume. UNKNOWN — audiere.dll's
+    // volume→DirectSound mapping is not in the decompiled RWG; linear is used.
+    static _musicGain() {
+        return SoundManager.mMuteCount > 0 ? 0 : SoundManager.mMusicVolume;
+    }
+
+    // MusicInterface PlayMusic(id, offset 0, noLoop false) as called by
+    // FUN_00408799 / FUN_00408dae after `if (!IsPlaying(id)) StopAllMusic()`.
+    // AudierePlayMusic FUN_004779ae: if the stream is not playing →
+    // setVolume, setRepeat(!noLoop), play(). It never calls reset(), and
+    // StopAllMusic FUN_00477b27 only calls stop() — so a track that was
+    // stopped earlier resumes from where it stopped (audiere stop() pauses).
     static playMusic(sound) {
         if (!sound) return;
-        // No-op if the same track is already playing — otherwise repeated
-        // showMainMenu/showSelectLevel transitions would restart the track.
+        // IsPlaying(id) FUN_00477a43 → nothing to do.
         if (SoundManager.mCurrentMusicSrc === sound.mPath && SoundManager.mCurrentMusic) {
             return;
         }
         SoundManager.stopMusic();
+        const pos = SoundManager.mMusicPos.get(sound.mPath) || 0;
         const ctx = getAudioCtx();
         // Web Audio path: loop a buffer source through a dedicated gain node.
         if (ctx && sound.mBuffer) {
@@ -320,53 +368,93 @@ export class SoundManager {
             src.buffer = sound.mBuffer;
             src.loop = true;
             const gain = ctx.createGain();
-            gain.gain.value = SoundManager.mMasterVolume * SoundManager.mMusicVolume;
+            gain.gain.value = SoundManager._musicGain();
             src.connect(gain);
             gain.connect(ctx.destination);
-            try { src.start(0); } catch { /* ignore */ }
+            const offset = sound.mBuffer.duration > 0 ? pos % sound.mBuffer.duration : 0;
+            try { src.start(0, offset); } catch { /* ignore */ }
             SoundManager.mCurrentMusic = src;
             SoundManager.mCurrentMusicGain = gain;
             SoundManager.mCurrentMusicSrc = sound.mPath;
+            SoundManager.mCurrentMusicSound = sound;
+            SoundManager.mMusicStartCtxTime = ctx.currentTime;
+            SoundManager.mMusicStartOffset = offset;
             return;
         }
-        // HTMLAudio fallback — reuse the loaded element (no clone/re-fetch).
+        // HTMLAudio fallback — pause()/play() keeps the element's position.
         if (sound.audio) {
             sound.audio.loop = true;
-            sound.audio.volume = SoundManager.mMasterVolume * SoundManager.mMusicVolume;
-            try { sound.audio.currentTime = 0; } catch { /* ignore */ }
+            sound.audio.volume = SoundManager._musicGain();
             sound.audio.play().catch(() => {});
             SoundManager.mCurrentMusic = sound.audio;
             SoundManager.mCurrentMusicGain = null;
             SoundManager.mCurrentMusicSrc = sound.mPath;
+            SoundManager.mCurrentMusicSound = sound;
         }
     }
 
+    // StopAllMusic FUN_00477b27: stop() each stream (position kept).
     static stopMusic() {
         const m = SoundManager.mCurrentMusic;
         if (m) {
-            // Buffer source (Web Audio) → stop(); HTMLAudio → pause().
-            if (typeof m.stop === 'function') { try { m.stop(); } catch { /* ignore */ } }
-            else if (typeof m.pause === 'function') { m.pause(); }
+            const snd = SoundManager.mCurrentMusicSound;
+            // Buffer source (Web Audio) → remember position, stop(); HTMLAudio → pause().
+            if (typeof m.stop === 'function') {
+                const ctx = getAudioCtx();
+                if (ctx && snd && snd.mBuffer && snd.mBuffer.duration > 0) {
+                    const p = SoundManager.mMusicStartOffset + (ctx.currentTime - SoundManager.mMusicStartCtxTime);
+                    SoundManager.mMusicPos.set(snd.mPath, p % snd.mBuffer.duration);
+                }
+                try { m.stop(); } catch { /* ignore */ }
+            } else if (typeof m.pause === 'function') { m.pause(); }
             SoundManager.mCurrentMusic = null;
             SoundManager.mCurrentMusicGain = null;
         }
         SoundManager.mCurrentMusicSrc = null;
+        SoundManager.mCurrentMusicSound = null;
     }
 
-    static setMusicVolume(v) {
-        v = Math.max(0, Math.min(1, v));
-        SoundManager.mMusicVolume = v;
-        // Web Audio music → adjust gain node; HTMLAudio fallback → .volume.
+    static _applyMusicVolume() {
+        const v = SoundManager._musicGain();
         if (SoundManager.mCurrentMusicGain) {
-            SoundManager.mCurrentMusicGain.gain.value = SoundManager.mMasterVolume * v;
+            SoundManager.mCurrentMusicGain.gain.value = v;
         } else if (SoundManager.mCurrentMusic && 'volume' in SoundManager.mCurrentMusic) {
-            SoundManager.mCurrentMusic.volume = SoundManager.mMasterVolume * v;
+            SoundManager.mCurrentMusic.volume = v;
         }
     }
 
+    static _applySfxVolume() {
+        const g = SoundManager._sfxGain();
+        for (const h of SoundManager.mPlayingSfx) h.gain.gain.value = g;
+    }
+
+    // SexyAppBase::SetMusicVolume FUN_0044a9ff
+    static setMusicVolume(v) {
+        v = Math.max(0, Math.min(1, v));
+        SoundManager.mMusicVolume = v;
+        SoundManager._applyMusicVolume();
+    }
+
+    // SexyAppBase::SetSfxVolume FUN_0044aa3c → DSoundManager::SetVolume
+    // FUN_0047600f (re-hups every playing instance).
     static setSfxVolume(v) {
         v = Math.max(0, Math.min(1, v));
         SoundManager.mSfxVolume = v;
+        SoundManager._applySfxVolume();
+    }
+
+    // SexyAppBase::Mute FUN_0044a963 / Unmute FUN_0044a9a8, then re-apply
+    // both volumes (vt+0xdc / vt+0xe0).
+    static mute() {
+        SoundManager.mMuteCount++;
+        SoundManager._applyMusicVolume();
+        SoundManager._applySfxVolume();
+    }
+
+    static unmute() {
+        if (SoundManager.mMuteCount > 0) SoundManager.mMuteCount--;
+        SoundManager._applyMusicVolume();
+        SoundManager._applySfxVolume();
     }
 }
 

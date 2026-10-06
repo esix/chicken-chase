@@ -23,6 +23,7 @@
 
 import { Widget } from './SexyApp.js';
 import { FieldController } from './FieldController.js';
+import { EGG_TO_CHICK } from './Chick.js';
 import { Hand, HandMode } from './Hand.js';
 import { RiskController } from './RiskController.js';
 import { HintController, LevelTutorial } from './HintController.js';
@@ -55,6 +56,13 @@ function rectContains(r, x, y) {
     return !(x < r.x || r.x + r.w <= x || y < r.y || r.y + r.h <= y);
 }
 
+// Key name used as the mKeyDown index: letters case-folded (the original
+// indexes by virtual-key code, which has no case), 'Spacebar' -> ' '.
+function normKey(key) {
+    if (key === 'Spacebar') return ' ';
+    return (typeof key === 'string' && key.length === 1) ? key.toLowerCase() : key;
+}
+
 export class GameView extends Widget {
     // FUN_004091f9 (rwg_functions.c:11682) GameView::GameView
     constructor(gameApp) {
@@ -80,22 +88,27 @@ export class GameView extends Widget {
         // to 1); the dialog openers (FUN_0040bce7 rwg:14104, FUN_0041e97b,
         // FUN_0041e9f1, FUN_0041b94a) pause with +0xd = 0.
         this.mPauseTextShown = false;
-        // FUN_0040907e (rwg:11487-11497) edge-detects space against its previous
-        // key state (+0xc), so holding space toggles once. The browser repeats
-        // keydown while held; track the held state via keyup to match.
-        this._spaceHeld = false;
-        // Shift key state (mKeyDown[VK_SHIFT] = WidgetManager +0xe0, read by
-        // FUN_004093d9 asm 0x40946b together with ESC).
-        this._shiftHeld = false;
+        // Game state +0xc: previous space key state, edge-detected by
+        // FUN_0040907e (rwg:11487-11497); zeroed by Core::StartLevel
+        // FUN_00406069 (rwg:7524).
+        this.mSpacePrev = false;
+        // WidgetManager::mKeyDown[] (base +0xd0): FUN_00438a14 (rwg:68182-
+        // 68190) sets the entry on every key down, before (and regardless
+        // of) dispatching to the focus widget — so keys are recorded while a
+        // dialog has the focus, too; FUN_00438a45 (rwg:68205-68215) clears it
+        // on key up. The game polls it (FUN_0040907e, FUN_004093d9).
+        // Entries are the normalised DOM key names ('a', ' ', 'Escape',
+        // 'Shift'); mKeyDown[VK] <-> key name, see _inputPoll.
+        this.mKeyDown = new Set();
         if (typeof window !== 'undefined' && window.addEventListener) {
-            window.addEventListener('keyup', (e) => {
-                if (e.key === ' ' || e.key === 'Spacebar') this._spaceHeld = false;
-                if (e.key === 'Shift') this._shiftHeld = false;
-            });
-            window.addEventListener('keydown', (e) => {
-                if (e.key === 'Shift') this._shiftHeld = true;
-            });
+            window.addEventListener('keydown', (e) => this.mKeyDown.add(normKey(e.key)));
+            window.addEventListener('keyup', (e) => this.mKeyDown.delete(normKey(e.key)));
+            // FUN_00445818 (rwg:81203) -> FUN_00446cef (rwg:82160-82168):
+            // every mKeyDown entry cleared when the app loses focus.
+            window.addEventListener('blur', () => this.mKeyDown.clear());
         }
+        // Last seen "a modal dialog is open" state — see _syncModalPause.
+        this._modalWasShown = false;
 
         // MENU/SELL/BUY are ButtonWidgets: ButtonDepress fires on MouseUp
         // (ButtonWidget::MouseUp FUN_0043dbb3 rwg:73862: if mIsOver (+0x55)
@@ -143,7 +156,14 @@ export class GameView extends Widget {
             (core && core.getUpgradeIds) ? core.getUpgradeIds() : [];
         this.mPendingButton = -1;
         this._pressedButton = -1;
+        // FUN_00406069 rwg:7521-7525: new game state, +4 (paused) = 0,
+        // +0xc (space prev) = 0, +0xd = 0. (FieldController.startLevel
+        // clears mIsPaused.)
         this.mPauseTextShown = false;
+        this.mSpacePrev = false;
+        // New Hand object (rwg:7582-7596): FUN_0040cc01 with mode 0 (asm
+        // 0x40617d `xorl %eax,%eax`), +8 / +0xc / +0x10 = 0 (below).
+        this.mHand.setMode(HandMode.SEEDS);
         this.mMouseLeftDown = false;
         this.mMouseRightDown = false;
         this.mPollLeftLatch = false;
@@ -166,6 +186,10 @@ export class GameView extends Widget {
         // FUN_0041d22e (rwg:35567-35569) before the level starts (GameApp).
         // No hint is opened here: all level hints come from the tutorial
         // dispatcher ticked in update() (FUN_00421b21 -> FUN_00422036).
+
+        // A dialog still open now does not pause the new state (+4 = 0):
+        // take its open state as already seen (see _syncModalPause).
+        this._modalWasShown = this._isModalShown();
     }
 
     // FUN_0040a3d6 (rwg_functions.c:13092) GameView::Draw
@@ -192,18 +216,19 @@ export class GameView extends Widget {
         // after the HUD, before GAME PAUSED. No background is drawn there.
         this.mHintController.draw(g);
 
-        const anyModal = (this.mHintController && this.mHintController.isShown())
-            || HtmlDialogs.isOpen();
+        const anyModal = this._isModalShown();
 
         // GAME PAUSED — rwg:13966-13982, asm 0x40baad-0x40bb90. Condition:
-        // state+4 (paused) && state+0xd (space pause). Colour DAT_005012a0
-        // (white). No FillRect/dim precedes the text.
+        // state+4 (paused) && state+0xd (space pause) only — also with a
+        // dialog open (space toggles under dialogs, see update()); dialogs
+        // are drawn over the GameView. Colour DAT_005012a0 (white). No
+        // FillRect/dim precedes the text.
         //   "GAME PAUSED" (0x4dcde0), FONT_24 (DAT_004fff1c):
         //       x = (width(+0x38) - StringWidth)/2, y = height(+0x3c)/2 = 300
         //   "press space to continue" (0x4dcdec), FONT_20 (DAT_004fff18):
         //       x = (width - StringWidth)/2, y = height/2 + 0x64 = 400
         // (asm 0x40bb0b-0x40bb29 / 0x40bb5f-0x40bb80; Sexy DrawString y = baseline.)
-        if (this.mFieldController.mIsPaused && this.mPauseTextShown && !anyModal) {
+        if (this.mFieldController.mIsPaused && this.mPauseTextShown) {
             const ctx = g.ctx;
             ctx.save();
             ctx.font = FONT_CSS.FONT_24;
@@ -240,70 +265,74 @@ export class GameView extends Widget {
         }
     }
 
-    // FUN_00409372 (rwg_functions.c:11804) GameView::Update
-    //   parent Update; MarkDirty; controller->Update() (+0xb8 vtable[0] =
-    //   the game tick FUN_00405fcf); FUN_004093d9 (input poll: left-click
-    //   HUD chain, pending button, keys); FUN_004091b8 (dog tick, every
-    //   Update — paused or not).
+    // FUN_00409372 (rwg_functions.c:11804, asm 0x409372-0x4093b3)
+    // GameView::Update: Widget::Update (thunk_FUN_0043f784), MarkDirty,
+    // controller vtable[0] = FUN_00408e06 -> game tick FUN_00405fcf, input
+    // poll FUN_004093d9, then the dog tick FUN_004091b8 (asm 0x4093ac) —
+    // every Update, paused or not.
     update() {
-        // Pause the field while an HTML / hint modal is displayed. The original
-        // dialog openers set state+4 = 1 and +0xd = 0 and call FUN_004090b9
-        // (hand mode 0): FUN_0040bce7 rwg:14103-14105, FUN_0041e97b
-        // rwg:37769-37771, FUN_0041e9f1 rwg:37820-37822, HintDialog
-        // FUN_0040d435 asm 0x40d44d-0x40d455, FUN_0041b94a rwg:33692-33697.
+        super.update();
         const fc = this.mFieldController;
-        const modalShown = !!((this.mHintController && this.mHintController.isShown())
-            || HtmlDialogs.isOpen());
-        if (modalShown) this.mPauseTextShown = false;
-        if (modalShown && !this._modalWasShown) this.mHand.setMode(HandMode.SEEDS);
-        this._modalWasShown = modalShown;
-        if (modalShown && !fc.mIsPaused) {
-            this._pausedByHint = true;
-            fc.mIsPaused = true;
-        } else if (this._pausedByHint && !modalShown) {
-            this._pausedByHint = false;
-            fc.mIsPaused = false;
+        // Dialogs closed between frames unpause (their close handlers).
+        this._syncModalPause();
+
+        // ---- game tick FUN_00405fcf (rwg:7464-7480) ----
+        // state+4 == 0: +8 tick++, FUN_0040907e, ravens .. pets, hint
+        // FUN_0040d281 (7472), risk FUN_0041b901 (7477), hand FUN_0040cc71
+        // (7478), level FUN_00421b21 (7479). state+4 != 0: FUN_0040907e only.
+        const wasPaused = fc.mIsPaused;
+        const spaceEdge = this._pollSpace();
+        let level = 0, maxUnlockedBefore = 1;
+        if (wasPaused) {
+            if (spaceEdge) this._togglePause(true);
+        } else {
+            // FUN_00421948 computes the LevelCompleted "upgrade" flag BEFORE
+            // the time is recorded (FUN_0041111b @0x4219d6), which the level
+            // update below does: sample maxUnlocked first.
+            maxUnlockedBefore = (this.mGameApp && this.mGameApp.getMaxUnlocked)
+                ? this.mGameApp.getMaxUnlocked() : 1;
+            level = fc.mCurrentLevel;
+            // The port freezes a finished level (FieldController skips its
+            // tick once mIsLevelComplete / mIsLevelFailed is set).
+            const running = !fc.mIsLevelComplete && !fc.mIsLevelFailed;
+            // +8 tick, ravens, world, seeds, eggs, gems, store, money
+            // effects, pets.
+            fc.update();
+            if (running) {
+                // FUN_0040d281 hint bar tick (rwg:7472).
+                this.mHintController.update();
+                // Risk cooldown tick — RiskController FUN_0041b901 (rwg:7477).
+                this.mRiskController.update();
+                // Hand controller FUN_0040cc71 (rwg:7478): hover + click dispatch.
+                this._handTick();
+                // FUN_00421b21 task progress + level end (rwg:7479), last.
+                fc.runLevelUpdate();
+                // FUN_00421b21 rwg:41522-41530: while a task is open and the
+                // level is not lost it runs the L1 slot unlock and the
+                // tutorial dispatcher FUN_00422036 (= the complete/failed
+                // branches did not trip).
+                if (!fc.mIsLevelComplete && !fc.mIsLevelFailed && this.mLevelTutorial) {
+                    this.mLevelTutorial.tick({
+                        fc,
+                        hint: this.mHintController,
+                        core: this.mGameApp && this.mGameApp.mCore,
+                        riskReady: this.mRiskController.isReady(),
+                        // FUN_0041eae5(0): list of special-shop items not empty.
+                        specialShopAvailable: () => (typeof fc.getSpecialShopItems === 'function')
+                            && fc.getSpecialShopItems().length > 0,
+                    });
+                }
+            }
+            // FUN_0040907e runs FIRST in the original tick, but no call of
+            // the tick body reads state+4 while the port's FieldController
+            // returns early when mIsPaused is set — so the toggle's write is
+            // applied after the body. Its FUN_004090b9 hand reset is skipped
+            // when the hand tick ran (it re-picks the mode at asm 0x40cd04).
+            if (spaceEdge) this._togglePause(!running);
         }
 
-        // ---- game tick FUN_00405fcf (rwg:7464-7480), only when state+4 == 0 ----
-        const running = !fc.mIsPaused && !fc.mIsLevelComplete && !fc.mIsLevelFailed;
-        // FUN_00421948 computes the LevelCompleted "upgrade" flag BEFORE the
-        // time is recorded (FUN_0041111b @0x4219d6), which FieldController
-        // does inside update(): sample maxUnlocked first.
-        const maxUnlockedBefore = (this.mGameApp && this.mGameApp.getMaxUnlocked)
-            ? this.mGameApp.getMaxUnlocked() : 1;
-        const level = fc.mCurrentLevel;
-        const dog = fc.mField && fc.mField.mDog;
-        const dogTimer = dog ? dog.mTimer : 0, dogState = dog ? dog.mState : 0;
-        // ravens, world, seeds, eggs, gems, store, money effects, pets
-        fc.update();
-        if (running) {
-            // FUN_0040d281 hint bar tick (rwg:7472).
-            this.mHintController.update();
-            // Risk cooldown tick — RiskController FUN_0041b901 (rwg:7477).
-            this.mRiskController.update();
-            // Hand controller FUN_0040cc71 (rwg:7478): hover + click dispatch.
-            this._handTick();
-        }
-        // FUN_00421b21 task progress + level end (rwg:7479), after the hand.
-        if (running) fc.runLevelUpdate();
-        // Level update FUN_00421b21 (rwg:7479, last in the tick): while a task
-        // is open and the level is not lost it runs the tutorial dispatcher
-        // FUN_00422036 (rwg:41522-41530). FieldController._checkTasks covers
-        // the complete/failed branches, so: running before and after.
-        if (running && !fc.mIsLevelComplete && !fc.mIsLevelFailed && this.mLevelTutorial) {
-            this.mLevelTutorial.tick({
-                fc,
-                hint: this.mHintController,
-                core: this.mGameApp && this.mGameApp.mCore,
-                riskReady: this.mRiskController.isReady(),
-                // FUN_0041eae5(0): list of special-shop items not empty.
-                specialShopAvailable: () => (typeof fc.getSpecialShopItems === 'function')
-                    && fc.getSpecialShopItems().length > 0,
-            });
-        }
-
-        // Open the HTML level-end dialog once when the flag first trips.
+        // Level end: FUN_00421948 / FUN_00421a66 open the dialog (and pause,
+        // see _syncModalPause) inside the level update.
         if (fc.mIsLevelComplete) {
             if (!this._endShown) {
                 this._endShown = true;
@@ -316,42 +345,123 @@ export class GameView extends Widget {
         } else {
             this._endShown = false;
         }
+        // Dialogs opened by the tick paused at once in the original.
+        this._syncModalPause();
 
         // Mirror the ready flag onto FieldController for HUD draw
         // (risk icon shown when risk+9 != 0, rwg:13899).
         fc.mRiskReady = this.mRiskController.isReady();
         fc.mRiskController = this.mRiskController; // icon cel phase (+0x10)
-        super.update();
 
         // ---- input poll FUN_004093d9 (rwg:11869-11950), paused or not ----
         this._inputPoll();
+        this._syncModalPause();
 
-        // Dog tick FUN_004091b8 (rwg:11815), every GameView Update. Field.update
-        // also ticks the dog while the field runs; tick it here only when
-        // Field.update did not (its timer always changes when ticked).
-        if (dog && dog.mTimer === dogTimer && dog.mState === dogState) dog.update();
+        // Dog tick FUN_004091b8 (asm 0x4093ac), every GameView Update.
+        const dog = fc.mField && fc.mField.mDog;
+        if (dog) dog.update();
     }
 
-    // FUN_004093d9 (rwg:11869-11883 / 11947-11950). The left flag edge
-    // (latch +0xbc) runs FUN_00409ba0 shop slots -> else FUN_00409c92 egg row
-    // -> else FUN_00409c38 risk icon; then a pending button id (+0xc0) is run
-    // via FUN_0040bce7 and reset to -1. (The key part is event-driven in
-    // keyDown below.)
+    // Any modal dialog of the port shown (HTML dialogs incl. the HintDialog).
+    _isModalShown() {
+        return !!((this.mHintController && this.mHintController.isShown())
+            || HtmlDialogs.isOpen());
+    }
+
+    // Every dialog opener of the game pauses (state +4 = 1, +0xd = 0,
+    // FUN_004090b9 -> hand mode 0): FUN_0040bce7 rwg:14103-14105 (Options),
+    // FUN_0041e97b rwg:37769-37771 (Shop), FUN_0041e9f1 rwg:37820-37822
+    // (Special shop), FUN_0040d435 rwg:16367-16369 (HintDialog),
+    // FUN_0041b94a rwg:33692-33697 (SURPRISE), FUN_00421948 rwg:41348-41351
+    // (Level completed), FUN_00421a66 rwg:41431-41434 (Level failed); and
+    // every closer back to the game unpauses (+4 = 0, +0xd = 0) whatever
+    // paused it before: FUN_0040fd44 rwg:19545-19550 (Options), FUN_0041f94a
+    // rwg:39086-39088 (Shop), FUN_00420ae8 rwg:40439-40441 (Special shop),
+    // FUN_0040d821 rwg:16716-16719 (HintDialog OK), FUN_0040d4bb
+    // rwg:16408-16411 / FUN_0041b9cf rwg:33746-33751 (SURPRISE).
+    // The HTML dialogs open/close outside this class, so the port applies
+    // those writes on the open/close transitions.
+    _syncModalPause() {
+        const shown = this._isModalShown();
+        if (shown === this._modalWasShown) return;
+        this._modalWasShown = shown;
+        const fc = this.mFieldController;
+        fc.mIsPaused = shown;
+        this.mPauseTextShown = false;
+        if (shown) this.mHand.setMode(HandMode.SEEDS);
+    }
+
+    // FUN_0040907e (rwg:11485-11497) edge part: cVar1 = mKeyDown[VK_SPACE]
+    // (WidgetManager +0xf0); fires when +0xc was 0 and the key is down;
+    // +0xc = cVar1 every call. Called from both branches of the game tick,
+    // so space works while a dialog is open (the dialog does not stop the
+    // key from being recorded, FUN_00438a14, nor the GameView update).
+    _pollSpace() {
+        const down = this.mKeyDown.has(' ');
+        const edge = !this.mSpacePrev && down;
+        this.mSpacePrev = down;
+        return edge;
+    }
+
+    // FUN_0040907e (rwg:11489-11496) toggle: +0xd = 0; +4 = !+4; when it
+    // now pauses, FUN_004090b9 -> FUN_0040cc01(hand, 0) (asm 0x4090c4
+    // `xorl %eax,%eax`); +0xd = 1.
+    _togglePause(resetHand) {
+        const fc = this.mFieldController;
+        this.mPauseTextShown = false;
+        fc.mIsPaused = !fc.mIsPaused;
+        if (fc.mIsPaused && resetHand) this.mHand.setMode(HandMode.SEEDS);
+        this.mPauseTextShown = true;
+    }
+
+    // FUN_004093d9 (rwg:11849-11950, asm 0x4093d9-0x409532).
+    //   Left flag edge (latch +0xbc): FUN_00409ba0 shop slots -> else
+    //   FUN_00409c92 egg row -> else FUN_00409c38 risk icon.
+    //   +0xc0 != -1: FUN_0040bce7(+0xc0), +0xc0 = -1.
+    //   +0xc0 == -1 and state+4 == 0: polled keys (mKeyDown):
+    //     ESC (+0xeb): with Shift (+0xe0) app vtable+0xa0 and return; else
+    //       mKeyDown[ESC] = 0 and FUN_0040bce7(MENU) — then on to the
+    //       letters (no return).
+    //     A (+0x111) FUN_00406eed(eggs, 1); else Z (+0x12a) (eggs, 0);
+    //     else Q/W/E/R/T (+0x121/+0x127/+0x115/+0x122/+0x124)
+    //     FUN_00406f87(eggs, 0..4). One of them per call, every call
+    //     while held.
     _inputPoll() {
         if (!this.mMouseLeftDown) {
             this.mPollLeftLatch = false;
         } else if (!this.mPollLeftLatch) {
-            this.mPollLeftLatch = true;
             // FUN_0040be6f: current mouse position.
             const x = this.mHand.mX, y = this.mHand.mY;
             if (!this._clickShopSlot(x, y) && !this._clickEggRow(x, y)) {
                 this._clickRiskIcon(x, y);
             }
+            this.mPollLeftLatch = true;
         }
         if (this.mPendingButton !== -1) {
-            const id = this.mPendingButton;
+            this._doButtonAction(this.mPendingButton);
             this.mPendingButton = -1;
-            this._doButtonAction(id);
+            return;
+        }
+        if (this.mFieldController.mIsPaused) return;
+        const keys = this.mKeyDown;
+        if (keys.has('Escape')) {
+            // asm 0x40946b-0x409487: with Shift held, app vtable+0xa0 =
+            // FUN_00408f0e (GameApp vtable 004dcbfc [40]): ShellExecute of
+            // an optional URL then SexyAppBase::Shutdown FUN_00444943, and
+            // return. A browser page cannot shut down (same as MainMenuView
+            // EXIT) — only the return is kept.
+            if (keys.has('Shift')) return;
+            // asm 0x409490-0x4094a5: mKeyDown[ESC] = 0, then FUN_0040bce7
+            // with the MENU button's id (push [+0xac]+0x84) -> case 1.
+            // No SOUND_CLICK (ButtonDepress is not involved).
+            keys.delete('Escape');
+            this._doButtonAction(BTN_MENU);
+        }
+        if (keys.has('a')) { this._setAllEggsBrooding(true); return; }    // FUN_00406eed(.., 1)
+        if (keys.has('z')) { this._setAllEggsBrooding(false); return; }   // FUN_00406eed(.., 0)
+        const typeKeys = ['q', 'w', 'e', 'r', 't'];                        // FUN_00406f87(.., 0..4)
+        for (let i = 0; i < typeKeys.length; i++) {
+            if (keys.has(typeKeys[i])) { this._broodEggsOfType(i); return; }
         }
     }
 
@@ -570,14 +680,14 @@ export class GameView extends Widget {
             return true;
         }
 
-        if (btn === 0) {
-            const b = this._buttonAt(x, y);
-            if (b !== -1) {
-                // ButtonWidget::MouseDown FUN_0043db80: ButtonPress only;
-                // ButtonDepress waits for MouseUp (see mouseUp).
-                this._pressedButton = b;
-                return true;
-            }
+        // A press over MENU/SELL/BUY goes to that ButtonWidget, whatever the
+        // mouse button: ButtonWidget::MouseDown FUN_0043db80 (rwg:73845-
+        // 73852) has no click-count test — ButtonPress only; ButtonDepress
+        // waits for MouseUp (see mouseUp).
+        const b = this._buttonAt(x, y);
+        if (b !== -1) {
+            this._pressedButton = b;
+            return true;
         }
 
         // Mouse position as stored by MouseMove (FUN_0040be96) and read by
@@ -617,9 +727,10 @@ export class GameView extends Widget {
 
     // FUN_0040bdb2 (rwg_functions.c:14156) GameView::MouseUp — clears the flags.
     mouseUp(x, y, btn) {
-        if (this._pressedButton !== -1 && btn === 0) {
-            // ButtonWidget::MouseUp FUN_0043dbb3 (rwg:73862): ButtonDepress
-            // (FUN_0040bcc4) only if the cursor is still over the button.
+        if (this._pressedButton !== -1) {
+            // ButtonWidget::MouseUp FUN_0043dbb3 (rwg:73862-73868): ButtonDepress
+            // (FUN_0040bcc4) when the cursor is still over the button
+            // (+0x55) — no click-count (mouse button) test either.
             const b = this._pressedButton;
             this._pressedButton = -1;
             if (this._buttonAt(x, y) === b) this.buttonDepress(b);
@@ -631,76 +742,23 @@ export class GameView extends Widget {
         super.mouseUp(x, y, btn);
     }
 
-    // Keyboard. The original polls WidgetManager::mKeyDown[] (base +0xd0,
-    // FUN_00438a14 rwg:68189) every Update instead of handling KeyDown:
-    //   space  +0xf0  (VK 0x20) FUN_0040907e pause toggle (rwg:11489)
-    //   ESC    +0xeb  (VK 0x1B) MENU action; with Shift (+0xe0, VK 0x10) app vtable+0xa0
-    //   A +0x111 / Z +0x12a  -> FUN_00406eed(eggs, 1 / 0)
-    //   Q +0x121 / W +0x127 / E +0x115 / R +0x122 / T +0x124 -> FUN_00406f87(eggs, 0..4)
-    // (FUN_004093d9 rwg:11884-11946; only when +0xc0 == -1 and the game is not paused.)
+    // Keyboard. The original has no GameView::KeyDown: keys are recorded in
+    // WidgetManager::mKeyDown[] (FUN_00438a14, see the constructor's window
+    // listeners) and polled every Update — space by FUN_0040907e in the game
+    // tick, ESC / A / Z / Q..T by FUN_004093d9 (_inputPoll). Called by
+    // GameApp for the current view only to let the browser default be
+    // suppressed: space (page scroll / activating a focused HTML button —
+    // neither exists in the original).
     keyDown(key) {
-        // HTML dialogs (options, shop, level end, intro...) own the keyboard.
-        if (HtmlDialogs.isOpen()) return false;
-        if (this.mHintController.isShown()) return true;
-
-        const fc = this.mFieldController;
-
-        // FUN_0040907e (rwg:11479-11498): edge-triggered space toggle.
-        if (key === ' ' || key === 'Spacebar') {
-            if (this._spaceHeld) return true;
-            this._spaceHeld = true;
-            this.mPauseTextShown = false;               // +0xd = 0
-            fc.mIsPaused = !fc.mIsPaused;               // +4 = !+4
-            // When pausing (rwg:11494-11495), FUN_004090b9 -> FUN_0040cc01
-            // (Core+0x20 hand) with mode 0: asm 0x4090c4 `xorl %eax,%eax`.
-            if (fc.mIsPaused) this.mHand.setMode(HandMode.SEEDS);
-            this.mPauseTextShown = true;                // +0xd = 1
-            return true;
-        }
-
-        // FUN_004093d9 rwg:11884-11887: rest only when no button is pending
-        // and state+4 (paused) == 0.
-        if (this.mPendingButton !== -1 || fc.mIsPaused
-            || fc.mIsLevelComplete || fc.mIsLevelFailed) {
-            return false;
-        }
-
-        if (key === 'Escape') {
-            // asm 0x40946b-0x409487: with Shift (+0xe0) held, app vtable+0xa0
-            // = FUN_00408f0e (GameApp vtable 004dcbfc [40]): ShellExecute of
-            // an optional URL then SexyAppBase::Shutdown FUN_00444943, and
-            // return. A browser page cannot shut down (same as MainMenuView
-            // EXIT) — no-op, and the MENU branch is NOT taken.
-            if (this._shiftHeld) return true;
-            // asm 0x409490-0x4094a5: mKeyDown[ESC] = 0, then FUN_0040bce7 with
-            // the MENU button's id (push [+0xac]+0x84, MENU = +0xac) -> case 1.
-            // No SOUND_CLICK (ButtonDepress is not involved).
-            this._doButtonAction(BTN_MENU);
-            return true;
-        }
-
-        const k = key.length === 1 ? key.toLowerCase() : key;
-        // rwg:11901-11943
-        if (k === 'a') { this._setAllEggsBrooding(true); return true; }   // FUN_00406eed(.., 1)
-        if (k === 'z') { this._setAllEggsBrooding(false); return true; }  // FUN_00406eed(.., 0)
-        const typeKeys = { q: 0, w: 1, e: 2, r: 3, t: 4 };
-        if (k in typeKeys) { this._broodEggsOfType(typeKeys[k]); return true; } // FUN_00406f87
-        return false;
+        return normKey(key) === ' ';
     }
 
-    // Chick type an egg hatches into. The original egg type (+0x10, rwg:8697)
-    // uses chick-type numbering 0 layer .. 4 holy (mission egg overlays
-    // rwg:13842-13849). JS eggs use EggType; mapping mirrors Field.hatchEgg
-    // (Field.js EggType -> ChickType switch). Keep in sync with Field.js.
+    // Egg type +0x10 (rwg:8697) in chick-type numbering 0 layer .. 4 holy,
+    // as compared by FUN_00406f87 (rwg:8692). JS eggs use EggType; Chick.js
+    // EGG_TO_CHICK is the same table Field uses to hatch them.
     _eggChickType(egg) {
-        switch (egg.mEggType) {
-            case 0: return 0; // WHITE  -> LAYER
-            case 1: return 3; // BLUE   -> MAGIC
-            case 2: return 4; // RED    -> HOLY
-            case 3: return 2; // BLACK  -> ROOSTER
-            case 4: return 1; // GOLDEN -> BROODY
-            default: return -1;
-        }
+        const t = EGG_TO_CHICK[egg.mEggType];
+        return t === undefined ? -1 : t;
     }
 
     // FUN_00406eed (rwg_functions.c:8623): toggle (FUN_00406e6a) every egg whose
@@ -740,7 +798,6 @@ export class GameView extends Widget {
             hand: this.mHand,
             core: this.mGameApp && this.mGameApp.mCore,
             setPaused: (paused) => {
-                this._pausedByHint = false;
                 fc.mIsPaused = paused;        // state +4
                 this.mPauseTextShown = false; // state +0xd = 0
             },
@@ -749,7 +806,7 @@ export class GameView extends Widget {
 
     // FUN_0040bce7 case 1 (rwg:14100-14120): pause (+4 = 1, +0xd = 0) and open
     // the OptionsDialog (FUN_0040f57b, AddDialog id 6). HTML in this port; the
-    // field auto-pauses via the HtmlDialogs.isOpen() check in update().
+    // pause is applied on the open transition (_syncModalPause).
     _openPauseMenu() {
         this.mPauseTextShown = false;
         this.mGameApp.openOptions({

@@ -229,7 +229,8 @@ export class Raven {
         const field = this.mField;
         if (!chick || !field) return false;
         const cp = chickXY(chick);
-        const elephant = (field.mPets || []).find(p => p.mType === 1);
+        // FUN_00410409: first type-1 entry of the pet list fc+0x44.
+        const elephant = (field.mPetList || field.mPets || []).find(p => p.mType === 1);
         if (elephant) {
             // Elephant field position +0x08/+0x0c (asm 0x41725d-0x41726c).
             const ep = chickXY(elephant);
@@ -238,7 +239,7 @@ export class Raven {
             if (d < 24.0 && (crtRand() & 1) !== 0) return true;  // _DAT_004dc7f4
         }
         for (const r of field.mChickens) {
-            if (r.mType !== ChickType.ROOSTER) continue;
+            if (r.mRemoved || r.mType !== ChickType.ROOSTER) continue;
             // 3D difference of the +0x20..+0x28 positions (asm 0x417321-0x417354).
             const rp = r.mPos ? r.mPos : [chickXY(r).x, chickXY(r).y, 0];
             const tp = chick.mPos ? chick.mPos : [cp.x, cp.y, 0];
@@ -868,6 +869,11 @@ export class Field {
             chick.mPos[0] = egg.mFieldX;
             chick.mPos[1] = egg.mFieldY;
         }
+        // The chick ctor FUN_00403ff5 -> FUN_004032ca ends with the wander
+        // pick / walk start (rwg_functions.c:3481-3497) BEFORE FUN_0040528b
+        // links it into the list; Chick.js defers that tail to _runCtor
+        // (guarded by _ctorPending, so the first update() skips it).
+        if (chick && chick._runCtor) chick._runCtor(this);
         this.addChick(chick);
         if (SOUNDS.SOUND_EGG_BROODED) SOUNDS.SOUND_EGG_BROODED.play();
         return chick;
@@ -979,7 +985,9 @@ export class Field {
     // >20 → [1500,3000), >40 → [1000,2000) via FUN_00403d6c(max, min) =
     // ftol(rand()/32767.0 * (max-min) + 0.5) + min; halved when +0x26c.
     _sickPeriod() {
-        const n = this.mChickens.length;
+        // List size +0x08: chicks already unlinked from the original list
+        // (sold / carried off, JS mRemoved until the next sweep) not counted.
+        const n = this.mChickens.filter(c => !c.mRemoved).length;
         let lo = 0x3c, hi = 0x5a;
         if (n > 10) { lo = 0x28; hi = 0x46; }
         if (n > 0xf) { lo = 0x1e; hi = 0x32; }
@@ -1029,7 +1037,10 @@ export class Field {
         for (const e of eggs) {
             if (free.length === 0) break;
             if (e.mBroodProgress > 0.0) continue;
-            const owner = this.mChickens.find(c => c.mIsAlive && c.mBroodingEgg === e);
+            // asm 0x4042d6-0x40432f: searched over the FUN_004049d4 list = every
+            // listed chick of type 1 (no state check, dying broodies included).
+            const owner = this.mChickens.find(c => !c.mRemoved && c.mType === ChickType.BROODY
+                && c.mBroodingEgg === e);
             if (owner) continue;
             const b = free.shift();
             b.startBrooding(e);
@@ -1040,7 +1051,8 @@ export class Field {
     // laid only while broody chicks + broody eggs < cap (+0x270, when >= 0).
     _updateBroodyAllowed() {
         if (!(this.mBroodyCap >= 0)) return;
-        const chicks = this.mChickens.filter(c => c.mType === ChickType.BROODY).length;
+        // FUN_00404ad0(1): every listed chick of type 1 (no state filter).
+        const chicks = this.mChickens.filter(c => !c.mRemoved && c.mType === ChickType.BROODY).length;
         const eggs = this._eggs().filter(e => e.mEggType === EggType.GOLDEN).length;
         this.mBroodyAllowed = chicks + eggs < this.mBroodyCap;
     }
@@ -1196,24 +1208,46 @@ export class Field {
         // controller update FUN_00406c85 (rwg_functions.c:8427): eggs whose
         // hatch progress reached 1.0 hatch. FUN_00406c85 starts with the
         // lay-spot tick FUN_00407550.
+        // FUN_00405fcf calls the egg list update FUN_00406c85 (rwg:7470)
+        // before the gem list update FUN_0040c36e (rwg:7471); the port keeps
+        // both in mGems, so they are walked in two passes.
         updateLaySpots(this);   // Chick.js FUN_00407550 (lay spots on this._laySpots)
         const gemsBefore = this.mGems.slice();
         for (const gem of gemsBefore) {
+            if (gem.mType !== GemType.EGG) continue;
             gem.update();
-            if (gem.mType === GemType.EGG && gem.mHatchNow) {
+            if (gem.mHatchNow) {
                 gem.mHatchNow = false;
                 gem.mIsAlive = false;
                 this.hatchEgg(gem, gem.mX, gem.mY);
             }
         }
+        for (const gem of gemsBefore) {
+            if (gem.mType !== GemType.EGG) gem.update();
+        }
         this.mGems = this.mGems.filter(g => g.mIsAlive);
 
+        this._ravensDone = false;
+        // FUN_00405fcf runs FUN_0040d281 (hint bar), FUN_0041ea9a (inflation)
+        // between the gem update and the spell update, and FUN_0040686e (money
+        // effects) between the spell and pet updates (rwg:7472-7476:
+        // d281, ea9a, 0d2a, 686e, 0116). A caller
+        // that ticks those itself sets mDeferLateUpdate and calls
+        // updateSpellFx() / updatePets() at those points.
+        if (this.mDeferLateUpdate) return;
+        this.updateSpellFx();
+        this.updatePets();
+    }
+
+    updateSpellFx() {
         // FUN_00420d2a (rwg_functions.c:40470, asm 0x420d86-0x420d96), after
-        // the gem update in FUN_00405fcf (rwg:7474): timer += 0.015
+        // the gem update in FUN_00405fcf (rwg:7474, after FUN_0040d281/FUN_0041ea9a): timer += 0.015
         // (_DAT_004e90f8, float); entries with timer > 1.0 removed.
         for (const fx of this.mSpellFx) fx.t = Math.fround(fx.t + 0.014999999664723873);
         this.mSpellFx = this.mSpellFx.filter(fx => !(fx.t > 1.0));
+    }
 
+    updatePets() {
         // FUN_00410116 (rwg_functions.c): one pet list (mice, elephants,
         // wolves) in insertion order; entries whose vt[1] Update returns
         // false are removed afterwards.
@@ -1226,8 +1260,6 @@ export class Field {
             this.mPets = this.mPets.filter(p => !dead.includes(p));
         }
         this.mWolves = this.mWolves.filter(w => w.mIsAlive && !dead.includes(w));
-
-        this._ravensDone = false;
         // Dog FUN_004091b8 is NOT part of the core tick: GameView::Update
         // FUN_00409372 calls it after the controller update (asm 0x4093ac),
         // every frame including paused ones — GameView.js ticks Field.mDog.

@@ -24,6 +24,8 @@
 // of the port (Field y-sort, click tests, spawn code) keeps working.
 
 import { IMAGES } from './Res.js';
+import { fieldToScreen, screenToField } from './Field.js';
+import { drawWithParams } from './Chick.js';
 
 // Pet types — this+0x04 (Mouse ctor FUN_0040ebe7 sets 0, Elephant FUN_00407ebf
 // sets 1, Wolf FUN_00424be6 sets 2).
@@ -50,13 +52,8 @@ const ACTION_LENGTHS = {
     [PetType.WOLF]: [0, 60, 60],
 };
 
-// Sprite cel widths passed to FUN_0041a5b6 by the resource loader
-// (asm 0x41973b-0x419749: 0x46, 0x64, 0x87). cols = image width / cel width.
-const CEL_WIDTH = {
-    [PetType.MOUSE]: 70,
-    [PetType.ELEPHANT]: 100,
-    [PetType.WOLF]: 135,
-};
+// Sprite cel widths (FUN_0041a5b6, asm 0x41973b-0x419749: 0x46, 0x64, 0x87)
+// are applied at load by Res.js; numCols = image.mNumCols.
 
 // _DAT_004e9230 = -1.0f: "no target" marker.
 const NO_TARGET = -1.0;
@@ -66,23 +63,26 @@ const BIG_DIST = 1000000.0;
 // ---------------------------------------------------------------------------
 // Field <-> screen mapping
 // ---------------------------------------------------------------------------
-// FUN_00409567 (rwg_functions.c:11987)
-export function fieldToScreenX(x) { return Math.trunc(x * 6.0 + 0.5) + 10; }
-export function fieldToScreenY(y, z = 0) { return Math.trunc(y * 2.799999952316284 - 6.0 * z + 0.5) + 367; } // _DAT_004fc3f8 = 2.8f
-// FUN_00409533 (rwg_functions.c:11965)
-export function screenToFieldX(px) { return (px - 10) / 6.0; }
-export function screenToFieldY(py) { return Math.fround((py - 367) / 2.799999952316284); } // _DAT_004fc3f8 = 2.8f
+// FUN_00409567 / FUN_00409533 — the single implementation lives in Field.js
+// (fieldToScreen / screenToField, asm 0x409533-0x4095cc); these wrappers only
+// split the components. (Round 5: the old local screenToFieldX lacked the
+// fstps float rounding of asm 0x409557.)
+export function fieldToScreenX(x) { return fieldToScreen(x, 0, 0).x; }
+export function fieldToScreenY(y, z = 0) { return fieldToScreen(0, y, z).y; }
+export function screenToFieldX(px) { return screenToField(px, 367).x; }
+export function screenToFieldY(py) { return screenToField(10, py).y; }
 
 // ---------------------------------------------------------------------------
 // Random helpers
 // ---------------------------------------------------------------------------
 // thunk_FUN_00429891 (rwg_functions.c:49178): Mersenne Twister, 31-bit result.
 function mtRand() { return Math.floor(Math.random() * 2147483648); }
-// FUN_00403207 (rwg_functions.c:3308): (base - spread) + rand*_DAT_004e9248*spread*2,
-// _DAT_004e9248 = 4.656612873077393e-10 (1/2^31).
+// FUN_00403207 (rwg_functions.c:3308, asm 0x403207-0x403230):
+//   fildl rand; fmull _DAT_004e9248 (1/2^31); fmuls spread; fadd st,st (x2);
+//   (base - spread) faddp; fstps -> float.
 function randAround(base, spread) {
     const f = mtRand() * 4.656612873077393e-10 * spread;
-    return (base - spread) + f + f;
+    return Math.fround((base - spread) + (f + f));
 }
 // FUN_00410471 (rwg_functions.c:20113): random wander point (rand%128, rand%57)
 function randomWanderPoint() { return [mtRand() % 128, mtRand() % 57]; }
@@ -154,9 +154,10 @@ export class Pet {
         // asm 0x41016d-0x41017d). Field.js filters wolves by mIsAlive.
         this.mIsAlive = true;
         // The original constructors call vtable[10] and vtable[11] at the end
-        // (e.g. FUN_00407ebf: `(*vt+0x28)(); (*vt+0x2c)();`). JS callers
-        // construct first and set mX/mY afterwards, so those two calls run at
-        // the start of the first update() instead.
+        // (FUN_0040ebe7 asm 0x40ec7f-0x40ec88, FUN_00407ebf asm 0x407f50-
+        // 0x407f59, FUN_00424be6 asm 0x424c69-0x424c72). Subclass constructors
+        // run them at once when given the field (initActions); otherwise
+        // they run at the start of the first update().
         this._needsCtorActions = true;
     }
 
@@ -247,6 +248,9 @@ export class Pet {
         return true;
     }
 
+    // End of the original constructors: vtable[10] then vtable[11].
+    initActions(field) { this._runCtorActions(field); }
+
     _runCtorActions(field) {
         if (!this._needsCtorActions) return;
         this._needsCtorActions = false;
@@ -291,9 +295,11 @@ export class Pet {
         const mouseWalk = walkImgs[0];
         if (!img || !img.mWidth || !mouseWalk || !mouseWalk.mWidth) return null;
         const scale = 1.0; // FUN_004090cd: params +0x18 = 1.0f
-        const mouseCols = Math.floor(mouseWalk.mWidth / CEL_WIDTH[PetType.MOUSE]);
-        const H = img.mHeight * scale;
-        const W = (img.mWidth * scale) / mouseCols;
+        // numCols (+0x10) set at load by FUN_0041a5b6 (Res.js _celCols).
+        const mouseCols = mouseWalk.mNumCols || 1;
+        // asm 0x409886-0x4098d4: fildl; fmuls scale; (fidivl cols); fstps.
+        const H = f32(img.mHeight * scale);
+        const W = f32((img.mWidth * scale) / mouseCols);
         const sx = this.mX;
         const sy = this.mY;
         const flip = this.mDirX > 0;
@@ -317,52 +323,30 @@ export class Pet {
         if (!this.mIsAlive) return;
         const img = this._getActionImage();
         if (!img || !img.img) return;
-        if (g._isReady && !g._isReady(img.img)) return;
         const rect = this.getRect();
         if (!rect) return;
-        const celW = CEL_WIDTH[this.mType];
-        const cols = Math.max(1, Math.floor(img.mWidth / celW));
-        const celH = img.mHeight;
-        const progress = this.mActionMax <= 0 ? 0 : this.mActionCur / this.mActionMax;
+        // FUN_00409f04 asm 0x409f53-0x409f88: progress = max > 0 ? cur/max
+        // : 0 (fstps float); frame = (int)(numCols * progress), clamped to
+        // numCols-1 (numCols = image +0x10).
+        const cols = img.mNumCols || 1;
+        const progress = this.mActionMax > 0 ? f32(this.mActionCur / this.mActionMax) : 0;
         let frame = Math.trunc(cols * progress);
         if (frame >= cols) frame = cols - 1;
-        const flip = this.mDirX > 0;
-        const tint = this.isStunned();
-        const ctx = g.ctx;
-        const ox = (g.mTransX || 0) + rect.x;
-        const oy = (g.mTransY || 0) + rect.y;
-        let src = img.img, srcX = frame * celW, srcY = 0;
-        if (tint) {
-            // Sexy colorized draw multiplies the pixels by (255,150,150)
-            // (FUN_00450771(0xff,0x96,0x96), asm 0x409f96-0x409fa8).
-            const off = document.createElement('canvas');
-            off.width = celW;
-            off.height = celH;
-            const octx = off.getContext('2d');
-            octx.drawImage(img.img, srcX, 0, celW, celH, 0, 0, celW, celH);
-            octx.globalCompositeOperation = 'multiply';
-            octx.fillStyle = 'rgb(255,150,150)';
-            octx.fillRect(0, 0, celW, celH);
-            octx.globalCompositeOperation = 'destination-in';
-            octx.drawImage(img.img, srcX, 0, celW, celH, 0, 0, celW, celH);
-            src = off; srcX = 0; srcY = 0;
-        }
-        if (flip) {
-            ctx.save();
-            ctx.translate(ox + celW, oy);
-            ctx.scale(-1, 1);
-            ctx.drawImage(src, srcX, srcY, celW, celH, 0, 0, celW, celH);
-            ctx.restore();
-        } else {
-            ctx.drawImage(src, srcX, srcY, celW, celH, ox, oy, celW, celH);
-        }
+        // asm 0x409f1b-0x409f33: mirror flag = dirX > 0; asm 0x409f8b-
+        // 0x409fb5: colorize (255,150,150) when vtable[5] isStunned.
+        // Drawn at (rect.x, rect.y) (asm 0x40ac0c-0x40ac67, FUN_004090ec).
+        drawWithParams(g, img, rect.x, rect.y, {
+            frame,
+            mirror: this.mDirX > 0,
+            color: this.isStunned() ? [255, 150, 150] : undefined,
+        });
     }
 }
 
 export class Mouse extends Pet {
     // Sexy::Mouse vtable 004dd7a4. Constructor FUN_0040ebe7 (rwg_functions.c:18227,
     // asm 0x40ebe7): alloc 0x50.
-    constructor(fx = 0, fy = 0) {
+    constructor(fx = 0, fy = 0, field = null) {
         super(PetType.MOUSE, fx, fy);
         this.mMoveX = 0;                  // +0x34 current move destination
         this.mMoveY = 0;                  // +0x38
@@ -376,6 +360,7 @@ export class Mouse extends Pet {
         // never taken; kept for fidelity.
         this.mWanderTimer = (mtRand() % 0x5dc) * 2 + 0x5dc;
         this.mMode = 0;                   // +0x18
+        if (field) this.initActions(field);
     }
 
     // vtable[8] FUN_0040eddb: radius = _DAT_004e90e4 = 3.0f
@@ -415,12 +400,20 @@ export class Mouse extends Pet {
     // FUN_0040f08d (rwg_functions.c:18649): set move destination; reset the
     // acceleration ramp if there was no previous destination or the new one
     // points backwards (dot product < 0).
+    // asm 0x40f08d-0x40f0fc: every difference and the dot product are
+    // stored as floats (fstps); reset when 0 < accel && (!(0 < moveX) ||
+    // dot < 0).
     _setMoveTarget(px, py) {
-        if (this.mAccel > 0
-            && (this.mMoveX <= 0
-                || ((this.mMoveY - this.mPosY) * (py - this.mPosY)
-                    + (px - this.mPosX) * (this.mMoveX - this.mPosX)) < 0)) {
-            this.mAccel = 0;
+        if (0 < this.mAccel) {
+            let reset = !(0 < this.mMoveX);
+            if (!reset) {
+                const ox = f32(this.mMoveX - this.mPosX);
+                const oy = f32(this.mMoveY - this.mPosY);
+                const nx = f32(px - this.mPosX);
+                const ny = f32(py - this.mPosY);
+                reset = f32(nx * ox + oy * ny) < 0;
+            }
+            if (reset) this.mAccel = 0;
         }
         this.mMoveX = px;
         this.mMoveY = py;
@@ -461,13 +454,14 @@ export class Mouse extends Pet {
             this._idle();
             return;
         }
-        // FUN_0040c7db (rwg_functions.c:15406): nearest by Chebyshev distance,
-        // initial best _DAT_004e9280 = 1e6, strict '<'.
+        // FUN_0040c7db (rwg_functions.c:15406, asm 0x40c84a-0x40c88c): nearest
+        // by Chebyshev distance of the float differences (pos - gem), result
+        // stored as float; initial best _DAT_004e9280 = 1e6, strict '<'.
         let best = BIG_DIST;
         let bestGem = null;
         for (const gem of liveFieldGems(field)) {
             const [gx, gy] = gemFieldPos(gem);
-            const d = chebyshev(this.mPosX - gx, this.mPosY - gy);
+            const d = f32(chebyshev(f32(this.mPosX - gx), f32(this.mPosY - gy)));
             if (d < best) {
                 best = d;
                 bestGem = gem;
@@ -502,11 +496,13 @@ export class Mouse extends Pet {
     // type counter ++ (FUN_0041fb98, unconditionally), vt[6] sound, vt[3]
     // set collected + remove (FUN_0040c49d).
     _collectNearbyGems(field) {
-        const r2 = this._getRadius() + this._getRadius();
+        // asm 0x40ef6a-0x40ef6f: r2 = (float)(radius + radius);
+        // asm 0x40efc5-0x40efe9: float differences (gem - pos), cheb < r2.
+        const r2 = f32(this._getRadius() + this._getRadius());
         const picked = [];
         for (const gem of liveFieldGems(field)) {
             const [gx, gy] = gemFieldPos(gem);
-            if (chebyshev(gx - this.mPosX, gy - this.mPosY) < r2) picked.push(gem);
+            if (chebyshev(f32(gx - this.mPosX), f32(gy - this.mPosY)) < r2) picked.push(gem);
         }
         const fc = field && field.mFieldController;
         for (const gem of picked) {
@@ -514,7 +510,8 @@ export class Mouse extends Pet {
             const value = gem.collect();   // vt[4] value, vt[6] sound, vt[3] collected
             if (!fc) continue;
             // FUN_0040c75b calls FUN_00406b22(value) unconditionally (rwg:~14990).
-            fc.addMoney(value, gem.mX, gem.mY);
+            // FUN_00406b22 gets the gem field position (gem +0xc, asm 0x40c789).
+            fc.addMoney(value, gem.mX, gem.mY, gem.mFieldX);
             fc._trackCollection(gem);
         }
     }
@@ -540,12 +537,13 @@ export class Elephant extends Pet {
     // Sexy::Elephant vtable 004dca48. Constructor FUN_00407ebf (rwg_functions.c:9951):
     // alloc 0x44. Its effect on ravens is applied by the raven controller via
     // FUN_004104b3(1) (pet of type 1 present) — FieldController's job.
-    constructor(fx = 0, fy = 0) {
+    constructor(fx = 0, fy = 0, field = null) {
         super(PetType.ELEPHANT, fx, fy);
         this.mTargetX = NO_TARGET;   // +0x34 (_DAT_004e9230)
         this.mTargetY = NO_TARGET;   // +0x38
         this.mRateTimer = 0;         // +0x3c
         this.mIdleCount = 0;         // +0x40
+        if (field) this.initActions(field);
     }
 
     // vtable[8] FUN_0040804b: radius = _DAT_004e90e0 = 0.2f
@@ -630,7 +628,7 @@ export class Wolf extends Pet {
     //   +0x40 stun, +0x44/+0x48 knockback.
     // HP comes from the caller in EDX (factory FUN_00410299 passes the raven
     // controller's +0x10, asm 0x4015c7; FieldController passes ctl.wolfHP).
-    constructor(hp, fx = 0, fy = 0) {
+    constructor(hp, fx = 0, fy = 0, field = null) {
         super(PetType.WOLF, fx, fy);
         this.mHP = hp;                  // +0x38
         this.mSpeedFactor = 1.0;        // +0x3c
@@ -638,6 +636,7 @@ export class Wolf extends Pet {
         this.mKnockbackX = 0;           // +0x44
         this.mKnockbackY = 0;           // +0x48
         this.mTargetChick = null;       // +0x34
+        if (field) this.initActions(field);
     }
 
     // vtable[4] FUN_00424bb9: HP <= 0
@@ -650,7 +649,7 @@ export class Wolf extends Pet {
     // dirX/dirY are the hit direction in field units.
     // asm 0x424f19-0x424f75: kx = (float)((float)(dirX*0.6) * (float)dmg),
     // ky = (float)((float)dmg * (float)(0.6*dirY)), knockback += (float).
-    hit(damage = 1, dirX = 0, dirY = -1) {
+    hit(damage, dirX, dirY) {
         this.mHP -= damage;
         if (this.mHP < 0) this.mHP = 0;
         this.mStun = 0xf;
@@ -719,11 +718,13 @@ export class Wolf extends Pet {
         let target = null;
         for (const c of field.mChickens) {
             if (!chickIsActive(c)) continue;
+            // asm 0x40504d-0x405083: float differences (wolf - chick) and
+            // (0 - z), FUN_004050cf max of the absolute values, fstps.
             const [cx, cy] = chickFieldPos(c);
-            const dx = Math.abs(this.mPosX - cx);
-            const dy = Math.abs(this.mPosY - cy);
-            const dz = Math.abs(0 - c.mPos[2]); // 0 - z (isActive implies z == 0)
-            const d = Math.max(dx, dy, dz);
+            const dx = Math.abs(f32(this.mPosX - cx));
+            const dy = Math.abs(f32(this.mPosY - cy));
+            const dz = Math.abs(f32(0 - c.mPos[2])); // isActive implies z == 0
+            const d = f32(Math.max(dx, dy, dz));
             if (d < best) {
                 best = d;
                 target = c;

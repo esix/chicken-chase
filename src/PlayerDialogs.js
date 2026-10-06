@@ -17,25 +17,9 @@ import { HtmlDialogs } from './HtmlDialogs.js';
 // AllowChar FUN_0040f43e: characters the name edit box rejects.
 const NEWPLAYER_REJECT = /[ #$%&()*+\-.:@^]/g;
 
-// "QUESTION" / "Delete user?" (FUN_00402ee5 rwg:3041-3044) is built by the
-// same YES/NO builder FUN_0040279c as the Options "QUIT?" prompt, so the
-// HTML node is cloned from 'quit-confirm' with the source strings.
+// "QUESTION" / "Delete user?" (FUN_00402ee5 rwg:3041-3044) — YES/NO dialog
+// built by FUN_0040279c; static HTML node data-dialog="delete-user".
 const DELETE_USER_DIALOG = 'delete-user';
-function ensureDeleteUserDialog() {
-    if (typeof document === 'undefined') return false;
-    if (document.querySelector(`[data-dialog="${DELETE_USER_DIALOG}"]`)) return true;
-    const src = document.querySelector('[data-dialog="quit-confirm"]');
-    if (!src) return false;
-    const node = src.cloneNode(true);
-    node.setAttribute('data-dialog', DELETE_USER_DIALOG);
-    node.hidden = true;
-    const title = node.querySelector('.cc-title');
-    if (title) title.textContent = 'QUESTION';
-    const text = node.querySelector('.cc-text');
-    if (text) text.textContent = 'Delete user?';
-    src.parentNode.insertBefore(node, src.nextSibling);
-    return true;
-}
 
 export class NewPlayerDialog {
     // mode: 'firstLaunch' (cancel hidden) or 'addPlayer'
@@ -254,7 +238,6 @@ export class ChangePlayerDialog {
     }
 
     _openDeleteConfirm() {
-        if (!ensureDeleteUserDialog()) return;
         HtmlDialogs.open(DELETE_USER_DIALOG, {
             actions: {
                 yes: () => {

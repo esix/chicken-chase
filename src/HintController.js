@@ -221,12 +221,17 @@ export class HintController {
     }
 
     // FUN_0040d435 (rwg_functions.c:16346): pause (state +4 = 1, +0xd = 0;
-    // GameView pauses while isShown()) and open the HintDialog with `text`.
+    // GameView._syncModalPause applies it when isShown() turns true) and open the HintDialog with `text`.
     // Second arg (asm 0x40d472 -> FUN_0040d557 asm 0x40d602-0x40d613): the
     // "Don't show" checkbox SetVisible flag. FUN_00422bb1 passes 1 (asm
     // 0x422bc4), the level-4 raven hint FUN_00422690 passes 0 (asm 0x4226ce).
+    // AddDialog id 1 (asm 0x40d49c-0x40d4a1: push dialog, push 1). AddDialog
+    // FUN_00441f11 (app vtable+0x114) first calls vtable+0x11c(id) — the
+    // KillDialog of a dialog with the same id — so a new hint
+    // replaces a shown one (no unpause in between: KillDialog does not run
+    // the OK handler FUN_0040d821).
     showDialog(text, showCheckbox = true) {
-        if (this.mCurrentHint !== null) return;
+        if (this.mCurrentHint !== null) HtmlDialogs.close('hint');
         this.mCurrentHint = { type: -1, text: text || '', showCheckbox: !!showCheckbox };
         this._openHtml();
     }
@@ -263,8 +268,9 @@ export class HintController {
         if (row) row.style.display = (this.mCurrentHint.showCheckbox === false) ? 'none' : '';
     }
 
-    // vtable[0] FUN_0040d4bb (rwg_functions.c:16402): dialog closed ->
-    // game+4 = 0, +0xd = 0 (unpause). GameView unpauses when !isShown().
+    // OK: FUN_0040d821 (rwg_functions.c:16716-16719) game+4 = 0, +0xd = 0
+    // (unpause) — GameView._syncModalPause applies it when isShown() turns
+    // false.
     dismiss() {
         this.mCurrentHint = null;
         HtmlDialogs.close('hint');

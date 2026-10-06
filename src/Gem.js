@@ -438,7 +438,8 @@ export class Egg extends Gem {
     // 1 - countdown / ftol(_DAT_004fc3b4 * 1000.0 + 0.5).
     get mBroodProgress() {
         if (this.mBroodCountdown === -1) return 0;
-        const total = Math.trunc(this.mHatchSlowdown * 1000.0 + 0.5);
+        // flds _DAT_004fc3b4 (float), fmull 1000.0, faddl 0.5, _ftol.
+        const total = Math.trunc(Math.fround(this.mHatchSlowdown) * 1000.0 + 0.5);
         return Math.fround(1 - this.mBroodCountdown / total);
     }
     set mBroodProgress(v) {}

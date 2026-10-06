@@ -119,6 +119,14 @@ function worldChickCount(fc) {
     return fc.mField.mChickens.filter(c => !c.mRemoved).length;
 }
 
+// Stable descending sort (Array.prototype.sort is stable, ES2019).
+function sortBySellRatioDesc(list) {
+    list.sort((a, b) => {
+        const ra = a.getSellRatio(), rb = b.getSellRatio();
+        return ra > rb ? -1 : (ra < rb ? 1 : 0);
+    });
+}
+
 export class ShopDialog {
     // FUN_0041e97b (rwg:37749) builds it after FUN_004227d0, then AddDialog.
     constructor(fieldController, onClose) {
@@ -127,8 +135,14 @@ export class ShopDialog {
         this.mIsActive = true;
         this.mPage = 0;                       // +0x17c (ctor this[0x5f] = 0)
         // List +0x170 (ctor loop rwg:38590-38617): world chicks (app+0x14)
-        // passing vt[4], in world order.
+        // passing vt[4], in world order, then sorted by FUN_0041fc07
+        // (rwg:38620; MSVC std::list::sort, stable merge sort). Its merge
+        // FUN_0041fdfe (asm 0x41feb1-0x41fed3) moves the right-hand element
+        // before the left one only when FUN_00403c75(left) <
+        // FUN_00403c75(right) (fcompl, test ah,5 / jnp) — i.e. a stable
+        // sort by sell ratio, highest first.
         this.mChicks = fieldController.mField.mChickens.filter(isSellable);
+        sortBySellRatioDesc(this.mChicks);
         // String +0x180 = FUN_004227d0 (rwg:42448, caller asm 0x41e9c2):
         // "You can sell chickens here." once per run on level 5
         // (level object game+0x34, +0x10 == 5), else "".
@@ -209,12 +223,10 @@ export class ShopDialog {
         if (!chick.mIsAlive) return;
         const fc = this.mFieldController;
         const price = chick.getSellPrice();
-        if (fc.addMoney) {
-            if (chick.mPos && chick.mPos[0] >= 0) fc.addMoney(price, chick.mX, chick.mY);
-            else fc.addMoney(price);
-        } else {
-            fc.mMoney += price;
-        }
+        // FUN_00424b5d(chick +0x20 field pos, price): the x >= 0 gate is
+        // inside addMoney (fieldX = mPos[0]).
+        if (fc.addMoney) fc.addMoney(price, chick.mX, chick.mY, chick.mPos ? chick.mPos[0] : undefined);
+        else fc.mMoney += price;
         // FUN_0040466e: FUN_0040342b (state 6, action 13, no sound) + list
         // erase. FUN_00404b3b (broody get-up / re-decide) is NOT called; only
         // the JS-side egg claim back-pointer is dropped with the chick.
@@ -259,12 +271,17 @@ export class SpecialShopDialog {
         this.mOnClose = onClose;
         this.mIsActive = true;
         this.mPage = 0;                       // +0x170 (ctor this[0x5c] = 0)
+        // List +0x174 (size +0x17c): a COPY of FUN_0041eae5's list, taken
+        // only by the refresh FUN_00420474 (FUN_0041ecec assign, rwg:39897).
+        // A purchase changes the FieldController lists but not this copy
+        // until the next refresh.
+        this.mItems = [];
     }
 
     isShown() { return this.mIsActive; }
 
-    // List +0x174 = FUN_0041eae5, rebuilt by every FUN_00420474 refresh.
-    _items() {
+    // FUN_0041eae5 — the current special-shop list.
+    _freshItems() {
         const fc = this.mFieldController;
         if (!fc || typeof fc.getSpecialShopItems !== 'function') return [];
         return fc.getSpecialShopItems();
@@ -298,13 +315,15 @@ export class SpecialShopDialog {
         const fc = this.mFieldController;
         if (action === 'ok') {
             // id 1000 (asm 0x420b10-0x420b9e): SOUND_CLICK, KillDialog;
-            // store +0x19 (BUY widget) = row button 0 visible (page*3 < list
-            // size); store +0x18 unchanged; game +4 = 0 / +0xd = 0 (GameView
-            // pause hook); FUN_00408a1b.
+            // store +0x19 (BUY widget) = row button 0 visible (asm
+            // 0x420b3e-0x420b6c: button count != 0 && button[0] +0x50), as
+            // set by the last FUN_00420474 (page*3 < copied list size);
+            // store +0x18 unchanged; game +4 = 0 / +0xd = 0 (GameView pause
+            // hook); FUN_00408a1b.
             playClick();
             HtmlDialogs.close('shop-buy');
             if (fc && fc.mLevelConfig) {
-                fc.mLevelConfig.specialShopButton = this.mPage * 3 < this._items().length;
+                fc.mLevelConfig.specialShopButton = this.mPage * 3 < this.mItems.length;
             }
             this.mIsActive = false;
             if (this.mOnClose) this.mOnClose();
@@ -317,27 +336,32 @@ export class SpecialShopDialog {
             this._renderHtml();
             return;
         }
-        // Row button id 3+i: item page*3 + i of list +0x174.
-        const item = this._items()[this.mPage * 3 + index];
+        // Row button id 3+i: element page*3 + i of the copied list +0x174
+        // (asm 0x420bc9-0x420c2c; end of list → straight to 0x420c7e).
+        const item = this.mItems[this.mPage * 3 + index];
         if (item && fc && typeof fc.buySpecialItem === 'function') {
-            // FUN_0041eb94 (price check, apply, spend, double).
+            // FUN_0041eb94 (ESI = store, EDI = node +8 id; asm 0x420c48-
+            // 0x420c55): price check, apply, spend, double.
             if (!fc.buySpecialItem(item.id)) {
-                // rwg:40388: FUN_004201bd("You don't have enough money.");
-                // return without refresh or sound.
+                // asm 0x420c5e-0x420c79: FUN_004201bd("You don't have enough
+                // money.") (0x4df5dc); return without refresh or sound.
                 showInformation("You don't have enough money.");
                 return;
             }
         }
-        // asm 0x420c7e-0x420cbf: clamp page, FUN_00420474, SOUND_CLICK.
-        const n = this._items().length;
-        if (this.mPage > 0 && this._pageCount(n) <= this.mPage) this.mPage--;
-        this._renderHtml();
-        playClick();
+        // asm 0x420c7e-0x420c98: page > 0 && FUN_00420533() <= page → page--.
+        // FUN_00420533 reads +0x17c, the size of the list copy taken by the
+        // previous refresh (the bought item is still in it).
+        if (this.mPage > 0 && this._pageCount(this.mItems.length) <= this.mPage) this.mPage--;
+        this._renderHtml();                  // FUN_00420474 (asm 0x420ca5)
+        playClick();                         // asm 0x420caf: DAT_004fed84
     }
 
     // FUN_00420474 (rwg:39887) visibility + Draw FUN_004205e3 rows.
     _renderHtml() {
-        const items = this._items();
+        // FUN_00420474 rwg:39897-39901: list +0x174 = FUN_0041eae5().
+        this.mItems = this._freshItems();
+        const items = this.mItems;
         const pageCount = this._pageCount(items.length);
         const dialog = document.querySelector('[data-dialog="shop-buy"]');
         HtmlDialogs.set('shop-buy', 'page',

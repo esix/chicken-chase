@@ -69,8 +69,6 @@ export const TaskType = {
 
 export const TOTAL_LEVELS = 50; // switch cases 1..0x32 (FUN_00422d10:42993)
 
-// Chick type order used by buy slots / type bitset (FUN_00403ec2:4623).
-const TYPE_KEYS = ['layer', 'broody', 'rooster', 'magic', 'holy'];
 
 // Special-shop item ids unlocked by FUN_00423d75 (loop i = 0..N inclusive,
 // 43895-43907; asm 0x423d75-0x423de8) or pushed directly (L6/L7 FUN_0040ca85).
@@ -452,17 +450,9 @@ function ravenDefaults(level) {
 }
 
 export function getLevelConfig(level) {
-    const s = SETUP[level];
-    if (!s) {
-        // FUN_00422d10 has no default case: nothing is configured.
-        return {
-            tasks: [], hasBuy: false, hasSell: false, hasMagicHoly: false,
-            buyableTypes: {}, maxBuyPerType: {}, hasRavens: false, hasWolves: false,
-            moneyCap: Infinity, timeLimit: 0, upgradeLevel: 0, startMoney: 0,
-            isBonus: false, ravenDelay: 0, sicknessFactor: 0,
-            chickenPriceMultiplier: 1.0, noPeckCoins: false, aceTime: 0,
-        };
-    }
+    // FUN_00422d10 has no default case (asm 0x422d57: ja 0x4238ca): a level
+    // outside 1..0x32 keeps every ctor / FUN_00422c01 default.
+    const s = SETUP[level] || { tasks: [] };
 
     // ---- money -------------------------------------------------------------
     // FUN_00422c01:42850-42855 (asm 0x422c75-0x422ca3): money obj +4 =
@@ -567,14 +557,6 @@ export function getLevelConfig(level) {
         for (let i = 0; i <= s.unlock; i++) shopUnlockItems.push(i);
     }
 
-    // ---- assemble ---------------------------------------------------------------
-    const buyableTypes = {};
-    const maxBuyPerType = {};
-    for (let i = 0; i < 5; i++) {
-        buyableTypes[TYPE_KEYS[i]] = slots[i] !== 0;
-        if (slots[i] > 0) maxBuyPerType[TYPE_KEYS[i]] = slots[i];
-    }
-
     if (s.bonus) startMoney = 10000;   // FUN_00423cb3:43858
     if (s.e5a) startMoney = 5000;      // FUN_00423e5a:43982
 
@@ -583,41 +565,17 @@ export function getLevelConfig(level) {
         sourceLine: s.line,
         tasks,
         timeLimit,
-
-        // --- legacy fields consumed by FieldController / GameView / Chick /
-        // ShopDialogs / RiskController (derived from the original data) ---
-        // Any buy slot not 0 (slot strip, FUN_0041e8f5:37694).
-        hasBuy: slots.some((v) => v !== 0),
-        // SELL button = store +0x18.
-        hasSell: sellButton,
-        // Magic (bit 3) or holy (bit 4) enabled in the field type bitset —
-        // which gates the layer egg reroll (FUN_0040dba2, 0x40dc21).
-        hasMagicHoly: typeEnabled[3] || typeEnabled[4],
-        buyableTypes,
-        maxBuyPerType,
-        hasRavens: raven.perWave > 0,
-        hasWolves: raven.wolvesPerWave > 0,
+        // Money obj +8 (Infinity = -1, no cap) and +4 (FUN_00422c01 /
+        // FUN_00423cb3 / FUN_00423e5a).
         moneyCap,
-        // Raven ctrl +0x38 (cs → ms); only cases 0x24/0x2a write > 0.
-        ravenDelay: raven.f38 > 0 ? raven.f38 * 10 : 0,
         startMoney,
         isBonus: !!s.bonus,            // level +0x14 = 1 (FUN_00423cb3:43854)
-        // No level case writes the field background index; the former
-        // per-level values (L15=3, L50=7) were not in the decompiled source.
-        upgradeLevel: 0,
-        // Case 0x1f sets field+0x26c, which halves the value returned at
-        // rwg_functions.c:5806-5808 (`iVar2 / 2`). 2 = that halving expressed
-        // as this port's rate factor; no other case touches sickness.
-        sicknessFactor: s.fastSick ? 2 : 0,
-        // No static price multiplier exists in the original; see
-        // priceRisesOverTime.
-        chickenPriceMultiplier: 1.0,
+
         // FUN_00423e5a:43988 sets gem controller (app+0x28)+0x1c = 1; the
         // gem factory FUN_0040c4d9 (rwg:15152) then creates no coins
         // (consumers Chick.js / Field.js).
         noPeckCoins: !!s.e5a,
 
-        // --- raw original values (not yet consumed by other files) ---
         aceTime: s.ace || 0,                 // level+0x48, seconds
         chickTypeEnabled: typeEnabled,       // field +0x24c bits [layer..holy]
         buySlots: slots,                     // store slot counts (-1 unlimited)
@@ -636,6 +594,8 @@ export function getLevelConfig(level) {
         // _DAT_004fc3b4 (1.0f at FUN_00405540:6656), read by brood progress
         // FUN_00406ac9 (asm 0x406adf).
         hatchSlowdown: s.hatchSlow || 1.0,
+        // Case 0x1f writes field+0x26c = 1, which halves the value returned
+        // at rwg_functions.c:5806-5808 (`iVar2 / 2`); consumed by Field.js.
         fastSickness: !!s.fastSick,          // field +0x26c
         // money obj +0 = 1 (FUN_00424b5d asm 0x424b63: no money is ever
         // added) and egg ctl (app+0x24)+0x28 = 1 (FUN_004072fa asm 0x407395:
@@ -644,28 +604,33 @@ export function getLevelConfig(level) {
         // field +0x264 (ctor 1, rwg:4791); case 1 writes 0 (42997): sickness
         // enable flag (FUN_004040ec rwg:4838).
         field264: s.f264 !== undefined ? s.f264 : 1,
-        bonusChicks: s.bonus ? s.bonus.chicks : 0, // level +0x50 compare (FUN_00423d5b)
     };
 }
 
 // Starting chickens — FUN_0042166f:41259-41300 (asm 0x421816-0x421917).
 // Money is set to 1,000,000 first, so these are free; FUN_00422c01 sets the
-// real money afterwards. FUN_0041e8f5 (ECX = store, EAX = type) buys one.
-//   3 layers always (slot0 = 3)
-//   +1 layer +1 broody when FUN_00405886 (level < 7)
-//   +1 broody when level >= 10 and level != 29 (0x1d)
-//   +1 layer  when level >= 30
+// real money afterwards. FUN_0041e8f5 (ECX = store, EAX = type) buys one, in
+// this order (it fixes the world list order):
+//   slot0 = 3, 3 × layer                    (asm 0x42182a-0x421863)
+//   FUN_00405886 (level < 7): slot0 = 1, slot1 = 1, layer, broody
+//                                            (asm 0x42187c-0x4218b6)
+//   level >= 10 && level != 0x1d: slot1 = 1, broody (asm 0x4218bb-0x4218e8)
+//   level >= 0x1e: slot0 = 1, layer         (asm 0x4218ed-0x421917)
 // Then the level case may top up with free layers until the farm holds N
 // chickens: FUN_00423deb(N) (case 0x23 N=10; bonus levels N = chicks).
 export function getInitialChicks(level) {
-    let layer = 3;
-    let broody = 0;
-    if (isEarlyLevel(level)) { layer += 1; broody += 1; }
-    if (level >= 10 && level !== 29) broody += 1;
-    if (level >= 30) layer += 1;
+    const order = [0, 0, 0];                    // chick type ids
+    if (isEarlyLevel(level)) order.push(0, 1);
+    if (level >= 10 && level !== 29) order.push(1);
+    if (level >= 30) order.push(0);
     const s = SETUP[level];
     let fillLayersToTotal = 0;
     if (s && s.fillTo) fillLayersToTotal = s.fillTo;
     if (s && s.bonus) fillLayersToTotal = s.bonus.chicks;
-    return { layer, broody, fillLayersToTotal };
+    return {
+        order,
+        layer: order.filter(t => t === 0).length,
+        broody: order.filter(t => t === 1).length,
+        fillLayersToTotal,
+    };
 }

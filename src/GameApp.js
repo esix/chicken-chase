@@ -121,8 +121,23 @@ export class GameApp extends SexyAppBase {
         if (typeof window === 'undefined' || this._focusPauseInstalled) return;
         this._focusPauseInstalled = true;
         this.mPausedByFocus = false;   // app+0x5f4
-        window.addEventListener('blur', () => this.lostFocus());
-        window.addEventListener('focus', () => this.gotFocus());
+        // SexyAppBase::RehupFocus FUN_00446c61: on a focus change, with
+        // mMuteOnLostFocus (+0x3f9 = DAT_004fead1 = 1, FUN_00440396
+        // rwg:77210): lost → Mute(true) then LostFocus (vt+0x130);
+        // gained → Unmute(true) then GotFocus (vt+0x12c).
+        this.mHasFocus = true;   // app+0x498
+        window.addEventListener('blur', () => {
+            if (!this.mHasFocus) return;
+            this.mHasFocus = false;
+            SoundManager.mute();
+            this.lostFocus();
+        });
+        window.addEventListener('focus', () => {
+            if (this.mHasFocus) return;
+            this.mHasFocus = true;
+            SoundManager.unmute();
+            this.gotFocus();
+        });
     }
 
     // FUN_00408e2f rwg:11204-11214
@@ -163,16 +178,26 @@ export class GameApp extends SexyAppBase {
             return;
         }
 
-        // Fixed timestep update
-        this.mAccumDelta += delta;
+        // SexyAppBase::Process FUN_00448fd5 (non-vsynced path; windowed):
+        //   UpdateFTimeAcc FUN_00448f74: acc = min(acc + elapsed, 200.0)
+        //     (_DAT_004e90b8 = 200.0 — backlog beyond 200 ms is dropped);
+        //   per Process step: if (++mNonDrawCount (+0x418) < ceil(1.0 * 10.0)
+        //     (_DAT_004e90d8 = 10.0, asm 0x449263-0x44928c) && acc >= frameTime)
+        //     → one update, acc -= frameTime;
+        //   otherwise draw and reset mNonDrawCount → at most 9 updates per draw.
+        // frameTime = 1000 / mSyncRefreshRate (+0x574) because mVSyncUpdates
+        // (+0x578 = DAT_004fec50 = 1, FUN_0040826e) is set; +0x574 defaults to
+        // 100 (DAT_004fec4c, FUN_00440396 rwg:77226) = 10 ms, 1 update per
+        // step. The real value comes from the display mode at run time
+        // (rwg:86031) — not knowable here, so the ctor default is used.
+        this.mAccumDelta = Math.min(this.mAccumDelta + delta, 200.0);
         const tickMs = 1000 / this.mFrameRate;
-        let updates = 0;
-        while (this.mAccumDelta >= tickMs && updates < 5) {
+        let nonDrawCount = 0;
+        while (++nonDrawCount < 10 && this.mAccumDelta >= tickMs) {
             if (this.mCurrentView) {
                 this.mCurrentView.update();
             }
             this.mAccumDelta -= tickMs;
-            updates++;
         }
 
         // Draw
@@ -251,7 +276,7 @@ export class GameApp extends SexyAppBase {
     // rand = thunk_FUN_00429891 (PRNG, rwg:49219). Previously the port chose
     // the track by level parity — not in the source.
     playGameMusic() {
-        const odd = (Math.floor(Math.random() * 0x7fffffff) & 1) !== 0;
+        const odd = (Math.floor(Math.random() * 0x80000000) & 1) !== 0;   // MT & 0x7fffffff
         const track = odd ? SOUNDS.MUSIC_GAME0 : SOUNDS.MUSIC_GAME1;
         if (track) SoundManager.playMusic(track);
     }

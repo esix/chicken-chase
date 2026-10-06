@@ -80,8 +80,12 @@ export class OptionsDialog {
             },
             // MAIN MENU / RESTART LEVEL hidden unless in-game (rwg:19181-19184).
             // Fullscreen checkbox is hidden when *(app+8) == 0 (FUN_0040fa23
-            // rwg:19393-19395). UNKNOWN — app+8 not identified in decompiled;
-            // kept visible.
+            // rwg:19393-19395, asm 0x40fb7b-0x40fb80). app = 0x4fe6d8, so
+            // app+8 = DAT_004fe6e0: set to 1 by the SexyAppBase ctor (asm
+            // 0x4409c5, rwg:77241) and again by the GameApp ctor FUN_0040826e
+            // (asm 0x408363, rwg:10483); the binary has no other store to it
+            // (no absolute write; no byte store to +8 of the app object) and
+            // its only read is here → the checkbox is always visible.
             visible: { ingame: this.mInGame },
             onBind: {
                 fullscreen: (v) => this._checkboxChecked(4, v),
@@ -184,7 +188,10 @@ export class OptionsDialog {
     }
 
     // Sexy::Slider input (vtable 0x4e431c) on the two <input type="range">:
-    //   MouseDown FUN_004395a1: thumbX = ftol((w - thumbW) * val); only a press
+    //   MouseDown FUN_004395a1 (vt[38], MouseDown(x, y, clickCount) — the
+    //     WidgetManager calls it for every mouse button: right click has a
+    //     negative count, middle 3, cf. Slider vt[40] FUN_00438e47; the
+    //     function ignores the count): thumbX = ftol((w - thumbW) * val); only a press
     //     on the thumb [thumbX, thumbX + thumbW) starts dragging (+0x9c = 1,
     //     relX +0xa0 = x - thumbX); a press on the track does nothing.
     //   MouseDrag FUN_00439662: while dragging, val = (x - relX) / (w - thumbW)
@@ -208,7 +215,8 @@ export class OptionsDialog {
                 return { x: Math.floor((e.clientX - rect.left) / scale), w };
             };
             on(input, 'pointerdown', (e) => {
-                if (e.button !== 0) return;
+                // Any button (left/middle/right) — see FUN_004395a1 above.
+                if (e.button < 0 || e.button > 2) return;
                 e.preventDefault();
                 pressed = true;
                 input.setPointerCapture?.(e.pointerId);
@@ -241,6 +249,8 @@ export class OptionsDialog {
             on(input, 'pointerup', up);
             on(input, 'pointercancel', up);
             on(input, 'mousedown', (e) => e.preventDefault());
+            // Browser necessity: no context menu on a right-button drag.
+            on(input, 'contextmenu', (e) => e.preventDefault());
             on(input, 'keydown', (e) => { if (e.key !== 'Escape' && e.key !== 'Tab') e.preventDefault(); });
         };
         wire(node.querySelector('[data-bind="music"]'), SLIDER_MUSIC);
