@@ -104,6 +104,13 @@ export class GameApp extends SexyAppBase {
         this.showMainMenu();
 
         this._setupFocusPause();
+
+        // Shutdown FUN_00444943 (rwg:80408) / Start FUN_00449647 (rwg:84523)
+        // write the registry (FUN_00443cd2) when the app exits. Browser exit
+        // = pagehide.
+        if (typeof window !== 'undefined' && this.mCore) {
+            window.addEventListener('pagehide', () => this.mCore.writeSettings());
+        }
     }
 
     // FUN_00408e2f (vtable[76], rwg:11193) / FUN_00408e62 (vtable[75],

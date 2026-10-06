@@ -941,7 +941,12 @@ export class Field {
         const sp = (typeof speedMult === 'number') ? speedMult : 1.0;
         const raven = new Raven(target, h, sp, this);
         this.mRavens.push(raven);
-        if (SOUNDS.SOUND_KAR_KAR) SOUNDS.SOUND_KAR_KAR.play();
+        // App vt+0x168 FUN_00408e96: at most once per game tick.
+        if (SOUNDS.SOUND_KAR_KAR) {
+            const fc = this.mFieldController;
+            if (fc && fc.playSampleOncePerTick) fc.playSampleOncePerTick(SOUNDS.SOUND_KAR_KAR);
+            else SOUNDS.SOUND_KAR_KAR.play();
+        }
         return true;
     }
 
@@ -1004,7 +1009,12 @@ export class Field {
     // (DAT_004fed9c); if state != 0 → state 1 + vt[8]. Returns true then.
     _makeSick(c) {
         if (!this.mSicknessEnabled || !c.canBeSickTarget()) return false;
-        if (SOUNDS.SOUND_SICK) SOUNDS.SOUND_SICK.play();
+        // App vt+0x168 FUN_00408e96: at most once per game tick.
+        if (SOUNDS.SOUND_SICK) {
+            const fc = this.mFieldController;
+            if (fc && fc.playSampleOncePerTick) fc.playSampleOncePerTick(SOUNDS.SOUND_SICK);
+            else SOUNDS.SOUND_SICK.play();
+        }
         c.infect();
         return true;
     }

@@ -95,6 +95,9 @@ export class HintController {
         // --- modal HintDialog state (JS) ---
         this.mCurrentHint = null;
         this.mCore = core;
+        // FUN_0040d435 rwg:16367-16369 pause write (state +4 = 1, +0xd = 0,
+        // FUN_004090b9) — the game state belongs to GameView, which sets it.
+        this.mPauseHook = null;
     }
 
     // FUN_0040d39f (rwg_functions.c:16291): set the bar text. Same text ->
@@ -220,8 +223,8 @@ export class HintController {
         this._openHtml();
     }
 
-    // FUN_0040d435 (rwg_functions.c:16346): pause (state +4 = 1, +0xd = 0;
-    // GameView._syncModalPause applies it when isShown() turns true) and open the HintDialog with `text`.
+    // FUN_0040d435 (rwg_functions.c:16346): pause (state +4 = 1, +0xd = 0,
+    // FUN_004090b9 — via mPauseHook) and open the HintDialog with `text`.
     // Second arg (asm 0x40d472 -> FUN_0040d557 asm 0x40d602-0x40d613): the
     // "Don't show" checkbox SetVisible flag. FUN_00422bb1 passes 1 (asm
     // 0x422bc4), the level-4 raven hint FUN_00422690 passes 0 (asm 0x4226ce).
@@ -231,6 +234,7 @@ export class HintController {
     // replaces a shown one (no unpause in between: KillDialog does not run
     // the OK handler FUN_0040d821).
     showDialog(text, showCheckbox = true) {
+        if (this.mPauseHook) this.mPauseHook();
         if (this.mCurrentHint !== null) HtmlDialogs.close('hint');
         this.mCurrentHint = { type: -1, text: text || '', showCheckbox: !!showCheckbox };
         this._openHtml();
@@ -269,8 +273,8 @@ export class HintController {
     }
 
     // OK: FUN_0040d821 (rwg_functions.c:16716-16719) game+4 = 0, +0xd = 0
-    // (unpause) — GameView._syncModalPause applies it when isShown() turns
-    // false.
+    // (unpause) — GameView._syncModalPause applies it once the 'hint'
+    // dialog is gone.
     dismiss() {
         this.mCurrentHint = null;
         HtmlDialogs.close('hint');

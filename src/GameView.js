@@ -46,6 +46,10 @@ const BTN_MENU = 1;
 const BTN_SELL = 2;
 const BTN_BUY = 3;
 
+// Dialogs (HTML names) whose closing button writes state +4 = 0 / +0xd = 0
+// — see GameView._syncModalPause.
+const UNPAUSE_ON_CLOSE = ['options', 'shop-sell', 'shop-buy', 'hint'];
+
 // Button rects — FUN_0040bbea rwg:14005/14007/14010 Resize(x, y, w, h).
 const MENU_RECT = { x: 0x193, y: 0x27, w: 0x65, h: 0x26 }; // (403, 39, 101, 38)
 const SELL_RECT = { x: 0x1fa, y: 0x27, w: 0x55, h: 0x26 }; // (506, 39, 85, 38)
@@ -77,6 +81,7 @@ export class GameView extends Widget {
         this.mHand = new Hand();
         this.mRiskController = new RiskController();
         this.mHintController = new HintController(gameApp && gameApp.mCore);
+        this.mHintController.mPauseHook = () => this._pauseForDialog();
         this.resize(0, 0, 800, 600);
 
         // +0xc0 pending button id, -1 = none (rwg:11718). Set by ButtonDepress
@@ -107,8 +112,8 @@ export class GameView extends Widget {
             // every mKeyDown entry cleared when the app loses focus.
             window.addEventListener('blur', () => this.mKeyDown.clear());
         }
-        // Last seen "a modal dialog is open" state — see _syncModalPause.
-        this._modalWasShown = false;
+        // Unpausing dialogs open at the last check — see _syncModalPause.
+        this._unpausingOpen = [];
 
         // MENU/SELL/BUY are ButtonWidgets: ButtonDepress fires on MouseUp
         // (ButtonWidget::MouseUp FUN_0043dbb3 rwg:73862: if mIsOver (+0x55)
@@ -180,6 +185,8 @@ export class GameView extends Widget {
             this.mHintController.dismiss();
         }
         this.mHintController = new HintController(core);
+        // FUN_0040d435 rwg:16367-16369: the HintDialog opener pauses.
+        this.mHintController.mPauseHook = () => this._pauseForDialog();
         this.mLevelTutorial = new LevelTutorial(level);
         // The IntroductionDialog is opened by SelectLevelView::AddedToManager
         // FUN_0041d22e (rwg:35567-35569) before the level starts (GameApp).
@@ -188,7 +195,7 @@ export class GameView extends Widget {
 
         // A dialog still open now does not pause the new state (+4 = 0):
         // take its open state as already seen (see _syncModalPause).
-        this._modalWasShown = this._isModalShown();
+        this._unpausingOpen = this._openUnpausingDialogs();
     }
 
     // FUN_0040a3d6 (rwg_functions.c:13092) GameView::Draw
@@ -330,12 +337,10 @@ export class GameView extends Widget {
                 // mode 0); then AddDialog id 0 (FUN_00441f11 kills an open
                 // id-0 dialog first) — on every trip, also when space had
                 // unpaused the game under the previous end dialog.
-                this.mPauseTextShown = false;
-                this.mHand.setMode(HandMode.SEEDS);
+                this._pauseForDialog();
                 this._openLevelEndDialog(fc.mLevelEndKind, maxUnlockedBefore);
             }
         }
-        // Dialogs opened by the tick paused at once in the original.
         this._syncModalPause();
 
         // Mirror the ready flag onto FieldController for HUD draw
@@ -359,26 +364,41 @@ export class GameView extends Widget {
     }
 
     // Every dialog opener of the game pauses (state +4 = 1, +0xd = 0,
-    // FUN_004090b9 -> hand mode 0): FUN_0040bce7 rwg:14103-14105 (Options),
-    // FUN_0041e97b rwg:37769-37771 (Shop), FUN_0041e9f1 rwg:37820-37822
-    // (Special shop), FUN_0040d435 rwg:16367-16369 (HintDialog),
-    // FUN_0041b94a rwg:33692-33697 (SURPRISE), FUN_00421948 rwg:41348-41351
-    // (Level completed), FUN_00421a66 rwg:41431-41434 (Level failed); and
-    // every closer back to the game unpauses (+4 = 0, +0xd = 0) whatever
-    // paused it before: FUN_0040fd44 rwg:19545-19550 (Options), FUN_0041f94a
-    // rwg:39086-39088 (Shop), FUN_00420ae8 rwg:40439-40441 (Special shop),
-    // FUN_0040d821 rwg:16716-16719 (HintDialog OK), FUN_0040d4bb
-    // rwg:16408-16411 / FUN_0041b9cf rwg:33746-33751 (SURPRISE).
-    // The HTML dialogs open/close outside this class, so the port applies
-    // those writes on the open/close transitions.
+    // FUN_004090b9 -> hand mode 0) at the moment it opens, whatever is
+    // already shown: FUN_0040bce7 rwg:14103-14105 (Options), FUN_0041e97b
+    // rwg:37769-37771 (Shop), FUN_0041e9f1 rwg:37820-37822 (Special shop),
+    // FUN_0040d435 rwg:16367-16369 (HintDialog), FUN_0041b94a rwg:33692-
+    // 33697 (SURPRISE), FUN_00421948 rwg:41348-41351 / FUN_00421a66
+    // rwg:41431-41434 (level end). The port calls this from those openers.
+    _pauseForDialog() {
+        this.mFieldController.mIsPaused = true;   // +4 = 1
+        this.mPauseTextShown = false;             // +0xd = 0
+        this.mHand.setMode(HandMode.SEEDS);       // FUN_004090b9
+    }
+
+    // Open HTML dialogs whose closing button unpauses the game.
+    _openUnpausingDialogs() {
+        return UNPAUSE_ON_CLOSE.filter(n => HtmlDialogs.isDialogOpen(n));
+    }
+
+    // The closers back to the game unpause (+4 = 0, +0xd = 0) whatever
+    // paused it and whatever else is still shown: FUN_0040fd44 rwg:19545-
+    // 19550 (Options CLOSE), FUN_0041f94a rwg:39086-39088 (Shop OK),
+    // FUN_00420ae8 rwg:40439-40441 (Special shop OK), FUN_0040d821
+    // rwg:16716-16719 (HintDialog OK). Those dialogs close outside this
+    // class (OptionsDialog.js / ShopDialogs.js / HintController.js), so the
+    // port applies the write when one of them is gone. (SURPRISE unpauses
+    // explicitly, see _openSurprise; the other dialogs over the game —
+    // INFORMATION, QUIT? — do not touch the pause; a dialog re-added under
+    // the same id by AddDialog FUN_00441f11 is never seen closed.)
     _syncModalPause() {
-        const shown = this._isModalShown();
-        if (shown === this._modalWasShown) return;
-        this._modalWasShown = shown;
-        const fc = this.mFieldController;
-        fc.mIsPaused = shown;
-        this.mPauseTextShown = false;
-        if (shown) this.mHand.setMode(HandMode.SEEDS);
+        const open = this._openUnpausingDialogs();
+        const closed = this._unpausingOpen.some(n => !open.includes(n));
+        this._unpausingOpen = open;
+        if (closed) {
+            this.mFieldController.mIsPaused = false;
+            this.mPauseTextShown = false;
+        }
     }
 
     // FUN_0040907e (rwg:11485-11497) edge part: cVar1 = mKeyDown[VK_SPACE]
@@ -799,10 +819,9 @@ export class GameView extends Widget {
     }
 
     // FUN_0040bce7 case 1 (rwg:14100-14120): pause (+4 = 1, +0xd = 0) and open
-    // the OptionsDialog (FUN_0040f57b, AddDialog id 6). HTML in this port; the
-    // pause is applied on the open transition (_syncModalPause).
+    // the OptionsDialog (FUN_0040f57b, AddDialog id 6). HTML in this port.
     _openPauseMenu() {
-        this.mPauseTextShown = false;
+        this._pauseForDialog();   // rwg:14103-14105
         this.mGameApp.openOptions({
             inGame: true,
             onMainMenu: () => { if (this.mGameApp.showMainMenu) this.mGameApp.showMainMenu(); },
@@ -904,14 +923,14 @@ export class GameView extends Widget {
     // FUN_0040bce7 case 2 -> FUN_0041e97b (rwg:37749): pause (+4 = 1, +0xd = 0),
     // ShopDialog FUN_0041f031 — HTML 'shop-sell'.
     _openSellDialog() {
-        this.mPauseTextShown = false;
+        this._pauseForDialog();   // rwg:37769-37771
         new ShopDialog(this.mFieldController, null).openHtml();
     }
 
     // FUN_0040bce7 case 3 -> FUN_0041e9f1 (rwg:37802): pause (+4 = 1, +0xd = 0),
     // SpecialShopDialog FUN_00420232 — HTML 'shop-buy'.
     _openShopDialog() {
-        this.mPauseTextShown = false;
+        this._pauseForDialog();   // rwg:37820-37822
         new SpecialShopDialog(this.mFieldController, null).openHtml();
     }
 }

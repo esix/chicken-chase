@@ -128,6 +128,22 @@ export class FieldController {
         this._bonusStartChicks = 0;         // level obj +0x50 (FUN_00423cb3:43857)
         // Money effects (app+0x3c)+0xc list, FUN_00424b5d → FUN_0040693f.
         this.mMoneyEffects = [];
+        // Core +0x4c: sound ids already played this tick through app vtable
+        // +0x168 = FUN_00408e96 (see playSampleOncePerTick); cleared by
+        // FUN_0044b4db at the start of every Core::Update (asm 0x405fd7).
+        this.mTickSounds = new Set();
+    }
+
+    // App vtable +0x168 (GameApp vftable 0x4dcbfc + 0x168 = FUN_00408e96,
+    // rwg_functions.c:11264): look the sound id up in the Core +0x4c list
+    // (FUN_0041062d); only when absent push it (FUN_0040ca85) and play it
+    // (FUN_0044a8ef = vtable +0xc4 PlaySample). Callers: raven spawn
+    // FUN_0040123f (rwg:377, SOUND_KAR_KAR), wolf attack FUN_00401543
+    // (rwg:645), chick death FUN_0040344c (rwg:3638), FUN_00404d00 (rwg:5848).
+    playSampleOncePerTick(sound) {
+        if (!sound || this.mTickSounds.has(sound)) return;
+        this.mTickSounds.add(sound);
+        sound.play();
     }
 
     // Level start = FUN_00406069 (fresh world, rwg_functions.c:7496) →
@@ -374,7 +390,8 @@ export class FieldController {
     // There is no "alive wolves" cap in the original.
     _startWolfAttack() {
         const ctl = this.mRavenCtl;
-        if (SOUNDS.SOUND_WOLF) SOUNDS.SOUND_WOLF.play();    // DAT_004feda0 :645
+        // DAT_004feda0 via app vtable +0x168 (once per tick) :645.
+        this.playSampleOncePerTick(SOUNDS.SOUND_WOLF);
         let n = ctl.wolvesPerAttack;
         if (n > 2 && this._hasElephant()) n = 2;
         for (let i = 0; i < n; i++) {
@@ -500,6 +517,9 @@ export class FieldController {
     // open their dialog; if space unpauses under that dialog (FUN_0040907e)
     // the next tick runs in full and FUN_00421b21 trips again.
     update() {
+        // asm 0x405fd7-0x405fda: FUN_0044b4db(Core +0x4c) clears the
+        // once-per-tick sound list first, paused or not.
+        this.mTickSounds.clear();
         if (this.mIsPaused) return;   // state+4 paused → only FUN_0040907e
         this._tickGameLogic();
     }

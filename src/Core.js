@@ -261,10 +261,20 @@ export class Core {
             }
         }
         this.mStorage.setItem(STORAGE_KEY_LIST, JSON.stringify(this.mPlayers));
-        // Registry "MusicVolume"/"SfxVolume" — FUN_00443cd2:79767-79773
+        // Browser-only redundancy: the original writes the registry only at
+        // exit (writeSettings); writing it here too only adds robustness.
+        this.writeSettings();
+    }
+
+    // SexyAppBase::WriteToRegistry FUN_00443cd2 (GameApp vtable[23]), called
+    // at exit by Shutdown FUN_00444943 (rwg:80408) and Start FUN_00449647
+    // (rwg:84523). The volumes are stored as ints: ftol(volume * 100.0)
+    // (asm 0x443cf2-0x443cfe / 0x443d2f-0x443d3b, _DAT_004e9078 = 100.0,
+    // _ftol FUN_004bed40 truncates). Registry names kept as the keys.
+    writeSettings() {
         this.mStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify({
-            musicVolume: this.mMusicVolume,
-            sfxVolume: this.mSoundVolume,
+            MusicVolume: Math.trunc(this.mMusicVolume * 100.0),
+            SfxVolume: Math.trunc(this.mSoundVolume * 100.0),
         }));
     }
 
@@ -281,8 +291,11 @@ export class Core {
         try {
             const s = JSON.parse(this.mStorage.getItem(STORAGE_KEY_SETTINGS) || 'null');
             if (s) {
-                if (typeof s.musicVolume === 'number') this.mMusicVolume = s.musicVolume;
-                if (typeof s.sfxVolume === 'number') this.mSoundVolume = s.sfxVolume;
+                // FUN_0044431f rwg:80137/80146: (double)int / 100.0
+                if (typeof s.MusicVolume === 'number') this.mMusicVolume = s.MusicVolume / 100.0;
+                else if (typeof s.musicVolume === 'number') this.mMusicVolume = s.musicVolume;   // old JS format
+                if (typeof s.SfxVolume === 'number') this.mSoundVolume = s.SfxVolume / 100.0;
+                else if (typeof s.sfxVolume === 'number') this.mSoundVolume = s.sfxVolume;   // old JS format
             } else {
                 // Migrate legacy per-profile volumes (previous JS save format).
                 const cur0 = this.mStorage.getItem(STORAGE_KEY_CURRENT);

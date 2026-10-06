@@ -886,7 +886,12 @@ export class Chick {
         this.mActionElapsed = 0;
         this.mAction = A_DEATH;
         this.mActionLen = 200.0;                    // _DAT_004e9244
-        if (playSound && SOUNDS.SOUND_CHICK_DEATH) SOUNDS.SOUND_CHICK_DEATH.play();
+        // App vt+0x168 FUN_00408e96: at most once per game tick (rwg:3638).
+        if (playSound && SOUNDS.SOUND_CHICK_DEATH) {
+            const fc = fcOf(this._field);
+            if (fc && fc.playSampleOncePerTick) fc.playSampleOncePerTick(SOUNDS.SOUND_CHICK_DEATH);
+            else SOUNDS.SOUND_CHICK_DEATH.play();
+        }
     }
 
     // FUN_0040466e (rwg_functions.c:5320-5335): FUN_0040342b (state 6,
