@@ -286,6 +286,12 @@ export class GameView extends Widget {
         // (7478), level FUN_00421b21 (7479). state+4 != 0: FUN_0040907e only.
         // No other gate: a finished level keeps ticking once space unpauses
         // it under the end dialog (FUN_00421948 / FUN_00421a66 only pause).
+        // asm 0x405fd7-0x405fda: FUN_0044b4db(Core +0x4c) clears the
+        // once-per-tick sound list (app vt+0x168 FUN_00408e96) first, before
+        // the state / pause tests at 0x405fdf-0x405fea — also while paused
+        // (sounds played from dialogs, e.g. the SURPRISE flu result
+        // FUN_0041b9cf -> SOUND_SICK, must not be blocked by the last tick).
+        fc.mTickSounds.clear();
         const wasPaused = fc.mIsPaused;
         const spaceEdge = this._pollSpace();
         if (wasPaused) {

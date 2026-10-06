@@ -517,9 +517,8 @@ export class FieldController {
     // open their dialog; if space unpauses under that dialog (FUN_0040907e)
     // the next tick runs in full and FUN_00421b21 trips again.
     update() {
-        // asm 0x405fd7-0x405fda: FUN_0044b4db(Core +0x4c) clears the
-        // once-per-tick sound list first, paused or not.
-        this.mTickSounds.clear();
+        // (The once-per-tick sound list Core +0x4c is cleared by GameView
+        // before the pause test, asm 0x405fd7-0x405fda — see GameView.update.)
         if (this.mIsPaused) return;   // state+4 paused → only FUN_0040907e
         this._tickGameLogic();
     }
