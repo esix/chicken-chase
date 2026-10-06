@@ -40,7 +40,7 @@
 // Previous header notes claiming the raven update was "UNKNOWN in decompiled"
 // were wrong: the raven is a plain (non-virtual) 0x54-byte struct.
 
-import { ChickType, EggType, EGG_TO_CHICK, createChick, drawWithParams, foodUnit } from './Chick.js';
+import { ChickType, EggType, EGG_TO_CHICK, createChick, drawWithParams, foodUnit, updateLaySpots } from './Chick.js';
 import { drawFieldBackground } from './CreditsView.js';
 import { CoinSilver, CoinGold, DiamondBlue, DiamondRed, Egg, GemType } from './Gem.js';
 import { IMAGES, SOUNDS } from './Res.js';
@@ -139,6 +139,17 @@ function getFlashCel(img, frame) {
     return off;
 }
 
+function drawSpell(g, fx) {
+    const img = IMAGES.IMAGE_SPELL;
+    if (!img || !img.img) return;
+    const cols = img.mNumCols || 1;
+    const half = Math.trunc(img.mHeight / 2);
+    let frame = Math.trunc(fx.t * cols);
+    if (frame >= cols) frame = cols - 1;
+    const p = fieldToScreen(fx.pos[0], fx.pos[1], fx.pos[2]);
+    drawWithParams(g, img, p.x - half, p.y - half, { frame });
+}
+
 // Raven animation states (raven +0x00), set by FUN_00416db8 and used by
 // FUN_0040a120 (asm 0x40a12c-0x40a14c) to choose the image:
 //   0 -> IMAGE_ALIEN_DOWN (DAT_004fff64), 1 -> IMAGE_ALIEN_CATCH (DAT_004fff68),
@@ -215,8 +226,10 @@ export class Raven {
         }
         for (const r of field.mChickens) {
             if (r.mType !== ChickType.ROOSTER) continue;
-            const rp = chickXY(r);
-            const d = maxNorm3([rp.x - cp.x, rp.y - cp.y, 0]);
+            // 3D difference of the +0x20..+0x28 positions (asm 0x417321-0x417354).
+            const rp = r.mPos ? r.mPos : [chickXY(r).x, chickXY(r).y, 0];
+            const tp = chick.mPos ? chick.mPos : [cp.x, cp.y, 0];
+            const d = maxNorm3([rp[0] - tp[0], rp[1] - tp[1], rp[2] - tp[2]]);
             if (d < 10.0) return true;                     // _DAT_004dc7ec
             if (d < 15.0 && (crtRand() & 1) !== 0) return true;
             if (d < 24.0 && (crtRand() & 3) === 0) return true;
@@ -526,7 +539,7 @@ export class SeedCluster {
                 if (g.claim > 0 && --g.claim === 0) { g.claim = 0; g.claimId = 0; }
                 g.life--;
             } else {
-                g.vel[2] = g.vel[2] - 0.05;
+                g.vel[2] = g.vel[2] - 0.05000000074505806;   // _DAT_004e9228 (double)
                 g.pos[0] = g.vel[0] + g.pos[0];
                 g.pos[1] = g.vel[1] + g.pos[1];
                 g.pos[2] = g.vel[2] + g.pos[2];
@@ -654,6 +667,9 @@ export class Field {
         this.mSickTimer = ((mtRand() % 0x28) + 0x1e) * 100;
         this.mHatchSlowdown = 1.0;      // _DAT_004fc3b4
         this._configApplied = false;
+        // Holy spell effects — world list +0x38 (entries {timer, x, y, z}
+        // created by FUN_00420e2e, asm 0x420eeb-0x420f41).
+        this.mSpellFx = [];
     }
 
     // Level flags written by the level setup FUN_00422d10 (LevelData).
@@ -705,7 +721,11 @@ export class Field {
     // Position = the spawning chick's position. JS callers (Chick.js) pass
     // (chick.mX, chick.mY - 20); `groundY` defaults to y + 20, i.e. the chick
     // position. The original has no toss/bounce animation.
+    // The factory creates nothing when (app+0x28)+0x1c is set
+    // (rwg_functions.c:15152; LevelData `noPeckCoins`, FUN_00423e5a rwg:43969).
     spawnGem(type, x, y, groundY, value) {
+        const fc = this.mFieldController;
+        if (fc && fc.mLevelConfig && fc.mLevelConfig.noPeckCoins) return null;
         const gy = (typeof groundY === 'number') ? groundY : y + 20;
         let g = null;
         if (type === 0) g = new CoinGold(x, gy);
@@ -717,12 +737,19 @@ export class Field {
     }
 
     // FUN_00407038 (rwg_functions.c:8721): egg at the laying chick's position,
-    // type from chick vt[0xe]. The lay sound is played by Chick.js.
+    // type from chick vt[0xe]. The lay sound and the lay-spot binding
+    // (asm 0x40711b-0x407196) are done by Chick.js (bindEggToLaySpot).
     spawnEgg(x, y, eggType) {
         const egg = new Egg(eggType, x, y);
         egg.mHatchSlowdown = this.mHatchSlowdown;
-        this.mGems.push(egg);
+        this.mGems.push(egg);   // FUN_00410585 push_back
         return egg;
+    }
+
+    // Holy spell effect entry (FUN_00420e2e asm 0x420eeb-0x420f41):
+    // {timer 0, target x, y, z}, push_back to the world list +0x38.
+    addSpellFx(pos) {
+        this.mSpellFx.push({ t: 0, pos: [pos[0], pos[1], pos[2] || 0] });
     }
 
     _eggs() {
@@ -734,31 +761,47 @@ export class Field {
         return this._eggs().filter(e => !e.mBroodStarted).length;
     }
 
-    // FUN_004071b2 (rwg_functions.c:8826): nearest egg by Chebyshev distance
-    // (FUN_00403c97) below 1e6 (_DAT_004e9280), +0x20 clear, not reserved by
-    // another chick; eggs of chick type 3/4 (Magic/Holy) only when no other
-    // egg was found. The chosen egg is claimed by `chick`.
+    // FUN_004071b2 (rwg_functions.c:8826): eggs with claim (+0x00) < 1 or
+    // claimed by this chick id (+0x04 == id) are candidates; nearest by
+    // Chebyshev distance (FUN_00403c97) below 1e6 (_DAT_004e9280) with +0x20
+    // clear; eggs of chick type 3/4 (Magic/Holy) only when no other egg was
+    // found (best distance unchanged). The chosen egg is claimed:
+    // +0x00 = id ? 0x32 : 0, +0x04 = id (rwg_functions.c:8873-8877).
+    // The egg claim is never counted down by the egg code.
     claimNearestEgg(chick) {
+        const id = chick.mId;
         let best = null;
         let bestD = 1000000;
         for (const e of this._eggs()) {
-            if (e.mBroodStarted) continue;
-            const o = e._magicClaim;
-            if (o && o !== chick && o.mIsAlive && o.mFoodTarget === e) continue;
+            if (!(e.mClaim < 1 || e.mClaimId === id)) continue;
             const d = maxNorm2(chick.mPos[0] - e.mFieldX, chick.mPos[1] - e.mFieldY);
-            if (d >= bestD) continue;
+            if (!(d < bestD) || e.mBroodStarted) continue;
             const special = e.mEggType === EggType.BLUE || e.mEggType === EggType.RED;
             if (!special) { bestD = d; best = e; }
             else if (!best) best = e;   // bestD unchanged (rwg_functions.c:8866-8869)
         }
-        if (best) best._magicClaim = chick;
+        if (best) {
+            best.mClaim = id ? 0x32 : 0;
+            best.mClaimId = id;
+        }
         return best;
     }
 
+    // FUN_004072bc (rwg_functions.c:8888): re-claim when unclaimed (+0x04 == 0)
+    // or ours: +0x00 = id ? 0x32 : 0, +0x04 = id.
+    reclaimEgg(e, id) {
+        if (!e || (e.mClaimId !== 0 && e.mClaimId !== id)) return false;
+        e.mClaim = id ? 0x32 : 0;
+        e.mClaimId = id;
+        return true;
+    }
+
     // FUN_004077ae (asm 0x4077ae): remove an egg (sound played by the caller).
+    // Removal goes through FUN_00406c4d (+0x1c = 1.0, unlink).
     removeEgg(egg) {
         egg.mIsAlive = false;
         egg.mCollected = true;
+        egg.mHatchProgress = 1.0;
     }
 
     // Hatch: FUN_00406c85 (asm 0x406d39-0x406d74) removes the egg, calls
@@ -844,6 +887,7 @@ export class Field {
         const h = (typeof hp === 'number') ? hp : (level > 0x28 ? 2 : 1);
         const sp = (typeof speedMult === 'number') ? speedMult : 1.0;
         const raven = new Raven(target, h, sp, this);
+        raven.mFresh = true;   // JS: see updateRavens
         this.mRavens.push(raven);
         if (SOUNDS.SOUND_KAR_KAR) SOUNDS.SOUND_KAR_KAR.play();
         return true;
@@ -927,7 +971,8 @@ export class Field {
     // +0xc; JS egg.mBrooding) whose brood progress FUN_00406ac9 <= 0
     // (_DAT_004e90b0 = 0.0) and which no broody targets yet.
     _assignBroodEggs() {
-        const eggs = this._eggs().filter(e => e.mBrooding);
+        const eggs = this._eggs().filter(e => e.mBrooding)
+            .sort((a, b) => (a._broodSeq || 0) - (b._broodSeq || 0));
         if (eggs.length === 0) return;
         const free = this.mChickens.filter(c => c.mType === ChickType.BROODY
             && c.isFreeForEgg && c.isFreeForEgg());
@@ -956,18 +1001,23 @@ export class Field {
     //   1. background FUN_004248b4 (IMAGE_GAME_BACK + decorations, rwg:13310)
     //   2. dog (rwg:13318-13330)
     //   3. seeds (+0x1c): grounded drawn immediately, airborne queued
-    //   4. chicks (+0x14): held chicks (state 0) drawn immediately, others
-    //      queued (key = field y) followed by their hungry icon (at most 5
-    //      per frame, piStack_118 < 5; other chicks get +0x64 = 0, asm
-    //      0x40a7a0-0x40a83f); shadow drawn immediately when z == 0 and
-    //      state != 6
+    //   4. chicks (+0x14): held chicks (state 0) go to the overlay pass
+    //      (FUN_0040913d), others queued (key = field y) followed by their
+    //      hungry icon (at most 5 per frame, piStack_118 < 5; other chicks
+    //      get +0x64 = 0, asm 0x40a7a0-0x40a83f); shadow drawn immediately
+    //      when z == 0 and state != 6
     //   5. eggs (+0x24), gems (+0x28), pets (+0x44) queued; egg/diamond
     //      shadows drawn immediately
     //   6. render list sorted by key (FUN_0041763c = std::list::sort, stable)
-    //   7. holy spell effects (+0x38, rwg:13570-13602)
-    //   8. ravens drawn immediately on top
-    // UNKNOWN — not found in decompiled: depth key used for pets/wolves
-    // (their struct offset +0xc is read at asm 0x40ac0b; JS uses mY).
+    //      and entries with flag +0x10 == 0 drawn (rwg:13537-13554)
+    //   7. holy spell effects (+0x38, rwg:13570-13602) and ravens
+    //      (rwg:13606-13627) appended with FUN_0040913d
+    //   8. overlay pass: entries with flag +0x10 != 0 drawn in insertion
+    //      order (rwg:13628-13657): held chicks, spells, ravens.
+    // FUN_004090ec queues {image, x, y, key, flag 0}; FUN_0040913d queues
+    // {image, x, y, key 0, flag 1} (rwg_functions.c:11553/11590).
+    // Pet key = pet +0xc, the pet's field y (FUN_00409800 reads the pet
+    // position from +0x08/+0x0c); the JS pets keep screen y (z = 0).
     draw(g) {
         drawFieldBackground(g, this.mDecorations || []);
         this.mDog.draw(g);
@@ -978,11 +1028,12 @@ export class Field {
         for (const seed of this.mSeeds) {
             for (const d of seed.getAirborneDrawables()) list.push(d);
         }
+        const overlay = [];
         let hungryShown = 0;
         for (const c of this.mChickens) {
             if (c.mRemoved) continue;
             if (c.mIsCarried) {
-                c.drawSprite(g);
+                overlay.push((gg) => c.drawSprite(gg));
             } else {
                 const key = c.mPos[1];
                 list.push({ key, draw: (gg) => c.drawSprite(gg) });
@@ -1014,19 +1065,42 @@ export class Field {
         list.sort((a, b) => a.key - b.key);
         for (const e of list) e.draw(g);
 
-        for (const c of this.mChickens) {
-            if (c.drawSpellFx) c.drawSpellFx(g);
-        }
+        // Spell effects (rwg:13570-13602, asm 0x40ad5e-0x40ae01): IMAGE_SPELL
+        // (DAT_0050000c) at FUN_00409567(x, y, z) - height/2 on both axes,
+        // cel ftol(timer * numCols) clamped to numCols-1, via FUN_0040913d.
+        for (const fx of this.mSpellFx) overlay.push((gg) => drawSpell(gg, fx));
         for (const raven of this.mRavens) {
-            raven.draw(g);
+            overlay.push((gg) => raven.draw(gg));
         }
+        for (const d of overlay) d(g);
+    }
+
+    // Raven list part of FUN_004015f8 (rwg_functions.c:707-730): per raven
+    // flash--, FUN_00416db8, FUN_00416ed4; removed when it returns false.
+    // In the original this loop runs after the +0x38 delay-- and BEFORE the
+    // controller's spawn rolls (rwg:735+), so a raven spawned this tick is
+    // not updated until the next one. FieldController runs the spawn rolls
+    // before Field.update, so ravens spawned this tick (mFresh, set in
+    // spawnRaven) are skipped once here.
+    updateRavens() {
+        for (const raven of this.mRavens) {
+            if (raven.mFresh) { raven.mFresh = false; continue; }
+            raven.update();
+        }
+        this.mRavens = this.mRavens.filter(r => r.mIsAlive);
     }
 
     // FUN_004043fd (rwg_functions.c:5052) world update + the other lists.
+    // Core::Update FUN_00405fcf (rwg_functions.c:7466-7477) order:
+    // raven controller FUN_004015f8 (per-raven update inside it), world
+    // FUN_004043fd, seeds FUN_0041bec7, eggs FUN_00406c85, gems FUN_0040c36e,
+    // ..., pets FUN_00410116.
     update() {
         this._applyLevelConfig();
         // Dog — FUN_004091b8 from GameView::Update FUN_00409372.
         this.mDog.update();
+
+        this.updateRavens();
 
         // +0x274 broody-egg allowance (asm 0x40440c-0x404438).
         this._updateBroodyAllowed();
@@ -1067,7 +1141,9 @@ export class Field {
 
         // Gem list update FUN_0040c36e (rwg_functions.c:14990) and egg
         // controller update FUN_00406c85 (rwg_functions.c:8427): eggs whose
-        // hatch progress reached 1.0 hatch.
+        // hatch progress reached 1.0 hatch. FUN_00406c85 starts with the
+        // lay-spot tick FUN_00407550.
+        updateLaySpots(this);   // Chick.js FUN_00407550 (lay spots on this._laySpots)
         const gemsBefore = this.mGems.slice();
         for (const gem of gemsBefore) {
             gem.update();
@@ -1079,11 +1155,11 @@ export class Field {
         }
         this.mGems = this.mGems.filter(g => g.mIsAlive);
 
-        // Raven list part of FUN_004015f8 (rwg_functions.c:707-730).
-        for (const raven of this.mRavens) {
-            raven.update();
-        }
-        this.mRavens = this.mRavens.filter(r => r.mIsAlive);
+        // FUN_00420d2a (rwg_functions.c:40470, asm 0x420d86-0x420d96), after
+        // the gem update in FUN_00405fcf (rwg:7474): timer += 0.015
+        // (_DAT_004e90f8, float); entries with timer > 1.0 removed.
+        for (const fx of this.mSpellFx) fx.t = Math.fround(fx.t + 0.014999999664723873);
+        this.mSpellFx = this.mSpellFx.filter(fx => !(fx.t > 1.0));
 
         for (const pet of this.mPets) {
             pet.update(this);

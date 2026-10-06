@@ -78,16 +78,12 @@ export function screenToFieldY(py) { return (py - 367) / 2.8; }
 // ---------------------------------------------------------------------------
 // thunk_FUN_00429891 (rwg_functions.c:49178): Mersenne Twister, 31-bit result.
 function mtRand() { return Math.floor(Math.random() * 2147483648); }
-// _rand (FUN_004a082c): MSVC rand, 0..32767.
-function crtRand() { return Math.floor(Math.random() * 32768); }
 // FUN_00403207 (rwg_functions.c:3308): (base - spread) + rand*_DAT_004e9248*spread*2,
 // _DAT_004e9248 = 4.656612873077393e-10 (1/2^31).
 function randAround(base, spread) {
     const f = mtRand() * 4.656612873077393e-10 * spread;
     return (base - spread) + f + f;
 }
-// FUN_00401148 (asm 0x401148): rand() / _DAT_004e9178 (32767.0)
-function rand01() { return crtRand() / 32767.0; }
 // FUN_00410471 (rwg_functions.c:20113): random wander point (rand%128, rand%57)
 function randomWanderPoint() { return [mtRand() % 128, mtRand() % 57]; }
 // FUN_00408107 (rwg_functions.c:10260): random spawn point (rand%128, rand%72)
@@ -100,18 +96,20 @@ function chebyshev(dx, dy) {
 }
 
 // Chick vtable[5] isActive — FUN_0040327c (rwg_functions.c:3368):
-//   state(+0x08) != 6 (death) && state != 0 (newborn) && z(+0x28) == 0.
-// JS mapping: mIsAlive <-> state != 6, mIsAdult <-> state != 0 (same mapping
-// Field.spawnRaven uses), !mIsCarried <-> z == 0.
+//   state(+0x08) != 6 (death) && state != 0 (held) && z(+0x28) == 0;
+// BroodyChick overrides it (FUN_00403dec). Chick.isActive() ports both.
 function chickIsActive(c) {
-    return !!c && c.mIsAlive && c.mIsAdult && !c.mIsCarried;
+    return !!c && c.isActive();
+}
+// Chick field position +0x20/+0x24 (read by FUN_00404fb1 and asm 0x424ed3-
+// 0x424ee2) — Chick.mPos keeps the unrounded field floats.
+function chickFieldPos(c) {
+    return [c.mPos[0], c.mPos[1]];
 }
 
-// Gem field position (gem +0x0c/+0x10 in the original). JS gems keep pixel
-// coordinates; mGroundY is the resting y while bouncing.
+// Gem field position (gem +0x0c/+0x10 in the original) — Gem.mFieldX/mFieldY.
 function gemFieldPos(gem) {
-    const py = (typeof gem.mGroundY === 'number') ? gem.mGroundY : gem.mY;
-    return [screenToFieldX(gem.mX), screenToFieldY(py)];
+    return [gem.mFieldX, gem.mFieldY];
 }
 
 // Original gem list (global+0x28) only holds live coins/diamonds; eggs are a
@@ -480,11 +478,11 @@ export class Mouse extends Pet {
 
     // FUN_0040ef39 (rwg_functions.c:18579, asm 0x40ef39): collect every gem
     // whose Chebyshev distance is < 2*radius, each via FUN_0040c75b
-    // (rwg_functions.c:15342): add value with FUN_00424b5d (money + popup at
-    // the gem position), bump the collection counter, play the gem's sound
-    // (vtable[6]), mark collected (vtable[3]) and remove it from the list.
-    // NOTE: the old JS also scared ravens here — FUN_0040c75b is the gem
-    // pickup, not a raven scare, so that was removed.
+    // (rwg_functions.c:15342) — the same pickup the player's click uses
+    // (FieldController._collectGemAt): if !vt[2] isCollected: money +=
+    // vt[4] value at the gem position (FUN_00406b22 -> FUN_00424b5d), the
+    // type counter ++ (FUN_0041fb98, unconditionally), vt[6] sound, vt[3]
+    // set collected + remove (FUN_0040c49d).
     _collectNearbyGems(field) {
         const r2 = this._getRadius() + this._getRadius();
         const picked = [];
@@ -495,21 +493,11 @@ export class Mouse extends Pet {
         const fc = field && field.mFieldController;
         for (const gem of picked) {
             if (gem.mCollected) continue;
-            const value = gem.collect();   // JS: marks collected + plays sound
-            if (value > 0 && fc) {
-                fc.addMoney(value);
-                // Same popup path the player's click uses (both go through
-                // FUN_00424b5d -> FUN_0040693f in the original).
-                if (fc.addFloatingText) {
-                    let color = '#fff';
-                    if (gem.mType === 0) color = '#ffd700';
-                    else if (gem.mType === 1) color = '#cccccc';
-                    else if (gem.mType === 2) color = '#5cb8ff';
-                    else if (gem.mType === 3) color = '#ff5c5c';
-                    fc.addFloatingText(gem.mX, gem.mY - 10, `+$${value}`, color);
-                }
-                if (fc._trackCollection) fc._trackCollection(gem);
-            }
+            const value = gem.collect();   // vt[4] value, vt[6] sound, vt[3] collected
+            if (!fc) continue;
+            // FUN_0040c75b calls FUN_00406b22(value) unconditionally (rwg:~14990).
+            fc.addMoney(value, gem.mX, gem.mY);
+            fc._trackCollection(gem);
         }
     }
 
@@ -622,12 +610,11 @@ export class Wolf extends Pet {
     //   action at +0x1c (max +0x20, cur +0x24, rate +0x28, id +0x2c),
     //   +0x30/+0x34 target chick (shared ptr), +0x38 HP, +0x3c speed factor,
     //   +0x40 stun, +0x44/+0x48 knockback.
-    // HP comes from the caller (factory FUN_00410299 passes the wave's +0x10,
-    // asm 0x4015c7) — the JS spawn code does not pass it yet, so the default
-    // below is UNKNOWN — not found in decompiled (kept from the old port).
-    constructor(hp = 3, fx = 0, fy = 0) {
+    // HP comes from the caller in EDX (factory FUN_00410299 passes the raven
+    // controller's +0x10, asm 0x4015c7; FieldController passes ctl.wolfHP).
+    constructor(hp, fx = 0, fy = 0) {
         super(PetType.WOLF, fx, fy);
-        this.mHP = hp;                  // +0x38 — default UNKNOWN (see above)
+        this.mHP = hp;                  // +0x38
         this.mSpeedFactor = 1.0;        // +0x3c
         this.mStun = 0;                 // +0x40
         this.mKnockbackX = 0;           // +0x44
@@ -707,9 +694,10 @@ export class Wolf extends Pet {
         let target = null;
         for (const c of field.mChickens) {
             if (!chickIsActive(c)) continue;
-            const dx = Math.abs(this.mPosX - screenToFieldX(c.mX));
-            const dy = Math.abs(this.mPosY - screenToFieldY(c.mY));
-            const dz = 0; // isActive implies z == 0
+            const [cx, cy] = chickFieldPos(c);
+            const dx = Math.abs(this.mPosX - cx);
+            const dy = Math.abs(this.mPosY - cy);
+            const dz = Math.abs(0 - c.mPos[2]); // 0 - z (isActive implies z == 0)
             const d = Math.max(dx, dy, dz);
             if (d < best) {
                 best = d;
@@ -732,8 +720,12 @@ export class Wolf extends Pet {
             if (this.mActionId === ACTION_SPECIAL) {
                 // End of the eat action: FUN_0040481d -> FUN_0040466e kills the
                 // chick (FUN_0040342b sets state 6) when it is still active.
+                // FUN_0040342b plays no sound (the death sample is only
+                // played by FUN_0040344c:3637-3638 for age/sickness deaths).
+                // FUN_0040466e also erases the chick from the list
+                // (FUN_00405184) — Chick.removeFromField().
                 const t = this.mTargetChick;
-                if (t && chickIsActive(t)) t.die();
+                if (t && chickIsActive(t)) t.removeFromField();
                 this.mTargetChick = null;  // FUN_004022f8 resets the shared ptr
             }
             return;
@@ -747,12 +739,12 @@ export class Wolf extends Pet {
             return;
         }
         const t = this.mTargetChick;
+        // asm 0x424ebd-0x424ed1: ptr != null && state != 6 && vt[5] isActive
         if (!t || !t.mIsAlive || !chickIsActive(t)) {
             this.mActionCur = this.mActionMax;
             return;
         }
-        const tx = screenToFieldX(t.mX);
-        const ty = screenToFieldY(t.mY);
+        const [tx, ty] = chickFieldPos(t);
         if (!this._isNear(tx, ty) && this._moveTowards(tx, ty)) return;
         this._startAction(ACTION_SPECIAL);
     }

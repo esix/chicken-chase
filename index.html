@@ -202,13 +202,13 @@
             <div class="cc-shop-head"><span>AGE</span><span>PRICE</span></div>
             <ul class="cc-list" data-list="rows">
               <li class="cc-shop-row" data-template hidden>
-                <span class="cc-cell-type"></span>
+                <!-- FUN_0041f65c: chick sprite at scale 0.5 (FUN_0041742b), no type name -->
+                <span class="cc-cell-type"><img class="cc-cell-icon" alt=""></span>
                 <span class="cc-cell-age"></span>
                 <span class="cc-cell-price"></span>
                 <button class="cc-btn cc-btn-sell" data-action="sell">SELL</button>
               </li>
             </ul>
-            <p class="cc-info" data-bind="info"></p>
             <div class="cc-buttons"><button class="cc-btn" data-action="ok">OK</button></div>
           </div>
         </div>
@@ -232,7 +232,19 @@
                 <button class="cc-btn cc-btn-buy" data-action="buy">BUY</button>
               </li>
             </ul>
-            <p class="cc-info" data-bind="info"></p>
+            <div class="cc-buttons"><button class="cc-btn" data-action="ok">OK</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- INFORMATION — FUN_0041efda (rwg:38450) / FUN_004201bd (rwg:39718):
+           OK-only DoDialog FUN_00421187 (same builder as QUIT?), header
+           "INFORMATION", body = message. Opened by ShopDialogs.js. -->
+      <div class="cc-dialog" data-dialog="information" hidden>
+        <div class="cc-box cc-box-quit">
+          <div class="cc-plate"><h2 class="cc-title">INFORMATION</h2></div>
+          <div class="cc-body">
+            <p class="cc-text" data-bind="text"></p>
             <div class="cc-buttons"><button class="cc-btn" data-action="ok">OK</button></div>
           </div>
         </div>

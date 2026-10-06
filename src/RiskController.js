@@ -15,8 +15,6 @@
 //   8 RiskCaseRavensAttack  0x004deefc  FUN_0041b499          / FUN_0041b4ac
 // Controller vtable: [0] FUN_0041b9cf (dialog-closed / continue), [1] FUN_0040d4bb.
 
-import { SOUNDS } from './Res.js';
-import { ChickState } from './Chick.js';
 
 export const RiskCaseType = {
     NOTHING: 0,
@@ -44,19 +42,12 @@ function randRange(lo, hi) {
     return Math.trunc(rand01() * (hi - lo) + 0.5) + lo;
 }
 
-// Chick helpers (JS mapping of the original chick vtable predicates).
-// vtable[5] isActive FUN_0040327c (rwg_functions.c:3368): state != 6, state != 0,
-// z == 0  ->  mIsAlive && mIsAdult && !mIsCarried.
-function chickIsActive(c) {
-    return !!c && c.mIsAlive && c.mIsAdult && !c.mIsCarried;
+// Chick vtable[4] FUN_0040325a (rwg_functions.c:3346): !FUN_00402342
+// (action 3/4 = Chick.mIsSick) && vtable[5] isActive (FUN_0040327c, Broody
+// FUN_00403dec = Chick.isActive()).
+function chickVt4(c) {
+    return !c.mIsSick && c.isActive();
 }
-// FUN_00402342 (asm 0x402342): action == 3 || action == 4. Actions 3/4 are
-// the sick animations set by FUN_0040386a (rwg_functions.c, state 1 branch);
-// JS: ChickState.SICK_START / SICK_IDLE (Chick.js "action 3/5" / 4).
-function chickInSickAction(c) {
-    return c.mState === ChickState.SICK_START || c.mState === ChickState.SICK_IDLE;
-}
-function chickFieldY(c) { return (c.mY - 367) / 2.8; } // FUN_00409533
 
 export class RiskCase {
     // FUN_0041b4e7 (rwg_functions.c:33334): base ctor stores the description
@@ -151,15 +142,21 @@ export class RiskCasePlusTime extends RiskCase {
         this.mAvailable = true; // +0x20
     }
     // FUN_0041b08d (rwg_functions.c:32931): +0x20 != 0 && task[0xc] > 0.
-    // JS: task 0xc is mapped to fc.mTimeLimit (ms).
+    // JS: task 0xc's target is fc.mTimeLimit (ms). Bonus levels store their
+    // timer in task 0xd (FUN_00423cb3:43838), not 0xc — same convention as
+    // FieldController._isLost (FUN_00421afa:41473).
+    _taskTarget(fc) {
+        if (fc._isBonus && fc._isBonus()) return 0;
+        return fc.mTimeLimit;
+    }
     canApply(fc) {
         if (!this.mAvailable) return false;
-        return fc.mTimeLimit > 0;
+        return this._taskTarget(fc) > 0;
     }
     // FUN_0041b0b3 (rwg_functions.c:32952): if task[0xc] > 0 add 3000
     // (10 ms ticks = 30 s); then +0x20 = 0 (can only happen once).
     apply(fc) {
-        if (fc.mTimeLimit > 0) {
+        if (this._taskTarget(fc) > 0) {
             fc.mTimeLimit += 30000; // 3000 ticks * 10 ms
         }
         this.mAvailable = false;
@@ -169,8 +166,7 @@ export class RiskCasePlusTime extends RiskCase {
 // Raven controller (Core+0x10) +0x14 = ravens per wave
 // (FieldController.mRavenCtl.waveSize, LevelData raven.perWave).
 function ravensPerWave(fc) {
-    if (fc.mRavenCtl) return fc.mRavenCtl.waveSize || 0;
-    return (fc.mLevelConfig && fc.mLevelConfig.hasRavens) ? 1 : 0;
+    return fc.mRavenCtl ? (fc.mRavenCtl.waveSize || 0) : 0;
 }
 
 export class RiskCaseRavensScared extends RiskCase {
@@ -207,8 +203,8 @@ export class RiskCaseStealChickens extends RiskCase {
         // (state 6) included — FUN_0041b30a skips those explicitly.
         const chickens = fc.mField.mChickens;
         if (!(chickens.length > 7)) return false;
-        // vtable[4] already includes vtable[5] (isActive)
-        const eligible = chickens.filter(c => !chickInSickAction(c) && chickIsActive(c));
+        // vtable[4] (+0x10) then vtable[5] (+0x14), asm loop 0x41b175-0x41b1ec
+        const eligible = chickens.filter(c => chickVt4(c) && c.isActive());
         const n = eligible.length;
         if (n === 0) return false;
         let k = randRange(Math.trunc(n / 10), Math.trunc(n / 7));
@@ -221,11 +217,13 @@ export class RiskCaseStealChickens extends RiskCase {
         return true;
     }
     // FUN_0041b30a (rwg_functions.c:33122): every listed chick whose state is
-    // not 6 goes through FUN_0040466e (death + removal); then the list is
-    // cleared (FUN_004053c1).
+    // not 6 goes through FUN_0040466e (FUN_0040342b death — no sound; the
+    // death sample is only played by FUN_0040344c:3637-3638), then the list
+    // is cleared (FUN_004053c1).
     apply(fc) {
         for (const c of this.mStolen) {
-            if (c.mIsAlive) c.die();
+            // FUN_0040466e: FUN_0040342b + list erase FUN_00405184.
+            if (c.mIsAlive) c.removeFromField();
         }
         this.mStolen = [];
     }
@@ -258,61 +256,31 @@ export class RiskCaseMinusMoney extends RiskCase {
     }
 }
 
-// FUN_00403e3c (rwg_functions.c:4550): LayerChick vtable[3] — the chick can
-// catch the flu when: not in a sick action, z == 0, food tier != 0
-// (FUN_00403a3e), isActive, and !(y > _DAT_004e9168 = 61.0) (FUN_00403bbf).
-// Other chick types use FUN_0040e36f (false); JS: canLayEggs() marks layers.
-function chickCanCatchFlu(c) {
-    if (!c || !c.canLayEggs || !c.canLayEggs()) return false;
-    if (chickInSickAction(c) || c.mIsCarried) return false;
-    // Food tier: JS Chick._isFed() is the port of FUN_00403a3e.
-    if (c._isFed && !c._isFed()) return false;
-    if (!chickIsActive(c)) return false;
-    if (chickFieldY(c) > 61.0) return false;
-    return true;
-}
-
-function fluFlag(fc) {
-    const lc = fc.mLevelConfig;
-    return !(lc && lc.field264 === 0);
-}
-
 export class RiskCaseChickFlu extends RiskCase {
     constructor() {
         // FUN_0041b569 (rwg_functions.c:33563); text in index.html
         super(RiskCaseType.CHICK_FLU, 'ChickFlu');
     }
     // FUN_0041b44b -> FUN_00404e20 (rwg_functions.c:5964): true when any chick
-    // passes FUN_004040ec (rwg:4822) = chickList+0x264 != 0 (LevelData
-    // field264: ctor 1, level 1 writes 0) && chick vtable[3].
+    // passes FUN_004040ec (rwg:4822) = world+0x264 (Field.mSicknessEnabled)
+    // && chick vtable[3] (Layer FUN_00403e3c = Chick.canBeSickTarget(),
+    // other types FUN_0040e36f = false).
     canApply(fc) {
-        if (!fluFlag(fc)) return false;
-        return fc.mField.mChickens.some(c => chickCanCatchFlu(c));
+        const field = fc.mField;
+        if (!field.mSicknessEnabled) return false;
+        return field.mChickens.some(c => c.canBeSickTarget());
     }
-    // FUN_0041b45b (rwg_functions.c:33247): k = min(20, layerCount*4/5)
-    // (FUN_00404ad0(0) counts chicks of type 0); k times FUN_00404d6d: resets
-    // the chick list's epidemic timer (+0x268 = FUN_00404caf — no JS
-    // equivalent yet: FieldController only has a sickness stand-in) and
-    // infects the FIRST chick in list order that passes FUN_00404d00
-    // (rwg:5815): flag +0x264 && vtable[3] -> PlaySample(DAT_004fed9c
-    // SOUND_SICK); if state != 0: state = 1 and vtable +0x20.
+    // FUN_0041b45b (rwg_functions.c:33247): k = min(20, count*4/5) where
+    // FUN_00404ad0(0) counts list entries with type (+4) == 0; k times
+    // FUN_00404d6d (= Field.startSickEvent: +0x268 = FUN_00404caf(), then the
+    // first chick in list order accepted by FUN_00404d00 gets SOUND_SICK and
+    // state 1 + vtable[8]).
     apply(fc) {
-        if (!fluFlag(fc)) return;
-        const chickens = fc.mField.mChickens;
-        // FUN_00404ad0 (rwg:5614): every list entry with type (+4) == 0.
-        const layers = chickens.filter(c => c.mType === 0).length;
+        const field = fc.mField;
+        const layers = field.mChickens.filter(c => c.mType === 0).length;
         let k = Math.trunc((layers << 2) / 5);
         if (k > 0x14) k = 0x14;
-        for (; k > 0; k--) {
-            const c = chickens.find(ch => chickCanCatchFlu(ch));
-            if (!c) continue;
-            if (SOUNDS.SOUND_SICK) SOUNDS.SOUND_SICK.play();
-            // state = 1 (+ vtable +0x20 = new action): JS sick flag + the
-            // SICK_START pose right away, so the next iteration's
-            // FUN_00402342 test skips this chick as in the original.
-            c.mIsSick = true;
-            if (c.entersSickPose && c.entersSickPose()) c.setState(ChickState.SICK_START);
-        }
+        for (; k > 0; k--) field.startSickEvent();
     }
 }
 

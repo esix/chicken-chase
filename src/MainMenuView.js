@@ -16,7 +16,6 @@ import { IMAGES, SOUNDS } from './Res.js';
 import { NewPlayerDialog } from './PlayerDialogs.js';
 import { getLevelDescription } from './LevelData.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
-import { getTintedEggCel } from './Gem.js';
 import { drawFieldBackground, FONT_CSS, drawOutlinedText, FONT_ASCENT } from './CreditsView.js';
 
 // Child widget ids (FUN_0040e5cb:17813-17836 passes 1/2/3 to FUN_0042154d;
@@ -25,58 +24,25 @@ const BTN_START = 1;         // id 1 → FUN_004088d0(-1, app)             rwg:1
 const BTN_OPTIONS = 2;       // id 2 → new OptionsDialog FUN_0040f57b, dialog id 6   rwg:18098-18112
 const BTN_EXIT = 3;          // id 3 → App vtable[0xa0] (Shutdown)       rwg:18115-18121
 const BTN_CHANGE_PLAYER = 4; // id 4 → new ChangePlayerDialog FUN_004028ca, dialog id 3  rwg:18123-18146
-// Credits link: its id is compared at rwg:18126 against the widget's own id
-// (+0x84); the value itself is not a constant in the decompiled. Any id that
-// is distinct from 1..4 is equivalent → 5. Action: FUN_004088d0(1000, app)
-// (rwg:18128) = SelectLevelView in credits mode (see CreditsView.js).
+// Credits link: FUN_004215ad(listener, label, id) is called with push 4
+// ("Change player", @0x40e674) and push 5 ("Credits", @0x40e695);
+// ButtonDepress compares with the Credits widget's id (+0x84, rwg:18126).
+// Action: FUN_004088d0(1000, app) (rwg:18128) = credits roll (CreditsView.js).
 const BTN_CREDITS = 5;
 
-// Per-level bullet hints shown below the description in the LEVEL N briefing.
-// Verified against screenshots 12 (level 1), 18 (level 2), 21 (level 3),
-// 27 (level 4). Each level highlights what's new — no need to repeat earlier
-// entries on later levels.
-function _getLevelBullets(level) {
-    const bullets = [];
-    if (level === 1) {
-        bullets.push({ iconKey: 'IMAGE_COIN_SILVER', frame: 6, value: '20',
-            text: 'silver coins can be found by young chicken.' });
-        bullets.push({ iconKey: 'IMAGE_COIN_GOLD', frame: 6, value: '30',
-            text: 'golden coins can be found by grown up chicken.' });
-    } else if (level === 2) {
-        // Screenshot 18: white and broody (deep blue) eggs, not chicken previews.
-        bullets.push({ iconKey: 'IMAGE_EGG', text: 'hatches into layer chicken.' });
-        bullets.push({ iconKey: 'IMAGE_EGG', eggType: 4, text: 'hatches into broody chicken.' });
-    } else if (level === 3) {
-        bullets.push({ iconKey: 'IMAGE_CHICK_PREVIEW_LAYER',
-            text: 'layer chicken, lays eggs.' });
-        bullets.push({ iconKey: 'IMAGE_CHICK_PREVIEW_BROODY',
-            text: 'broody chicken, hatches eggs.' });
-    } else if (level === 4 || level === 5) {
-        bullets.push({ iconKey: 'IMAGE_ALIEN_DOWN',
-            text: 'raven, can steal your chickens' });
-        bullets.push({ iconKey: 'IMAGE_CHICK_PREVIEW_ROOSTER',
-            text: 'rooster, protects your chickens' });
-    } else if (level >= 9 && level <= 12) {
-        bullets.push({ iconKey: 'IMAGE_CHICK_PREVIEW_MAGIC',
-            text: 'magic chicken, lays magic eggs' });
-        bullets.push({ iconKey: 'IMAGE_DIAMOND_BLUE',
-            text: 'magic chickens drop blue gems' });
-    } else if (level >= 13 && level <= 15) {
-        bullets.push({ iconKey: 'IMAGE_CHICK_PREVIEW_HOLY',
-            text: 'holy chicken, casts spells' });
-        bullets.push({ iconKey: 'IMAGE_DIAMOND_RED',
-            text: 'holy chickens turn coins into red gems' });
-    } else if (level === 17 || level === 18) {
-        bullets.push({ iconKey: 'IMAGE_PET_IDLE_MOUSE',
-            text: 'mouse pet, picks up coins for you' });
-    } else if (level === 19 || level === 20) {
-        bullets.push({ iconKey: 'IMAGE_PET_IDLE_ELEPHANT',
-            text: 'elephant pet, scares ravens away' });
-    } else if (level >= 26 && level <= 28) {
-        bullets.push({ iconKey: 'IMAGE_PET_WALK_WOLF',
-            text: 'wolves attack chickens — shoot them!' });
-    }
-    return bullets;
+// Per-level description picture under the description text.
+// Resource loader FUN_00417990 (@0x419aa6-0x419bee): for the 18 levels
+// {1,2,3,4,5,6,7,9,10,12,15,17,19,21,22,24,26,27} it loads
+// "IMAGE_LEVEL_DESC_%i" (.rdata 0x4de9fc) into DAT_00500594[level]; every
+// other entry stays 0. SelectLevelDialog::Draw FUN_0041ca58 (rwg:35043-35070,
+// @0x41cae8-0x41cb08) draws DAT_00500594[level] — only when non-null —
+// horizontally centred, y = dialog+0x16c + 0xc3. The picture already holds
+// the icons and "- ..." texts (app/images/descriptions/*.png).
+// (Replaces an earlier hand-written icon/text bullet list that had no source.)
+const LEVEL_DESC_IMAGES = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 15, 17, 19, 21, 22, 24, 26, 27];
+
+function _getLevelDescImage(level) {
+    return LEVEL_DESC_IMAGES.includes(level) ? IMAGES['IMAGE_LEVEL_DESC_' + level] : null;
 }
 
 // Text-only Sexy::ButtonWidget used for the "Change player" / "Credits" links.
@@ -99,7 +65,11 @@ class LabelButton extends ButtonWidget {
         // @0x43d5c9-0x43d61e, BUTTON_LABEL_CENTER):
         //   x = (mWidth - StringWidth(label)) / 2
         //   y = (mHeight + ascent - ascent/6 - 1) / 2       (integer math)
-        // Color index 1 when the mouse is over the widget (+0x55 mIsOver).
+        // No button image (+0xac == 0, +0xb4 == 0) and +0xfe = 1 → no frame.
+        // Pressed (+0x54 mIsDown && +0x55 mIsOver && !+0x52 disabled,
+        // rwg:73603-73608): SetColor(Color(0,0,0)) and the label at
+        // (x + 1, y + 1) — @0x43d742-0x43d766. Otherwise the color index is
+        // +0x55 mIsOver (FUN_0043fd22, @0x43d831-0x43d855) at (x, y).
         const ctx = g.ctx;
         ctx.save();
         ctx.font = FONT_CSS[this.mFontKey];
@@ -107,8 +77,12 @@ class LabelButton extends ButtonWidget {
         const tw = ctx.measureText(this.mLabel).width;
         const lx = Math.trunc((this.mWidth - tw) / 2);
         const ly = Math.trunc((this.mHeight + asc - Math.trunc(asc / 6) - 1) / 2);
-        const [r, gg, b] = this.mColors[this.mIsOver ? 1 : 0];
-        drawOutlinedText(ctx, this.mLabel, g.mTransX + lx, g.mTransY + ly, `rgb(${r},${gg},${b})`);
+        if (this.mIsDown && this.mIsOver && !this.mDisabled) {
+            drawOutlinedText(ctx, this.mLabel, g.mTransX + lx + 1, g.mTransY + ly + 1, 'rgb(0,0,0)');
+        } else {
+            const [r, gg, b] = this.mColors[this.mIsOver ? 1 : 0];
+            drawOutlinedText(ctx, this.mLabel, g.mTransX + lx, g.mTransY + ly, `rgb(${r},${gg},${b})`);
+        }
         ctx.restore();
     }
 }
@@ -301,38 +275,33 @@ export class SelectLevelView extends Widget {
         HtmlDialogs.set('select-level', 'level', `LEVEL ${this.mSelectedLevel}`);
         HtmlDialogs.set('select-level', 'selectedlevel', this.mSelectedLevel);
         HtmlDialogs.set('select-level', 'desc', getLevelDescription(this.mSelectedLevel));
-        HtmlDialogs.fillList('select-level', 'bullets', _getLevelBullets(this.mSelectedLevel), (b, row) => {
+        const desc = _getLevelDescImage(this.mSelectedLevel);
+        HtmlDialogs.fillList('select-level', 'bullets', desc ? [desc] : [], (image, row) => {
+            // One row holding the native-size description picture (no
+            // separate icon/value/text; they are part of the image).
+            row.style.display = 'block';
+            const art = row.querySelector('.cc-bullet-art');
+            if (art) art.style.height = 'auto';
             const ic = row.querySelector('.cc-bullet-icon');
-            const img = b.iconKey ? IMAGES[b.iconKey] : null;
             if (ic) {
-                if (img?.img) {
-                    // Use composited alpha and a single native cel, not the full
-                    // sprite sheet. Screenshot 12 coin face is the full-size cel.
-                    const width = img.getCelWidth(), height = img.getCelHeight();
-                    const cel = document.createElement('canvas');
-                    cel.width = width; cel.height = height;
-                    const tinted = b.eggType ? getTintedEggCel(img, b.frame || 0, b.eggType) : null;
-                    cel.getContext('2d').drawImage(tinted || img.img,
-                        tinted ? 0 : (b.frame || 0) * width, 0, width, height, 0, 0, width, height);
-                    ic.src = cel.toDataURL();
-                    // User-reported level 27 overflow: large enemy/pet cels fit
-                    // the legend. Native 64px eggs and smaller previews stay 1:1.
-                    const scale = width > 64 || height > 64 ? Math.min(64 / width, 56 / height) : 1;
-                    ic.style.width = `${width * scale}px`; ic.style.height = `${height * scale}px`;
-                    ic.style.display = '';
-                }
-                else ic.style.display = 'none';
+                ic.src = image.mPath;   // app/images/descriptions/<level>.png (own alpha)
+                ic.style.maxWidth = 'none';
+                ic.style.maxHeight = 'none';
+                ic.style.margin = '0 auto';
+                ic.style.display = '';
             }
-            row.querySelector('.cc-bullet-value').textContent = b.value || '';
-            const t = row.querySelector('.cc-bullet-text');
-            if (t) t.textContent = '- ' + b.text;
+            const v = row.querySelector('.cc-bullet-value'); if (v) v.textContent = '';
+            const t = row.querySelector('.cc-bullet-text'); if (t) t.style.display = 'none';
         });
         const root = document.querySelector('[data-dialog="select-level"]');
         if (root) {
             root.querySelector('.cc-box').dataset.level = String(this.mSelectedLevel);
-            const max = Math.min(this.mMaxLevel, 50);
-            const p = root.querySelector('.cc-prev'); if (p) p.disabled = this.mSelectedLevel <= 1;
-            const n = root.querySelector('.cc-next'); if (n) n.disabled = this.mSelectedLevel >= max;
+            // FUN_0041c62e (rwg:34810-34812): prev +0x52 (disabled) =
+            // level < 2; next disabled = 0x31 < level. The next button is NOT
+            // disabled at the last unlocked level — FUN_0041c98e
+            // (rwg:35015-35021) just ignores the press there (after the click).
+            const p = root.querySelector('.cc-prev'); if (p) p.disabled = this.mSelectedLevel < 2;
+            const n = root.querySelector('.cc-next'); if (n) n.disabled = 0x31 < this.mSelectedLevel;
         }
     }
 

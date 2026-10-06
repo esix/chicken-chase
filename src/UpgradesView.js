@@ -21,7 +21,7 @@
 import { Widget } from './SexyApp.js';
 import { SOUNDS } from './Res.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
-import { openUpgradeChoices } from './UpgradeSelectDialog.js';
+import { openUpgradeChoices, upgradeOptions } from './UpgradeSelectDialog.js';
 import { drawFieldBackground, DialogButton } from './CreditsView.js';
 
 // DAT_004de0f0 (int[51], .data of app/chicken_chase.RWG), indexed by level.
@@ -95,12 +95,15 @@ export class UpgradesView extends Widget {
         }
     }
 
-    // UpgradeSelectDialog (FUN_00423f8a rwg:44058): one button per available
-    // upgrade, icon DAT_00500614[id] = IMAGE_UPGRADE_PREVIEW<id>
-    // (rwg:44128-44131; names from the loader rwg:31686-31700 + binary string
-    // "IMAGE_UPGRADE_PREVIEW%i"). Button id = upgrade id + 1 (FUN_004244a0).
+    // UpgradeSelectDialog (FUN_00423f8a rwg:44058): the ctor keeps up to 3
+    // random ids of the available list (FUN_004245c2, see
+    // UpgradeSelectDialog.pickUpgradeChoices) and makes one button per kept
+    // id, icon DAT_00500614[id] = IMAGE_UPGRADE_PREVIEW<id> (rwg:44128-44131;
+    // names from the loader rwg:31686-31700 + binary string
+    // "IMAGE_UPGRADE_PREVIEW%i"). Button id = upgrade id + 1 (@0x4240b9;
+    // FUN_004244a0 matches it against the kept list).
     _openDialog(available) {
-        const options = available.map(id => ({ key: id, previewIconKey: 'IMAGE_UPGRADE_PREVIEW' + id }));
+        const options = upgradeOptions(available);
         openUpgradeChoices(options, opt => this._onDialogSelect(opt.key));
     }
 

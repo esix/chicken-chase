@@ -22,10 +22,22 @@ import { Field, fieldToScreen } from './Field.js';
 
 // thunk_FUN_00429891: Mersenne twister masked with 0x7fffffff (asm 0x429891).
 function mtRand() { return Math.floor(Math.random() * 0x80000000); }
-import { createChick, ChickType } from './Chick.js';
+import { createChick, ChickType, foodUnit } from './Chick.js';
 import { TaskType, getLevelConfig, getInitialChicks, SHOP_ITEMS, SHOP_ITEM_LIST } from './LevelData.js';
 import { IMAGES, SOUNDS } from './Res.js';
 import { Wolf, Mouse, Elephant, randomSpawnPoint } from './Pet.js';
+import { FONT_CSS, drawOutlinedText } from './CreditsView.js';
+
+// HUD fonts (resource loader rwg_functions.c:30926-30938; resources.xml):
+// DAT_004fff08 = FONT_8 (ArialBlack8), DAT_004fff0c = FONT_10 (ArialBlack10),
+// DAT_004fff10 = FONT_12 (ArialBlack12), DAT_004fff14 = FONT_16
+// (ArialBlack16). Canvas "Arial Black" sizes follow the CreditsView
+// calibration (digit advance in the .txt WidthList / 0.667 em): digits are
+// 7 / 9 / 11 / 14 px wide → 10.5 / 13.5 / 16.5 / 21 px.
+const HUD_FONT_8 = '10.5px "Arial Black", Arial, sans-serif';
+const HUD_FONT_10 = FONT_CSS.FONT_10;
+const HUD_FONT_12 = '16.5px "Arial Black", Arial, sans-serif';
+const HUD_FONT_16 = FONT_CSS.FONT_16;
 
 // DAT_0050032c chicken buy prices (rwg_functions.c:6690-6706).
 const CHICK_BASE_PRICES = [100, 200, 500, 1000, 1200];
@@ -45,10 +57,11 @@ const WOLF_KILL_REWARD = 500;
 // Store +0 (FUN_0041e7f2:37614): special-shop item price 0xfa; after each
 // purchase FUN_0041eb94 (rwg_functions.c:37974-37996) doubles it, floor 0xfa.
 const SHOP_ITEM_BASE_PRICE = 0xfa;
-// Seed food value per seed controller +0x1c level (passed to every new seed
-// by FUN_0041c0a8 → FUN_0041bdcb:+0x20). The actual food the original gives
-// per seed level is UNKNOWN — not found in decompiled; 30/50/80 are the JS
-// food units the port already used for the same three tiers.
+// Seed controller +0x1c (seed quality 0..2) is passed to every new seed
+// (FUN_0041c0a8 → FUN_0041bdcb +0x20) and selects the food multiplier
+// DAT_0050031c[q] = {1.0, 1.3, 1.6} (FUN_00405540:6662-6672, seed +0x2c,
+// asm 0x41be07). Field.dropSeeds takes the quality encoded as these tags
+// (30 → 0, 50 → 1, 80 → 2) and applies the original values itself.
 const JS_SEED_CALORIES = [30, 50, 80];
 
 // All per-level values (start money, money cap, raven/wolf controller, bonus
@@ -72,7 +85,7 @@ export class FieldController {
         this.mMoney = 0;                    // money obj +4
         this.mMoneyCap = -1;                // money obj +8 (-1 = none, FUN_00406069:7531)
         this.mMoneyFrozen = false;          // money obj +0 (FUN_00424b5d gate)
-        this.mTotalMoney = 0;               // JS-only statistic (not used by tasks)
+        this.mTotalMoney = 0;               // statistic (not used by tasks)
         this.mTimeElapsed = 0;              // state+8 ticks, stored in ms (×10)
         this.mTimeLimit = 0;                // task 0xc/0xd target, in ms
         this.mTasks = [];
@@ -98,13 +111,12 @@ export class FieldController {
         this.mCollectedRedEggs = 0;         // egg counter, holy
         this.mCollectedBlackEggs = 0;       // egg counter, rooster
         this.mCollectedGoldenEggs = 0;      // egg counter, broody
-        this.mHatchedMagic = 0;             // JS-only statistics (tasks use live counts)
+        this.mHatchedMagic = 0;             // statistics read by Field.js (tasks use live counts)
         this.mHatchedHoly = 0;
         this.mHatchedRooster = 0;
         this.mTotalRaisedChicks = 0;
-        // Seed calories — UNKNOWN — not found in decompiled (FUN_0041c0a8 per-seed
-        // values not traced); kept from the previous port for Field/Chick.
-        this.mSeedCalories = 30;
+        // Seed quality tag (see JS_SEED_CALORIES).
+        this.mSeedCalories = JS_SEED_CALORIES[0];
         this.mSeedCount = SEEDS_PER_DROP[0];
         this.mGunPower = 1;                 // (app+0x40)+0x11 → damage 2 when set
         this.mGunArea = false;              // (app+0x40)+0x10 → 20px crosshair
@@ -113,7 +125,6 @@ export class FieldController {
         this.mHasMouse = false;
         this.mSicknessFactor = 0;
         this.mBonusAchieved = false;
-        this.mNextUpgradeHalfPrice = false; // legacy flag (unused; see mHalfPriceLevel)
         this.mHalfPriceLevel = -1;          // DAT_004fc2f8 (FUN_00421948:41391)
         this.mUpgradePrice = SHOP_ITEM_BASE_PRICE; // store +0
         this.mShopLists = { seed: [], weapon: [], pet: [] };
@@ -121,106 +132,8 @@ export class FieldController {
         this.mSeedQuality = 0;              // seed ctl +0x1c
         this.mSeedCountLevel = 0;           // seed ctl +0x20
         this._bonusStartChicks = 0;         // level obj +0x50 (FUN_00423cb3:43857)
-        // JS-only visual effects (not present in the original).
-        this.mFloatingTexts = [];
-        this.mClickRipples = [];
-        this.mParticles = [];
-        this.mConfettiTimer = 0;
-        this.mShakeMag = 0;
-    }
-
-    // JS-only VFX — screen shake (no original counterpart).
-    addShake(magnitude) {
-        this.mShakeMag = Math.max(this.mShakeMag, magnitude);
-    }
-
-    updateShake() {
-        if (this.mShakeMag > 0) {
-            this.mShakeMag = Math.max(0, this.mShakeMag - 0.5);
-        }
-    }
-
-    getShakeOffset() {
-        if (this.mShakeMag <= 0) return { x: 0, y: 0 };
-        return {
-            x: (Math.random() - 0.5) * 2 * this.mShakeMag,
-            y: (Math.random() - 0.5) * 2 * this.mShakeMag,
-        };
-    }
-
-    // JS-only VFX — click ripple (no original counterpart).
-    addClickRipple(x, y, color = '#fff') {
-        this.mClickRipples.push({ x, y, color, t: 0 });
-    }
-
-    // JS-only VFX — particle burst (no original counterpart).
-    addParticleBurst(x, y, color = '#ffd700', count = 10) {
-        for (let i = 0; i < count; i++) {
-            const angle = Math.random() * Math.PI * 2;
-            const speed = 1 + Math.random() * 2.5;
-            this.mParticles.push({
-                x, y,
-                vx: Math.cos(angle) * speed,
-                vy: Math.sin(angle) * speed - 0.5,
-                color,
-                t: 0,
-                life: 25 + Math.floor(Math.random() * 15),
-                gravity: 0.18,
-                size: 2 + Math.random() * 2,
-            });
-        }
-    }
-
-    // JS-only VFX — confetti (no original counterpart).
-    addConfetti(count = 60) {
-        const colors = ['#ffd700', '#5cff5c', '#ff5c5c', '#5cb8ff', '#ffaa44', '#ff66cc'];
-        for (let i = 0; i < count; i++) {
-            this.mParticles.push({
-                x: 100 + Math.random() * 600,
-                y: -20 - Math.random() * 100,
-                vx: (Math.random() - 0.5) * 2,
-                vy: 1 + Math.random() * 2,
-                color: colors[Math.floor(Math.random() * colors.length)],
-                t: 0,
-                life: 240,
-                gravity: 0.05,
-                size: 3 + Math.random() * 3,
-                spin: (Math.random() - 0.5) * 0.3,
-                angle: Math.random() * Math.PI * 2,
-            });
-        }
-    }
-
-    updateParticles() {
-        for (const p of this.mParticles) {
-            p.t++;
-            p.vy += p.gravity;
-            p.x += p.vx;
-            p.y += p.vy;
-            if (p.spin !== undefined) p.angle += p.spin;
-        }
-        this.mParticles = this.mParticles.filter(p => p.t < p.life && p.y < 700);
-    }
-
-    drawParticles(g) {
-        const ctx = g.ctx;
-        for (const p of this.mParticles) {
-            const alpha = Math.max(0, 1 - p.t / p.life);
-            ctx.globalAlpha = alpha;
-            ctx.fillStyle = p.color;
-            if (p.angle !== undefined) {
-                ctx.save();
-                ctx.translate(p.x, p.y);
-                ctx.rotate(p.angle);
-                ctx.fillRect(-p.size, -p.size / 2, p.size * 2, p.size);
-                ctx.restore();
-            } else {
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-                ctx.fill();
-            }
-        }
-        ctx.globalAlpha = 1;
+        // Money effects (app+0x3c)+0xc list, FUN_00424b5d → FUN_0040693f.
+        this.mMoneyEffects = [];
     }
 
     // Level start = FUN_00406069 (fresh world, rwg_functions.c:7496) →
@@ -277,8 +190,6 @@ export class FieldController {
         this.mHatchedHoly = 0;
         this.mHatchedRooster = 0;
         this.mTotalRaisedChicks = 0;
-        this.mLaySoundCd = 0;
-        this.mSickSoundCd = 0;
 
         // Tasks (LevelData; bonus levels carry task 0xd as TIME_LIMIT with
         // origTaskId BONUS_TIME, FUN_00423cb3:43840).
@@ -307,7 +218,6 @@ export class FieldController {
             if (this.mHalfPriceLevel === level) this.mUpgradePrice = Math.trunc(this.mUpgradePrice / 2);
             this.mHalfPriceLevel = -1;
         }
-        this.mNextUpgradeHalfPrice = false;
         // Special-shop item lists (FUN_00423d75 / direct FUN_0040ca85 pushes).
         this.mShopLists = { seed: [], weapon: [], pet: [] };
         for (const id of cfg.shopUnlockItems || []) {
@@ -322,9 +232,17 @@ export class FieldController {
         const start = getInitialChicks(level);
         for (let i = 0; i < start.layer; i++) this._spawnBoughtChick(ChickType.LAYER);
         for (let i = 0; i < start.broody; i++) this._spawnBoughtChick(ChickType.BROODY);
-        // FUN_0042166f:41297-41301 FUN_00404c34 (level>1) raises each chick's
-        // +0x34 food to FUN_00405899()*5 — Chick.js uses a different food scale,
-        // so this is not applied. UNKNOWN — not mappable to Chick.js units.
+        // FUN_0042166f:41297-41301 (asm 0x42191c-0x42192a): level > 1 →
+        // FUN_00404c34 (rwg_functions.c:5735): every chick whose food (+0x34,
+        // Chick.mFoodCounter) is below FUN_00405899()*5 (Chick.foodUnit) gets
+        // exactly that. Runs before FUN_00422c01/FUN_00422d10, so the
+        // FUN_00423deb top-up chickens below keep their food.
+        if (level > 1) {
+            const minFood = foodUnit(level) * 5;
+            for (const c of this.mField.mChickens) {
+                if (c.mFoodCounter < minFood) c.mFoodCounter = minFood;
+            }
+        }
         if (start.fillLayersToTotal > 0) this._buyStarterUntil(start.fillLayersToTotal);
 
         // Final money: FUN_00422c01 default, or FUN_00423cb3 (10000) /
@@ -343,13 +261,8 @@ export class FieldController {
         // FUN_00422c01 / FUN_00422d10 / FUN_00423cb3 raven+wolf controller.
         this._setupRavenController(cfg.raven);
 
-        // JS-only VFX reset.
-        this.mFloatingTexts = [];
-        this.mClickRipples = [];
-        this.mParticles = [];
-        this.mConfettiTimer = 0;
-        this.mShakeMag = 0;
-        this.mMoneyFlashTimer = 0;
+        // Money-effect list belongs to the per-level world (FUN_00406069).
+        this.mMoneyEffects = [];
     }
 
     // FUN_00423deb (rwg_functions.c:43926): slot0 = -1, buy type-0 chickens
@@ -578,16 +491,6 @@ export class FieldController {
         if (!gameLogicPaused) {
             this._tickGameLogic();
         }
-        // JS-only VFX timers.
-        this.updateFloatingTexts();
-        this.updateParticles();
-        this.updateShake();
-        this.updateClickRipples();
-        if (this.mMoneyFlashTimer > 0) this.mMoneyFlashTimer--;
-        if (this.mConfettiTimer > 0) {
-            this.mConfettiTimer--;
-            if (this.mConfettiTimer % 18 === 0) this.addConfetti(20);
-        }
     }
 
     _tickGameLogic() {
@@ -600,36 +503,43 @@ export class FieldController {
         // FUN_004043fd et al. — field entities.
         this.mField.update();
 
-        if (this.mSickSoundCd > 0) this.mSickSoundCd--;
-        if (this.mLaySoundCd > 0) this.mLaySoundCd--;
         // Sickness (FUN_004043fd/FUN_00404caf) and brooding (FUN_0040412c)
         // are ticked inside Field.update().
 
         // FUN_0041ea9a — chicken price inflation.
         this._updateInflation();
 
+        // FUN_0040686e — money effects.
+        this._updateMoneyEffects();
+
         // FUN_00421b21 — task progress + level end.
         this._checkTasks();
     }
 
-    // FUN_00424b5d (rwg_functions.c:45035): add money unless the money object's
-    // +0 flag is set; clamp to the cap when 0 < cap < money. With a position the
-    // original also queues an effect (FUN_0040693f) — its look is UNKNOWN; the JS
-    // shows a floating "+$N".
+    // FUN_00424b5d (rwg_functions.c:45035, asm 0x424b5d-0x424bb4): unless the
+    // money object's +0 flag is set: money += amount; clamp to the cap when
+    // 0 < cap < money; then, when the position's x >= 0 (fldz/fcomps, jp at
+    // 0x424b92), push {amount, pos, 1.0f} onto (app+0x3c)+0xc (FUN_0040693f).
+    // The original passes a field position (drawn through FUN_00409567);
+    // JS callers pass the screen point.
     addMoney(amount, x, y) {
-        if (!(amount > 0)) return;
+        if (typeof amount !== 'number' || !Number.isFinite(amount)) return;
         if (this.mMoneyFrozen) return;
         this.mMoney += amount;
         this.mTotalMoney += amount;
         if (this.mMoneyCap > 0 && this.mMoneyCap < this.mMoney) {
             this.mMoney = this.mMoneyCap;
         }
-        if (typeof x === 'number' && typeof y === 'number') {
-            this.addFloatingText(x, y - 10, `+$${amount}`, '#ffd700');
+        if (typeof x === 'number' && typeof y === 'number' && x >= 0) {
+            this.mMoneyEffects.push({ amount, x, y, timer: 1.0 });
         }
-        // JS-only HUD flash.
-        this.mMoneyFlashTimer = 30;
-        this.mMoneyFlashColor = '#5cff5c';
+    }
+
+    // FUN_0040686e (rwg_functions.c:8070), Core::Update tick: every effect's
+    // timer -= 0.01 (_DAT_004e9150, double); removed once <= 0.
+    _updateMoneyEffects() {
+        for (const e of this.mMoneyEffects) e.timer = Math.fround(e.timer - 0.009999999776482582);
+        this.mMoneyEffects = this.mMoneyEffects.filter(e => !(e.timer <= 0.0));
     }
 
     // FUN_00403e23 (rwg_functions.c:4524): spend if money >= amount.
@@ -637,8 +547,6 @@ export class FieldController {
         if (!(amount > 0)) return false;
         if (this.mMoney >= amount) {
             this.mMoney -= amount;
-            this.mMoneyFlashTimer = 30;          // JS-only HUD flash
-            this.mMoneyFlashColor = '#ff5c5c';
             return true;
         }
         return false;
@@ -744,8 +652,8 @@ export class FieldController {
                     if (this._isLost()) {
                         this._levelFailed();
                     }
-                    // FUN_00422036 (hint dispatcher) and the level-1 +0x54 slot
-                    // unlock (rwg_functions.c:41522-41530) — UNKNOWN effect, not ported.
+                    // Level-1 +0x54 slot unlock and FUN_00422036 (rwg_functions.c:
+                    // 41522-41530) run in GameView → HintController.LevelTutorial.tick.
                     return;
                 }
                 break;   // bonus level with all chickens gone → completed
@@ -766,9 +674,6 @@ export class FieldController {
             // (FUN_0041e7f2:37665-37673).
             if (perfect) this.mHalfPriceLevel = this.mCurrentLevel + 1;
         }
-        // JS-only celebration VFX.
-        this.addConfetti(80);
-        this.mConfettiTimer = 90;
         // DAT_004fedbc (rwg_functions.c:41398).
         if (SOUNDS.SOUND_LEVEL_COMPLETED) SOUNDS.SOUND_LEVEL_COMPLETED.play();
         // :41359-41372 unlock next level and record time (FUN_0041111b with
@@ -790,40 +695,33 @@ export class FieldController {
         if (SOUNDS.SOUND_LEVEL_FAILED) SOUNDS.SOUND_LEVEL_FAILED.play();
     }
 
-    // Egg-box click → FUN_00406e6a (rwg_functions.c:8569) via FUN_00409c92:12552.
-    // The original toggles the egg in the egg controller's brood list; the add
-    // branch decompiles empty, so the "needs a broody" gate and sounds below are
-    // the previous JS behaviour — UNKNOWN — not found in decompiled.
-    startEggBrooding(egg) {
+    // FUN_00406e6a (rwg_functions.c:8574, asm 0x406e6a-0x406eea): toggle the
+    // egg in the egg controller's brood list (+0xc):
+    //   not listed → FUN_00410585 push (no gate, no sound) — the broody is
+    //                assigned later by Field._assignBroodEggs (FUN_0040412c);
+    //   listed     → FUN_004078c4 remove, egg +0x18 = -1, +0x20 = 0, then
+    //                FUN_00404b3b (rwg:5653) releases the broody sitting on it.
+    // Also used without a sound by FUN_00406eed / FUN_00406f87.
+    toggleEggBrooding(egg) {
         if (!egg) return;
         if (egg.mBrooding) {
-            // Cancel: egg +0x18 = -1, +0x20 = 0, removed from list (:8584-8586).
-            const claimed = egg._claimedBy;
-            egg.mBrooding = false;
-            egg.mBroodProgress = 0;
+            const owner = egg._claimedBy
+                || this.mField.mChickens.find(c => c.mBroodingEgg === egg);
+            egg.mBrooding = false;          // Gem setter: +0x18 = -1, +0x20 = 0
+            if (owner && owner._endBrooding) owner._endBrooding();
             egg._claimedBy = null;
-            if (claimed && claimed._endBrooding) claimed._endBrooding();
-            if (SOUNDS.SOUND_EGG_REF) SOUNDS.SOUND_EGG_REF.play();
-            return;
-        }
-        const freeBroodies = this.mField.mChickens.filter(
-            c => c.mIsAlive && c.mIsAdult && !c.mIsSick
-                && c.mType === ChickType.BROODY && !c.mBroodingEgg
-        );
-        const anyAvailableBroody = this.mField.mChickens.some(
-            c => c.mIsAlive && c.mIsAdult && !c.mIsSick
-                && c.mType === ChickType.BROODY
-        );
-        if (!anyAvailableBroody) {
-            if (SOUNDS.SOUND_ERROR) SOUNDS.SOUND_ERROR.play();
             return;
         }
         egg.mBrooding = true;
-        egg.mBroodProgress = 0;
+    }
+
+    // Egg-box click FUN_00409c92 (rwg_functions.c:12552, asm 0x409d26-0x409d48):
+    // FUN_00406e6a then SOUND_EGG_REF (DAT_004fed78, rwg:31755-31756) for both
+    // the add and the remove case.
+    startEggBrooding(egg) {
+        if (!egg) return;
+        this.toggleEggBrooding(egg);
         if (SOUNDS.SOUND_EGG_REF) SOUNDS.SOUND_EGG_REF.play();
-        if (freeBroodies.length > 0) {
-            freeBroodies[0].startBrooding(egg);
-        }
     }
 
     // Slot price — FUN_004058e7 asm 0x40590a-0x405919:
@@ -855,7 +753,8 @@ export class FieldController {
         return true;
     }
 
-    // HUD slot click: FUN_00409ba0 (rwg_functions.c:12469) → FUN_0041e8f5
+    // HUD slot purchase FUN_0041e8f5 as called by the slot click FUN_00409ba0
+    // (rwg_functions.c:12469; GameView plays its success sound)
     // (rwg_functions.c:37701-37740):
     //   slot value 0 → nothing (no sound); money < price → SOUND_ERROR;
     //   success → chick spawned, slot value decremented if > 0 (37718-37721),
@@ -875,7 +774,8 @@ export class FieldController {
         if (type === ChickType.MAGIC) this.mHatchedMagic++;
         else if (type === ChickType.HOLY) this.mHatchedHoly++;
         else if (type === ChickType.ROOSTER) this.mHatchedRooster++;
-        if (SOUNDS.SOUND_CHICK_BUY) SOUNDS.SOUND_CHICK_BUY.play();
+        // SOUND_CHICK_BUY (DAT_004fed80) is played by the caller, the shop-slot
+        // click FUN_00409ba0 (asm 0x409c16) in GameView.
         return true;
     }
 
@@ -976,31 +876,53 @@ export class FieldController {
         return true;
     }
 
-    // drawHUD — part of GameView::Draw FUN_0040a3d6 (rwg_functions.c:13085).
-    // Positions from the decompiled draw (x) plus screenshots 13/17/19/24/29
-    // where the y argument was passed in a register (DX) and is lost in the C.
+    // drawHUD — the HUD part of GameView::Draw FUN_0040a3d6 (rwg_functions.c:
+    // 13659-13907; asm 0x40af73-0x40b965). The view is 800x600 (this+0x38 /
+    // this+0x3c). Every coordinate below is from the asm (the decompiler lost
+    // most register arguments). Text is drawn with Graphics::DrawString
+    // FUN_004665a6 (x = left edge, y = baseline); centring / right alignment is
+    // done by the original through Font::StringWidth (font vtable +0x1c).
     drawHUD(g) {
         const ctx = g.ctx;
         const ready = (res) => res && res.img && g._isReady(res.img);
+        const W = 800, H = 600;
+        const strW = (str, font) => {
+            ctx.font = font;
+            return Math.round(ctx.measureText(str).width);
+        };
+        const text = (str, x, y, font, fill) => {
+            ctx.font = font;
+            drawOutlinedText(ctx, str, x, y, fill);
+        };
+        const half = (v) => Math.trunc(v / 2);   // cdq; sub edx; sar 1
+        const WHITE = '#fff';                    // DAT_005012a0 / Color(255,255,255)
 
-        // IMAGE_IN_GAME_UP at x = width - image.w = 400, y = 0 (:13659).
-        const igUpImg = IMAGES.IMAGE_IN_GAME_UP;
-        if (ready(igUpImg)) ctx.drawImage(igUpImg.img, 400, 0, 400, 81);
-
-        // Two IMAGE_NUMBER_SLOT (200x42) at x = 800-200 (:13663-13664); y = 0 and
-        // 42 measured from screenshots/29.png (pattern repeats every 42 px).
-        const numSlotImg = IMAGES.IMAGE_NUMBER_SLOT;
-        if (ready(numSlotImg)) {
-            ctx.drawImage(numSlotImg.img, 600, 0, 200, 42);
-            ctx.drawImage(numSlotImg.img, 600, 42, 200, 42);
+        // asm 0x40af77: IMAGE_IN_GAME_UP (DAT_004fffb8) at (W - w, 0).
+        const up = IMAGES.IMAGE_IN_GAME_UP;
+        if (ready(up)) ctx.drawImage(up.img, W - up.mWidth, 0);
+        // asm 0x40af8d-0x40afa5: FUN_00466895 = DrawImage stretched (dest
+        // x + trans, y + trans, w, h; src = whole image) of IMAGE_IN_GAME_DOWN
+        // (DAT_004fffbc, 10x40, alpha from in_game_down_.png) into
+        // (0, H - h, W, h) — the dark strip along the bottom of the field.
+        const down = IMAGES.IMAGE_IN_GAME_DOWN;
+        if (ready(down)) ctx.drawImage(down.img, 0, H - down.mHeight, W, down.mHeight);
+        // asm 0x40afae-0x40afd2: IMAGE_NUMBER_SLOT (DAT_004fffc0) at
+        // (W - w, 0) and (W - w, h).
+        const ns = IMAGES.IMAGE_NUMBER_SLOT;
+        if (ready(ns)) {
+            ctx.drawImage(ns.img, W - ns.mWidth, 0);
+            ctx.drawImage(ns.img, W - ns.mWidth, ns.mHeight);
         }
 
-        // Shop slots (:13668-13711): x = 80*i, y = 0. Value 0 → IMAGE_SHOP_SLOT_CLOSED;
-        // else IMAGE_SHOP_SLOT_OPEN + price + chick icon at x+0xd (DAT_00500604[i])
-        // + remaining-limit number when > 0. Icon y=6, price baseline 70,
-        // limit right edge x+66 baseline 23 measured from screenshots/24.png.
-        const shopClosed = IMAGES.IMAGE_SHOP_SLOT_CLOSED;
+        // Shop slots (asm 0x40b001-0x40b1a8), i = 0 .. store slot count - 1,
+        // x = IMAGE_SHOP_SLOT_OPEN (DAT_004fff88) width * i:
+        //   slot value 0 → IMAGE_SHOP_SLOT_CLOSED (DAT_004fff8c) at (x, 0);
+        //   else IMAGE_SHOP_SLOT_OPEN at (x, 0), price "%i" (slot +4) in FONT_8
+        //   at (x + 0x28 - w/2, 0x46), preview DAT_00500604[i] at (x + 0xd, 6),
+        //   and when the value > 0 the value "%i" in FONT_10 at
+        //   (x + 0x3e - w/2, 0x17). Colour white (asm 0x40afde-0x40affc).
         const shopOpen = IMAGES.IMAGE_SHOP_SLOT_OPEN;
+        const shopClosed = IMAGES.IMAGE_SHOP_SLOT_CLOSED;
         const previewKeys = [
             'IMAGE_CHICK_PREVIEW_LAYER',
             'IMAGE_CHICK_PREVIEW_BROODY',
@@ -1008,29 +930,32 @@ export class FieldController {
             'IMAGE_CHICK_PREVIEW_MAGIC',
             'IMAGE_CHICK_PREVIEW_HOLY',
         ];
-        for (let i = 0; i < 5; i++) {
-            const bx = 80 * i;
-            const limit = this._slotLimit(i);
-            if (limit === 0) {
-                if (ready(shopClosed)) ctx.drawImage(shopClosed.img, bx, 0, 80, 81);
-                continue;
-            }
-            if (ready(shopOpen)) ctx.drawImage(shopOpen.img, bx, 0, 80, 81);
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 11px Arial, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText(String(this.getChickPrice(i)), bx + 40, 70);
-            const prevImg = IMAGES[previewKeys[i]];
-            if (ready(prevImg)) ctx.drawImage(prevImg.img, bx + 13, 6);
-            if (limit > 0) {
-                ctx.fillStyle = '#fff';
-                ctx.font = 'bold 12px Arial, sans-serif';
-                ctx.textAlign = 'right';
-                ctx.fillText(String(limit), bx + 66, 23);
+        if (ready(shopOpen)) {
+            for (let i = 0; i < 5; i++) {
+                const bx = shopOpen.mWidth * i;
+                const limit = this._slotLimit(i);
+                if (limit === 0) {
+                    if (ready(shopClosed)) ctx.drawImage(shopClosed.img, bx, 0);
+                    continue;
+                }
+                ctx.drawImage(shopOpen.img, bx, 0);
+                const price = String(this.getChickPrice(i));
+                text(price, bx - half(strW(price, HUD_FONT_8)) + 0x28, 0x46, HUD_FONT_8, WHITE);
+                const prevImg = IMAGES[previewKeys[i]];
+                if (ready(prevImg)) ctx.drawImage(prevImg.img, bx + 0xd, 6);
+                if (limit > 0) {
+                    const ls = String(limit);
+                    text(ls, bx - half(strW(ls, HUD_FONT_10)) + 0x3e, 0x17, HUD_FONT_10, WHITE);
+                }
             }
         }
 
-        // MENU button: Resize(0x193, 0x27, 0x65, 0x26) = (403, 39, 101, 38) (:14005).
+        // MENU / SELL / BUY are child button widgets of GameView (created in
+        // FUN_0040bbea; drawn here in this port). MENU: Resize(0x193, 0x27,
+        // 0x65, 0x26) (rwg:14005); SELL Resize(0x1FA, 0x27, 0x55, 0x26) and BUY
+        // Resize(0x1FA, 0x01, 0x55, 0x26), visible per store +0x18 / +0x19
+        // (rwg:13294-13297). Label font / offsets: UNKNOWN — not found in
+        // decompiled (ButtonWidget draw), left as is.
         const _hudOver = (bx, by, bw, bh) => {
             const hx = this.mHudHoverX, hy = this.mHudHoverY;
             return typeof hx === 'number' && typeof hy === 'number'
@@ -1039,30 +964,35 @@ export class FieldController {
         const drawButton = (x, y, w, h, label) => {
             const img = _hudOver(x, y, w, h) && IMAGES.IMAGE_DIALOG_BUTTON_OVER
                 ? IMAGES.IMAGE_DIALOG_BUTTON_OVER : IMAGES.IMAGE_DIALOG_BUTTON;
-            if (ready(img)) {
-                ctx.drawImage(img.img, x, y, w, h);
-            } else {
-                ctx.fillStyle = 'rgba(80,160,40,0.9)';
-                ctx.fillRect(x, y, w, h);
-            }
+            if (ready(img)) ctx.drawImage(img.img, x, y, w, h);
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 14px Arial, sans-serif';
             ctx.textAlign = 'center';
             ctx.fillText(label, x + w / 2, y + 24);
+            ctx.textAlign = 'left';
         };
         drawButton(403, 39, 101, 38, 'MENU');
         const lc = this.mLevelConfig || {};
-        // SELL: Resize(0x1FA, 0x27, 0x55, 0x26); visible per shop +0x18 (:13294).
         const showSell = lc.sellButton !== undefined ? lc.sellButton : lc.hasSell;
         if (showSell) drawButton(506, 39, 85, 38, 'SELL');
-        // BUY: Resize(0x1FA, 0x01, 0x55, 0x26); visible per shop +0x19 (:13297).
         const showBuy = lc.specialShopButton !== undefined ? lc.specialShopButton : lc.hasBuy;
         if (showBuy) drawButton(506, 1, 85, 38, 'BUY');
 
-        // Task slots (:13727-13798): in task-index order, skipping target <= 0;
-        // IMAGE_NUMBER_SLOT_TASK at x = 800-200, y = 42*k + 0x50; icon = task +8;
-        // text y = slot y + 0x19. Icon (605, y-2) and text centre x=715 measured
-        // from screenshots/13.png and 29.png.
+        // "Level %i" (0x4dcdac) in FONT_16 (DAT_004fff14), white, at
+        // (0x19a, 0x19) (asm 0x40b1ae-0x40b20b).
+        text(`Level ${this.mCurrentLevel}`, 0x19a, 0x19, HUD_FONT_16, WHITE);
+
+        // Task slots (asm 0x40b210-0x40b4a4): the level task vector in id
+        // order; entries with target (+0) > 0, k = drawn count:
+        //   IMAGE_NUMBER_SLOT_TASK (DAT_004fffc4) at (W - w, h*k + 0x50);
+        //   icon (+8) at (0x25d, slotY + h/2 - icon.h/2);
+        //   time task (icon == DAT_00500000, tasks 0xc/0xd): FONT_16, colour
+        //     (255,50,50), white when rem = target - current <= 1000 and
+        //     (rem / 50) is odd; FUN_0040bebb(rem) centred on 0x2c1 at
+        //     slotY + 0x1b;
+        //   else: flash (+0xc) == 0 → FONT_10 white, else FONT_12
+        //     (100,100,200); current "%i" right-aligned to 0x2c1 and
+        //     " / %i" (0x4dcdb8, target) from 0x2c1, both at slotY + 0x19.
         const slotTaskImg = IMAGES.IMAGE_NUMBER_SLOT_TASK;
         const missionIcons = {
             [TaskType.COLLECT_COINS]: 'IMAGE_MISSION_COIN',
@@ -1080,85 +1010,95 @@ export class FieldController {
             [TaskType.TIME_LIMIT]: 'IMAGE_MISSION_TIME',
             [TaskType.BONUS_TIME]: 'IMAGE_MISSION_TIME',
         };
-        const order = this.mTasks.map((t, i) => i)
-            .sort((a, b) => this.mTasks[a].type - this.mTasks[b].type);
+        const slotH = ready(slotTaskImg) ? slotTaskImg.mHeight : 0;
         let taskIdx = 0;
-        for (const i of order) {
+        for (let i = 0; i < this.mTasks.length; i++) {
             const task = this.mTasks[i];
             const target = this._taskTarget(task);
             if (!(target > 0)) continue;
-            const ty = 42 * taskIdx + 0x50;
-            if (ready(slotTaskImg)) ctx.drawImage(slotTaskImg.img, 600, ty, 200, 42);
+            const ty = slotH * taskIdx + 0x50;
+            if (ready(slotTaskImg)) ctx.drawImage(slotTaskImg.img, W - slotTaskImg.mWidth, ty);
             const iconImg = IMAGES[missionIcons[task.type]];
-            if (ready(iconImg)) ctx.drawImage(iconImg.img, 605, ty - 2);
-            ctx.font = 'bold 14px Arial, sans-serif';
-            ctx.textAlign = 'center';
+            if (ready(iconImg)) {
+                ctx.drawImage(iconImg.img, 0x25d, half(slotH) - half(iconImg.mHeight) + ty);
+            }
+            const cur = this.mTaskProgress[i] || 0;
             if (task.type === TaskType.TIME_LIMIT || task.type === TaskType.BONUS_TIME) {
-                // Remaining time in red (255,50,50); white when remaining < 0x3e9
-                // ticks and (remaining / 0x32) is odd (:13760-13771).
-                const remTicks = Math.max(0, Math.floor((target - this.mTimeElapsed) / 10));
-                const blink = remTicks < 0x3e9 && (Math.floor(remTicks / 0x32) & 1) !== 0;
-                ctx.fillStyle = blink ? '#fff' : 'rgb(255,50,50)';
-                ctx.fillText(this._formatTicks(remTicks), 715, ty + 0x19);
+                // JS keeps task 0xc/0xd in ms (×10 of the original ticks).
+                const rem = Math.trunc((target - cur) / 10);
+                const blink = rem <= 1000 && (Math.trunc(rem / 0x32) & 1) !== 0;
+                const ts = this._formatTicks(rem);
+                text(ts, 0x2c1 - half(strW(ts, HUD_FONT_16)), ty + 0x1b, HUD_FONT_16,
+                    blink ? WHITE : 'rgb(255,50,50)');
             } else {
-                // Flash (+0xc != 0) → (100,100,200); else white (:13774-13780).
-                ctx.fillStyle = this.mTaskFlash[i] > 0 ? 'rgb(100,100,200)' : '#fff';
-                ctx.fillText(`${this.mTaskProgress[i] || 0} / ${target}`, 715, ty + 0x19);
+                const flash = this.mTaskFlash[i] > 0;
+                const font = flash ? HUD_FONT_12 : HUD_FONT_10;
+                const fill = flash ? 'rgb(100,100,200)' : WHITE;
+                const cs = String(cur);
+                text(cs, 0x2c1 - strW(cs, font), ty + 0x19, font, fill);
+                text(` / ${target}`, 0x2c1, ty + 0x19, font, fill);
             }
             taskIdx++;
         }
 
-        // Egg boxes (:13809-13862), shown when FUN_00404a71 (feature bit UNKNOWN —
-        // JS shows them whenever eggs exist). Position FUN_00409ab2
-        // (rwg_functions.c:12376): x = 54*i, y = 0x50; i > 10 → x -= 11*54,
-        // y += 54. Box: IMAGE_EGG_REF_FOR_BROOD when in the brood list, else
-        // IMAGE_EGG_REF. Overlay MISSION_EGGS_* by egg type at (+4,+10) and
-        // brood progress (45x10) at (+5,+5) clipped to progress*45 — offsets
-        // measured from screenshots/24.png.
+        // Egg boxes (asm 0x40b4a9-0x40b672), only when FUN_00404a71(1): the
+        // broody bit of the field chick-type bitset (+0x24c) is set. For every
+        // egg i of the egg controller: rect FUN_00409ab2(i) (asm 0x409ab2:
+        // x = EGG_REF.w * i, y = 0x50; i > 10 → x -= 11 * w, y = h + 0x50);
+        // box IMAGE_EGG_REF_FOR_BROOD (DAT_004fff78) when in the brood list
+        // (FUN_00406e0d) else IMAGE_EGG_REF (DAT_004fff74) at (x, y); egg-type
+        // icon DAT_004fffdc..DAT_004fffec at (x + (EGG_REF.w - icon.w)/2,
+        // y + 10); when FUN_00406ac9 > 0.0, IMAGE_EGG_REF_BROOD_PROGRESS
+        // (DAT_004fff7c) cropped to ftol(progress * w + 0.5) at (x + 5, y + 5).
+        const types = this.mLevelConfig && this.mLevelConfig.chickTypeEnabled;
+        const broodyBit = types ? !!types[1] : true;
         const eggRefImg = IMAGES.IMAGE_EGG_REF;
-        const eggBroodImg = IMAGES.IMAGE_EGG_REF_FOR_BROOD;
-        const eggProgressImg = IMAGES.IMAGE_EGG_REF_BROOD_PROGRESS;
-        // JS EggType → original type 0..4 (layer, broody, rooster, magic, holy)
-        // → DAT_004fffdc..DAT_004fffec (:13842-13849).
-        const eggIconByJsType = [
-            'IMAGE_MISSION_EGGS_LAYER',   // WHITE  → layer
-            'IMAGE_MISSION_EGGS_MAGIC',   // BLUE   → magic
-            'IMAGE_MISSION_EGGS_HOLY',    // RED    → holy
-            'IMAGE_MISSION_EGGS_ROOSTER', // BLACK  → rooster
-            'IMAGE_MISSION_EGGS_BROODY',  // GOLDEN → broody
-        ];
-        const fieldEggs = this.mField.mGems.filter(gem => gem.mType === 4 && gem.mIsAlive);
-        for (let i = 0; i < fieldEggs.length; i++) {
-            const egg = fieldEggs[i];
-            let ex = 54 * i;
-            let ey = 0x50;
-            if (i > 10) { ex -= 11 * 54; ey += 54; }
-            const boxImg = egg.mBrooding ? eggBroodImg : eggRefImg;
-            if (ready(boxImg)) ctx.drawImage(boxImg.img, ex, ey, 54, 54);
-            const iconImg = IMAGES[eggIconByJsType[egg.mEggType] || eggIconByJsType[0]];
-            if (ready(iconImg)) ctx.drawImage(iconImg.img, ex + 4, ey + 10);
-            // FUN_00406ac9 > _DAT_004e90b0 (0.0f)
-            const p = egg.mBrooding ? (egg.mBroodProgress || 0) : 0;
-            if (p > 0 && ready(eggProgressImg)) {
-                const w = Math.floor(45 * Math.min(1, p));
-                if (w > 0) {
-                    ctx.drawImage(eggProgressImg.img, 0, 0, w, 10, ex + 5, ey + 5, w, 10);
+        if (broodyBit && ready(eggRefImg)) {
+            const eggBroodImg = IMAGES.IMAGE_EGG_REF_FOR_BROOD;
+            const eggProgressImg = IMAGES.IMAGE_EGG_REF_BROOD_PROGRESS;
+            // JS EggType → original egg type → DAT_004fffdc..DAT_004fffec
+            // (layer, broody, rooster, magic, holy; asm 0x40b582-0x40b5ba).
+            const eggIconByJsType = [
+                'IMAGE_MISSION_EGGS_LAYER',   // WHITE  → layer
+                'IMAGE_MISSION_EGGS_MAGIC',   // BLUE   → magic
+                'IMAGE_MISSION_EGGS_HOLY',    // RED    → holy
+                'IMAGE_MISSION_EGGS_ROOSTER', // BLACK  → rooster
+                'IMAGE_MISSION_EGGS_BROODY',  // GOLDEN → broody
+            ];
+            const ew = eggRefImg.mWidth, eh = eggRefImg.mHeight;
+            const fieldEggs = this.mField.mGems.filter(gem => gem.mType === 4 && gem.mIsAlive);
+            for (let i = 0; i < fieldEggs.length; i++) {
+                const egg = fieldEggs[i];
+                let ex = ew * i;
+                let ey = 0x50;
+                if (i > 10) { ex -= 11 * ew; ey = eh + 0x50; }
+                const boxImg = egg.mBrooding ? eggBroodImg : eggRefImg;
+                if (ready(boxImg)) ctx.drawImage(boxImg.img, ex, ey);
+                const iconImg = IMAGES[eggIconByJsType[egg.mEggType]];
+                if (ready(iconImg)) {
+                    ctx.drawImage(iconImg.img, half(ew - iconImg.mWidth) + ex, ey + 10);
+                }
+                const p = egg.mBroodProgress || 0;
+                if (p > 0.0 && ready(eggProgressImg)) {
+                    const w = Math.trunc(p * eggProgressImg.mWidth + 0.5);
+                    if (w > 0) {
+                        ctx.drawImage(eggProgressImg.img, 0, 0, w, eggProgressImg.mHeight,
+                            ex + 5, ey + 5, w, eggProgressImg.mHeight);
+                    }
                 }
             }
         }
 
-        // "Time" (elapsed, state+8 /100 s) and "Money" rows (:13864-13895),
-        // white (DAT_005012a0). Label x=613, value right edge 787, baselines
-        // 27/69 and "Level N" at x=411 baseline 25 — screenshots/13.png.
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 20px Arial, sans-serif';
-        ctx.textAlign = 'left';
-        ctx.fillText(`Level ${this.mCurrentLevel}`, 411, 25);
-        ctx.fillText('Time', 613, 27);
-        ctx.fillText('Money', 613, 69);
-        ctx.textAlign = 'right';
-        ctx.fillText(this._formatTicks(Math.floor(this.mTimeElapsed / 10)), 787, 27);
-        ctx.fillText(String(this.mMoney), 787, 69);
+        // Time / Money (asm 0x40b677-0x40b80b), FONT_16, white:
+        //   s = state+8 / 100; "%i:" or "0%i:" (minutes s/60 > 9) + "%i" or
+        //   "0%i" (seconds s%60 > 9); "Time" at (0x265, 0x1b), value at
+        //   (0x2d5, 0x1b); "Money" at (0x265, 0x46), money "%i" right-aligned
+        //   to 0x314 at 0x46.
+        text('Time', 0x265, 0x1b, HUD_FONT_16, WHITE);
+        text(this._formatTicks(Math.trunc(this.mTimeElapsed / 10)), 0x2d5, 0x1b, HUD_FONT_16, WHITE);
+        text('Money', 0x265, 0x46, HUD_FONT_16, WHITE);
+        const ms = String(this.mMoney);
+        text(ms, 0x314 - strW(ms, HUD_FONT_16), 0x46, HUD_FONT_16, WHITE);
 
         // Risk icon — shown when (app+0x48)+9 (ready) is set (rwg:13899).
         // Rect FUN_00409af0 (rwg:12452-12457, asm 0x409b6a-0x409b98):
@@ -1169,7 +1109,6 @@ export class FieldController {
         // (rwg:13901-13905; RiskController.getIconCel).
         const risk = this.mRiskController;
         if (this.mRiskReady && risk) {
-            const slotH = ready(slotTaskImg) ? slotTaskImg.mHeight : 0;
             const ry = (taskIdx - 1) * slotH + 0x75;
             const riskImg = IMAGES.IMAGE_ICON_RISK;
             if (ready(riskImg)) {
@@ -1185,33 +1124,29 @@ export class FieldController {
             this._riskIconRect = null;
         }
 
+        // Money effects (asm 0x40b87b-0x40b965): FONT_16, colourised; per
+        // entry colour (255,255,255, ftol(timer * 256.0)) (_DAT_004e91e8),
+        // "%i" of the amount drawn at FUN_00409567(pos) (left, baseline).
+        // Alpha 256 at timer 1.0 is clamped to 255 here.
+        for (const e of this.mMoneyEffects) {
+            const a = Math.min(255, Math.trunc(e.timer * 256.0));
+            if (a <= 0) continue;
+            ctx.globalAlpha = a / 255;
+            text(String(e.amount), Math.trunc(e.x), Math.trunc(e.y), HUD_FONT_16, WHITE);
+        }
+        ctx.globalAlpha = 1;
         ctx.textAlign = 'left';
     }
 
-    // mm:ss from ticks: seconds = ticks/100 % 60 (:13864), minutes = ticks/6000.
+    // FUN_0040bebb (asm 0x40bebb-0x40bf55) / asm 0x40b677-0x40b70e: s =
+    // ticks / 100 (negative → 0); "%i:" when s/60 > 9 else "0%i:", then "%i"
+    // when s%60 > 9 else "0%i".
     _formatTicks(ticks) {
-        const totalSec = Math.floor(ticks / 100);
-        const min = Math.floor(totalSec / 60);
-        const sec = totalSec % 60;
-        return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
-    }
-
-    _getTaskLabel(task) {
-        switch (task.type) {
-            case TaskType.COLLECT_COINS: return 'Coins';
-            case TaskType.COLLECT_BLUE_DIAMONDS: return 'Blue Gems';
-            case TaskType.COLLECT_RED_DIAMONDS: return 'Red Gems';
-            case TaskType.EARN_MONEY: return 'Money';
-            case TaskType.COLLECT_WHITE_EGGS: return 'Eggs';
-            case TaskType.COLLECT_BLUE_EGGS: return 'Blue Eggs';
-            case TaskType.COLLECT_RED_EGGS: return 'Red Eggs';
-            case TaskType.COLLECT_BLACK_EGGS: return 'Black Eggs';
-            case TaskType.RAISE_CHICKENS: return 'Chickens';
-            case TaskType.HATCH_MAGIC: return 'Magic';
-            case TaskType.HATCH_HOLY: return 'Holy';
-            case TaskType.RAISE_ROOSTERS: return 'Roosters';
-            default: return '???';
-        }
+        let s = Math.trunc(ticks / 100);
+        if (s < 0) s = 0;
+        const min = Math.trunc(s / 60);
+        const sec = s - min * 60;
+        return (min > 9 ? `${min}:` : `0${min}:`) + (sec > 9 ? `${sec}` : `0${sec}`);
     }
 
     // Hand click — FUN_0040cc71 (rwg_functions.c:15843-16190). Modes:
@@ -1326,29 +1261,41 @@ export class FieldController {
                 const value = gem.collect();
                 if (value > 0) this.addMoney(value, gem.mX, gem.mY);
                 this._trackCollection(gem);
-                // JS-only VFX.
-                const colors = ['#ffd700', '#cccccc', '#5cb8ff', '#ff5c5c'];
-                this.addParticleBurst(gem.mX, gem.mY, colors[gem.mType] || '#fff',
-                    gem.mType >= 2 ? 14 : 10);
                 return true;
             }
         }
         return false;
     }
 
-    // FUN_004072fa (rwg_functions.c:8920): egg under the cursor (eggs whose +0x20
-    // is clear) → if selling allowed (egg ctl +0x28 == 0) add DAT_0050033c[type]
-    // at the egg; counter[type]++; drop from the brood list; remove egg.
-    // The JS refuses eggs already flagged for brooding — the mapping of egg
-    // +0x20 to JS state is UNKNOWN, previous behaviour kept.
+    // FUN_004072fa (rwg_functions.c:8920, asm 0x4072fa-0x407440): first egg
+    // whose +0x20 (sat-on flag, Gem.mBroodStarted) is clear and whose rect
+    // FUN_004095cd contains the cursor:
+    //   egg ctl +0x28 == 0 → FUN_00406b22: FUN_00424b5d(egg pos, DAT_0050033c
+    //   [type]); counter[type]++; wasListed = FUN_00406e0d (brood list);
+    //   FUN_00406c4d removes the egg (+0x1c = 1.0, egg + brood lists;
+    //   Field.removeEgg); if it was listed, FUN_004074a3 (rwg:9054) toggles
+    //   the first egg of the same type not yet in the brood list into it;
+    //   sound (Egg collect sound, arg lost in the decompile).
     _clickEggAt(x, y) {
         for (const gem of this.mField.mGems) {
             if (gem.mType !== 4) continue;
-            if (!gem.mIsAlive || gem.mCollected || !gem.contains(x, y)) continue;
-            if (gem.mBrooding) return false;
-            const value = gem.collect();
-            if (value > 0 && !this.mEggSellDisabled) this.addMoney(value, gem.mX, gem.mY);
+            if (!gem.mIsAlive || gem.mCollected) continue;
+            if (gem.mBroodStarted) continue;
+            if (!gem.contains(x, y)) continue;
+            const wasListed = !!gem.mBrooding;
+            const value = gem.collect();   // plays the egg sound, marks removed
+            if (!this.mEggSellDisabled) this.addMoney(value, gem.mX, gem.mY);
             this._trackEggCollection(gem);
+            // FUN_00406c4d unlinks only (no FUN_00404b3b): a broody heading
+            // for the egg notices its removal itself (Chick.js).
+            if (wasListed) gem.mBrooding = false;
+            if (this.mField.removeEgg) this.mField.removeEgg(gem);
+            if (wasListed) {
+                const next = this.mField.mGems.find(e => e.mType === 4 && e.mIsAlive
+                    && !e.mCollected && e !== gem && e.mEggType === gem.mEggType
+                    && !e.mBrooding);
+                if (next) this.toggleEggBrooding(next);
+            }
             return true;
         }
         return false;
@@ -1373,54 +1320,13 @@ export class FieldController {
         return this._feedArea(x, y);
     }
 
-    // JS-only: floating text popups (used for the FUN_0040693f money effect).
-    addFloatingText(x, y, text, color) {
-        this.mFloatingTexts.push({
-            x, y, text, color: color || '#fff',
-            timer: 0, maxTimer: 80,
-        });
-    }
-
-    updateFloatingTexts() {
-        for (const ft of this.mFloatingTexts) {
-            ft.timer++;
-            ft.y -= 0.5;
-        }
-        this.mFloatingTexts = this.mFloatingTexts.filter(ft => ft.timer < ft.maxTimer);
-    }
-
-    updateClickRipples() {
-        for (const r of this.mClickRipples) r.t++;
-        this.mClickRipples = this.mClickRipples.filter(r => r.t < 25);
-    }
-
-    drawClickRipples(g) {
-        const ctx = g.ctx;
-        for (const r of this.mClickRipples) {
-            const a = 1 - r.t / 25;
-            ctx.globalAlpha = a;
-            ctx.strokeStyle = r.color;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(r.x, r.y, r.t * 1.5, 0, Math.PI * 2);
-            ctx.stroke();
-        }
-        ctx.globalAlpha = 1;
-    }
-
-    drawFloatingTexts(g) {
-        const ctx = g.ctx;
-        for (const ft of this.mFloatingTexts) {
-            const alpha = 1 - ft.timer / ft.maxTimer;
-            ctx.globalAlpha = alpha;
-            ctx.fillStyle = ft.color;
-            ctx.font = 'bold 14px Arial, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText(ft.text, ft.x, ft.y);
-        }
-        ctx.globalAlpha = 1;
-        ctx.textAlign = 'left';
-    }
+    // API kept for callers (Pet.js, ShopDialogs.js) that used to show their own
+    // "+$N" popup: there is no such popup in the original — the only money
+    // text is the FUN_00424b5d effect, queued by addMoney(amount, x, y) and
+    // drawn by drawHUD. These are intentionally no-ops.
+    addFloatingText(_x, _y, _text, _color) {}
+    updateFloatingTexts() {}
+    drawFloatingTexts(_g) {}
 
     // Gem counters (gem ctl +0xc vector, FUN_0040c75b:15363): index = gem type
     // (0 gold, 1 silver, 2 blue diamond, 3 red diamond). Coins task = [0]+[1].

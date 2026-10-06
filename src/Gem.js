@@ -56,6 +56,11 @@ const EGG_TINT_COLORS = [
 // orig type 0=50 (0x32), 1=100, 2=200, 3=300, 4=500. Read by the egg click
 // handler FUN_004072fa (rwg_functions.c:8920) via the egg's +0x10 type.
 // Re-indexed by JS egg type (see mapping above).
+// Coin tier thresholds: float constants _DAT_004e9120 (0.3f) and
+// _DAT_004dc47c (0.6f) compared with the float timer (asm 0x40c20a-0x40c261).
+const COIN_T1 = Math.fround(0.3);
+const COIN_T2 = Math.fround(0.6);
+
 const EGG_VALUE_BY_JS_TYPE = [
     50,   // JS 0 WHITE  -> orig 0 Layer
     300,  // JS 1 BLUE   -> orig 3 Magic
@@ -233,9 +238,10 @@ export class Gem {
 //   if (isCollected) return false;
 //   timer -= _DAT_004e9128 (0.0025); if (timer < 0) timer = 0;
 //   return timer > 0;
+// The timer is a float field (+0x14): fsubl then fstps (asm 0x40c1d5-0x40c1e4).
 function coinUpdate(gem) {
     if (gem.isCollected()) { gem.mIsAlive = false; return false; }
-    gem.mTimer = gem.mTimer - 0.0025;
+    gem.mTimer = Math.fround(gem.mTimer - 0.0024999999441206455);   // _DAT_004e9128
     if (gem.mTimer < 0) gem.mTimer = 0;
     const alive = gem.mTimer > 0;
     gem.mIsAlive = alive;
@@ -248,7 +254,8 @@ function coinUpdate(gem) {
 //   counter(+0x18)++; return counter < 0x7d1 (2001);
 function diamondUpdate(gem) {
     if (gem.isCollected()) { gem.mIsAlive = false; return false; }
-    gem.mTimer = gem.mTimer + 0.015;
+    // faddl _DAT_004e90f8 then fstps into the float +0x14 (asm 0x40c28c-0x40c29b).
+    gem.mTimer = Math.fround(gem.mTimer + 0.014999999664723873);
     if (gem.mTimer > 1.0) gem.mTimer = 0;
     gem.mCounter++;
     const alive = gem.mCounter < 0x7d1;
@@ -269,8 +276,8 @@ export class CoinSilver extends Gem {
 
     // FUN_0040c236 (rwg_functions.c:14770): timer < 0.3 -> 5, < 0.6 -> 10, else 0x14 (20)
     getValue() {
-        if (this.mTimer < 0.3) return 5;
-        if (this.mTimer < 0.6) return 10;
+        if (this.mTimer < COIN_T1) return 5;
+        if (this.mTimer < COIN_T2) return 10;
         return 0x14;
     }
 
@@ -298,8 +305,8 @@ export class CoinGold extends Gem {
 
     // FUN_0040c20a (rwg_functions.c:14748): timer < 0.3 -> 10, < 0.6 -> 0x14 (20), else 0x1e (30)
     getValue() {
-        if (this.mTimer < 0.3) return 10;
-        if (this.mTimer < 0.6) return 0x14;
+        if (this.mTimer < COIN_T1) return 10;
+        if (this.mTimer < COIN_T2) return 0x14;
         return 0x1e;
     }
 
@@ -372,10 +379,18 @@ export class DiamondRed extends Gem {
     }
 }
 
+// Order in which eggs entered the egg controller's brood list (+0xc).
+// The add path FUN_00410585 is a std::list push_back (asm 0x410594-0x41059b),
+// and FUN_0040412c walks that list front to back.
+let _broodSeq = 0;
+
 // Field egg. In the original eggs are NOT Sexy::Gem objects: they are 0x24-byte
 // structs created by FUN_00407038 (rwg_functions.c:8721) and kept in their own
 // list (field controller +0x24). The port stores them in Field.mGems tagged
 // GemType.EGG; only the game-visible behavior below is mirrored.
+//   +0x00 claim countdown, +0x04 claiming chick id (Magic chicks,
+//   FUN_004071b2 / FUN_004072bc; never counted down — no egg code
+//   decrements +0x00),
 //   +0x08/+0x0c position (copied from the laying chick), +0x10 type,
 //   +0x14 = 4000 (brood duration), +0x18 = -1 brood countdown,
 //   +0x1c = 0 hatch-anim progress, +0x20 = 0 flag.
@@ -383,6 +398,8 @@ export class Egg extends Gem {
     constructor(eggType, x, y) {
         super(GemType.EGG, x, y);
         this.mEggType = eggType;
+        this.mClaim = 0;                // +0x00
+        this.mClaimId = 0;              // +0x04
         // Collect value DAT_0050033c[type] (rwg_functions.c:6711-6727) via FUN_004072fa.
         this.mEggSellValue = EGG_VALUE_BY_JS_TYPE[eggType] || EGG_VALUE_BY_JS_TYPE[0];
         this.mBroodDuration = 4000;     // +0x14 (FUN_00407038:8775)
@@ -402,6 +419,7 @@ export class Egg extends Gem {
     // Cancel (FieldController, rwg_functions.c:8584-8586): +0x18 = -1,
     // +0x20 = 0, removed from the brood list.
     set mBrooding(v) {
+        if (v && !this._brooding) this._broodSeq = ++_broodSeq;   // push_back
         this._brooding = !!v;
         if (!v) {
             this.mBroodCountdown = -1;
@@ -437,6 +455,15 @@ export class Egg extends Gem {
     }
 
     getValue() { return this.mEggSellValue; }
+
+    // FUN_00406c4d (rwg_functions.c:8411): every egg removal (click
+    // FUN_004072fa, eaten FUN_004077ae, hatch FUN_00406c85) sets +0x1c = 1.0
+    // before unlinking the egg; the lay-spot tick FUN_00407550 then frees the
+    // spot holding it (Chick.js updateLaySpots).
+    setCollected() {
+        super.setCollected();
+        this.mHatchProgress = 1.0;
+    }
 
     getImage() { return IMAGES.IMAGE_EGG; }
 

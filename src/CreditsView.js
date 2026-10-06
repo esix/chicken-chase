@@ -184,10 +184,11 @@ export class DialogButton extends ButtonWidget {
     }
 }
 
-// Graphics::DrawImageBox (FUN_004669d7) — image split into a 3x3 grid of
-// thirds; corners native, edges/center fill the remaining span.
-// UNKNOWN — not found in decompiled: whether the framework tiles or stretches
-// the edge/center cells (identical result for the flat-colored button art).
+// Graphics::DrawImageBox (FUN_004669d7 → FUN_00466a01, rwg decompiled):
+// source split into thirds (cw = iw/3, ch = ih/3, middle = rest); the four
+// corners are drawn once at native size; the edges and the center are TILED
+// with their middle cell under a clip rect (FUN_00466970), repeat count
+// ceil(span / cell) — (span - 1 + cell) / cell in FUN_00466a01.
 function _drawImageBox(g, image, x, y, w, h) {
     if (!image || !image.img || !g._isReady(image.img)) return;
     const img = image.img;
@@ -195,15 +196,43 @@ function _drawImageBox(g, image, x, y, w, h) {
     const cw = Math.trunc(iw / 3), ch = Math.trunc(ih / 3);
     const mw = iw - cw * 2, mh = ih - ch * 2;
     const dx = g.mTransX + x, dy = g.mTransY + y;
-    const dmw = Math.max(0, w - cw * 2), dmh = Math.max(0, h - ch * 2);
     const c = g.ctx;
-    const cols = [[0, cw, dx, cw], [cw, mw, dx + cw, dmw], [iw - cw, cw, dx + w - cw, cw]];
-    const rows = [[0, ch, dy, ch], [ch, mh, dy + ch, dmh], [ih - ch, ch, dy + h - ch, ch]];
-    for (const [sy, sh, ty, th] of rows) {
-        for (const [sx, sw, tx, tw] of cols) {
-            if (tw > 0 && th > 0) c.drawImage(img, sx, sy, sw, sh, tx, ty, tw, th);
+    const cell = (sx, sy, sw, sh, tx, ty) => c.drawImage(img, sx, sy, sw, sh, tx, ty, sw, sh);
+    // Corners.
+    cell(0, 0, cw, ch, dx, dy);
+    cell(iw - cw, 0, cw, ch, dx + w - cw, dy);
+    cell(0, ih - ch, cw, ch, dx, dy + h - ch);
+    cell(iw - cw, ih - ch, cw, ch, dx + w - cw, dy + h - ch);
+    const tiled = (clipX, clipY, clipW, clipH, fn) => {
+        if (clipW <= 0 || clipH <= 0) return;
+        c.save();
+        c.beginPath(); c.rect(clipX, clipY, clipW, clipH); c.clip();
+        fn();
+        c.restore();
+    };
+    const spanW = w - cw * 2, spanH = h - ch * 2;
+    const nx = mw > 0 ? Math.trunc((spanW - 1 + mw) / mw) : 0;
+    const ny = mh > 0 ? Math.trunc((spanH - 1 + mh) / mh) : 0;
+    // Top and bottom edges.
+    tiled(dx + cw, dy, spanW, h, () => {
+        for (let i = 0; i < nx; i++) {
+            cell(cw, 0, mw, ch, dx + cw + i * mw, dy);
+            cell(cw, ih - ch, mw, ch, dx + cw + i * mw, dy + h - ch);
         }
-    }
+    });
+    // Left and right edges.
+    tiled(dx, dy + ch, w, spanH, () => {
+        for (let j = 0; j < ny; j++) {
+            cell(0, ch, cw, mh, dx, dy + ch + j * mh);
+            cell(iw - cw, ch, cw, mh, dx + w - cw, dy + ch + j * mh);
+        }
+    });
+    // Center.
+    tiled(dx + cw, dy + ch, spanW, spanH, () => {
+        for (let j = 0; j < ny; j++) {
+            for (let i = 0; i < nx; i++) cell(cw, ch, mw, mh, dx + cw + i * mw, dy + ch + j * mh);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

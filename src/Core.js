@@ -55,7 +55,6 @@ function makeProfile(name) {
         maxLevel: 1,          // = completed-level count + 1 (FUN_0041614b:28638)
         upgradeIds: [],       // set<int> at +0x30/+0x34 (FUN_00410be5 rwg:21039); ids < 0x11 (rwg:21157)
         bestTimes: {},        // vector<int> at +0x24 (rwg:21034), index = level-1
-        disabledHints: [],    // JS-only per-type opt-out (see mShowHints)
         showHints: true,      // +0x1c = 1 (FUN_00410be5 rwg:21032)
         showSurprise: true,   // +0x1d = 1 (FUN_00410be5 rwg:21033)
     };
@@ -101,9 +100,10 @@ export class Core {
     // current player and write game.settings (FUN_0041580b:27945 →
     // FUN_00415ecd).
     addPlayer(name) {
-        // Clamp to 15 chars (EditBox limit rwg:18769). The .trim() is a JS
-        // addition — UNKNOWN — not found in decompiled.
-        name = String(name || '').trim().slice(0, PLAYER_NAME_MAX);
+        // Clamp to 15 chars (EditWidget +0xec = 0xf, rwg:18769). No trimming:
+        // the NewPlayerDialog AllowChar filter FUN_0040f43e (rwg:18956) never
+        // lets a space into the name.
+        name = String(name || '').slice(0, PLAYER_NAME_MAX);
         if (!name) return null;
         let p = this._findPlayer(name);
         if (!p) {
@@ -141,7 +141,6 @@ export class Core {
         this.mMaxLevelReached = p.maxLevel;
         this.mUpgradeIds = (p.upgradeIds || []).slice();
         this.mBestTimes = p.bestTimes || {};
-        this.mDisabledHints = p.disabledHints || [];
         this.mShowHints = p.showHints ?? true;
         this.mShowSurprise = p.showSurprise ?? true;
         this.mStorage.setItem(STORAGE_KEY_CURRENT, name);
@@ -159,21 +158,16 @@ export class Core {
         const p = this._findPlayer(this.mCurrentName);
         if (!p) return false;
         const idx = level - 1;
-        if (idx < 0) return false;
+        const completedCount = (p.maxLevel || 1) - 1;   // times.size()
+        if (idx < 0 || idx > completedCount) return false;   // rwg:21420-21422
         p.bestTimes = p.bestTimes || {};
-        // FieldController calls unlockNextLevel() before this, so a first
-        // completion may already have bumped maxLevel; accept idx <= maxLevel-1
-        // or a level that has no stored time yet.
-        const completedCount = (p.maxLevel || 1) - 1;
-        const prev = p.bestTimes[level];
-        if (idx > completedCount && prev == null) return false;
         let stored = false;
-        if (prev == null) {
+        if (idx === completedCount) {
             p.bestTimes[level] = ms;            // push_back (rwg:21423-21425)
-            if (idx === completedCount) p.maxLevel = level + 1;
+            p.maxLevel = level + 1;
             stored = true;
-        } else if (ms < prev) {
-            p.bestTimes[level] = ms;            // rwg:21430-21437
+        } else if (ms < p.bestTimes[level]) {
+            p.bestTimes[level] = ms;            // rwg:21432-21437
             stored = true;
         }
         this.mBestTimes = p.bestTimes;
@@ -260,7 +254,7 @@ export class Core {
                 delete p.upgrades;
                 p.upgradeIds = (this.mUpgradeIds || []).slice();
                 p.bestTimes = this.mBestTimes || p.bestTimes || {};
-                p.disabledHints = this.mDisabledHints || p.disabledHints || [];
+                delete p.disabledHints;   // old JS-only field, no source
                 p.showHints = this.mShowHints ?? true;
                 p.showSurprise = this.mShowSurprise ?? true;
             }
@@ -325,16 +319,6 @@ export class Core {
         }
     }
 
-    // JS-only helper (no caller in js/src). UNKNOWN — not found in decompiled.
-    reset() {
-        if (!this.mCurrentName) return;
-        const p = this._findPlayer(this.mCurrentName);
-        if (!p) return;
-        p.maxLevel = 1;
-        p.upgradeIds = [];
-        this.selectPlayer(p.name);
-        this.save();
-    }
 }
 
 export const PLAYER_NAME_MAX_LEN = PLAYER_NAME_MAX;

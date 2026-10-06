@@ -134,16 +134,9 @@ export class Image {
             this.img.onload = () => {
                 this.mWidth = this.img.width;
                 this.mHeight = this.img.height;
-                // Auto-detect single-row spritesheets:
-                // If width > height and width is approximately divisible by height, it's a spritesheet
-                // Allow up to 2px remainder (e.g. magic/peck.jpg is 625x78 = 8*78+1)
-                if (this.mNumCols === 1 && this.mNumRows === 1 &&
-                    this.mHeight > 0 && this.mWidth > this.mHeight) {
-                    const remainder = this.mWidth % this.mHeight;
-                    if (remainder <= 2) {
-                        this.mNumCols = Math.floor(this.mWidth / this.mHeight);
-                    }
-                }
+                // No cel auto-detection: rows/cols stay as given (1x1 for
+                // resources.xml entries). Res.js applies the explicit
+                // FUN_00417990 / FUN_0041a5b6 fix-ups after loading.
                 this.loaded = true;
                 resolve(this);
             };
@@ -431,13 +424,19 @@ export class Widget {
         }
     }
 
+    // Sexy WidgetManager routing: the press goes to the top-most widget under
+    // the cursor, which becomes the "last down widget"; the matching release
+    // is delivered to THAT widget (even if the cursor left it) and, while a
+    // button is held, only that widget can be "over" (MouseDrag).
     mouseDown(x, y, btn) {
+        this.mLastDownWidget = null;
         for (let i = this.mWidgets.length - 1; i >= 0; i--) {
             const w = this.mWidgets[i];
             if (w.mVisible) {
                 const lx = x - w.mX;
                 const ly = y - w.mY;
                 if (lx >= 0 && lx < w.mWidth && ly >= 0 && ly < w.mHeight) {
+                    this.mLastDownWidget = w;
                     w.mouseDown(lx, ly, btn);
                     return true;
                 }
@@ -447,27 +446,27 @@ export class Widget {
     }
 
     mouseUp(x, y, btn) {
-        for (let i = this.mWidgets.length - 1; i >= 0; i--) {
-            const w = this.mWidgets[i];
-            if (w.mVisible) {
-                const lx = x - w.mX;
-                const ly = y - w.mY;
-                if (lx >= 0 && lx < w.mWidth && ly >= 0 && ly < w.mHeight) {
-                    w.mouseUp(lx, ly, btn);
-                    return true;
-                }
-            }
+        const w = this.mLastDownWidget;
+        this.mLastDownWidget = null;
+        if (w && w.mParent === this) {
+            const lx = x - w.mX;
+            const ly = y - w.mY;
+            w.mIsOver = w.mVisible && lx >= 0 && lx < w.mWidth && ly >= 0 && ly < w.mHeight;
+            w.mouseUp(lx, ly, btn);
+            return true;
         }
         return false;
     }
 
     mouseMove(x, y) {
+        const held = this.mLastDownWidget;
         for (let i = this.mWidgets.length - 1; i >= 0; i--) {
             const w = this.mWidgets[i];
             if (w.mVisible) {
                 const lx = x - w.mX;
                 const ly = y - w.mY;
-                const isOver = lx >= 0 && lx < w.mWidth && ly >= 0 && ly < w.mHeight;
+                const inside = lx >= 0 && lx < w.mWidth && ly >= 0 && ly < w.mHeight;
+                const isOver = inside && (!held || held === w);
                 w.mIsOver = isOver;
                 if (isOver) {
                     w.mouseMove(lx, ly);
@@ -489,22 +488,40 @@ export class ButtonWidget extends Widget {
         this.mListener = listener;
         this.mButtonImage = null;
         this.mOverImage = null;
+        this.mDownImage = null;
     }
 
+    // ButtonWidget::Draw image branch (rwg_functions.c:73668-73690):
+    //   pressed (mIsDown && mIsOver): down image (+0xb4) at (0,0) if present,
+    //   else over image (+0xb0), else normal (+0xac), offset by (1,1).
+    //   Otherwise over image when mIsOver || mIsDown, else normal.
     draw(g) {
+        if (this.mIsDown && this.mIsOver) {
+            if (this.mDownImage) { g.drawImage(this.mDownImage, 0, 0); return; }
+            const img = this.mOverImage || this.mButtonImage;
+            if (img) g.drawImage(img, 1, 1);
+            return;
+        }
         let img = this.mButtonImage;
-        if (this.mIsOver && this.mOverImage) img = this.mOverImage;
-        if (img) {
-            g.drawImage(img, 0, 0);
+        if ((this.mIsOver || this.mIsDown) && this.mOverImage) img = this.mOverImage;
+        if (img) g.drawImage(img, 0, 0);
+    }
+
+    // ButtonWidget::MouseDown FUN_0043db80 (rwg:73845): Widget::MouseDown,
+    // then listener->ButtonPress(mId, clickCount) (listener vtable[0]).
+    mouseDown(x, y, btn) {
+        this.mIsDown = true;
+        if (this.mListener && typeof this.mListener.buttonPress === 'function') {
+            this.mListener.buttonPress(this.mId);
         }
     }
 
-    mouseDown(x, y, btn) {
-        this.mIsDown = true;
-    }
-
+    // ButtonWidget::MouseUp FUN_0043dbb3 (rwg:73862): if mIsOver (+0x55) and
+    // the WidgetManager has focus → listener->ButtonDepress(mId) (vtable[2]).
+    // Any mouse button; only reached by the widget that got the press
+    // (Widget.mouseUp routing above).
     mouseUp(x, y, btn) {
-        if (this.mIsDown && this.contains(x, y)) {
+        if (this.mIsDown && this.mIsOver && this.contains(x, y)) {
             if (this.mListener) {
                 this.mListener.buttonDepress(this.mId);
             }

@@ -71,34 +71,6 @@ const hintTexts = {
     [HintType.SELL_FOR_BONUS]: "Sell chickens to earn $5,000. For each adult chicken sold, you will be able to buy some younger ones.",
 };
 
-// Original presentation of each hint (asm call sites of FUN_0040d39f /
-// FUN_0040d435 / FUN_00422bb1). 'bar' = setText(text, point, duration),
-// 'dialog' = modal HintDialog. Points are screen pixels; (0,0) = no pointer;
-// null = computed at runtime by the dispatcher (egg / chick rect centre etc).
-// duration -1 (0xffffffff) = no timeout. Reference data; the live dispatch
-// is LevelTutorial below.
-export const HINT_PRESENTATION = {
-    [HintType.FIRST_CHICKENS]:    { kind: 'bar', point: [0, 0], duration: 500 },     // asm 0x4220ab-0x4220cf (point [ebp-0x10] = ebx = 0)
-    [HintType.COLLECT_COINS_GOAL]:{ kind: 'bar', point: null, duration: 500 },       // asm 0x42210a-0x42212b
-    [HintType.BUY_CHICKEN]:       { kind: 'bar', point: [75, 62], duration: 500 },   // asm 0x4221a7-0x4221d6
-    [HintType.COLLECT_EGG]:       { kind: 'bar', point: null, duration: -1 },        // asm 0x4222d6-0x4222fc (egg rect centre +10/-10)
-    [HintType.SICK_CHICKEN]:      { kind: 'bar', point: null, duration: -1 },        // asm 0x4223ef-0x422414 (chick rect centre)
-    [HintType.COLLECT_EGGS_GOAL]: { kind: 'bar', point: [646, 115], duration: 500 }, // asm 0x4224a4-0x4224d3
-    [HintType.HATCH_EGG]:         { kind: 'bar', point: [40, 125], duration: -1 },   // asm 0x4225db-0x422603
-    [HintType.HATCH_GOAL]:        { kind: 'bar', point: [646, 115], duration: 500 }, // asm 0x422659-0x422684 (duration = edi = 0x1f4, set at 0x42260f)
-    [HintType.RAVEN_WARNING]:     { kind: 'dialog' },                                 // asm 0x4226e6 FUN_0040d435
-    [HintType.BUY_ROOSTER]:       { kind: 'bar', point: [225, 62], duration: 500 },  // asm 0x422714-0x42273f
-    [HintType.SELL_CHICKENS]:     { kind: 'bar', point: [575, 75], duration: 1000 }, // asm 0x422771-0x4227c7
-    [HintType.SELL_BUTTON]:       { kind: 'shop' },                                   // FUN_004227d0: SELL dialog text (caller 0x41e9c2), not the bar
-    [HintType.BUY_ROOSTERS_MORE]: { kind: 'bar', point: [0, 0], duration: 500 },     // asm 0x422869-0x422903
-    [HintType.FARM_CROWDED]:      { kind: 'bar', point: [0, 0], duration: 500 },     // asm 0x4228d3-0x422903 (point [ebp-0x10] = ebx = 0)
-    [HintType.NEED_MAGIC_EGGS]:   { kind: 'bar', point: [0, 0], duration: 500 },     // same call site
-    [HintType.TOO_HUNGRY]:        { kind: 'bar', point: [0, 0], duration: 500 },     // same call site
-    [HintType.COLLECT_COINS]:     { kind: 'dialog' },                                 // FUN_00422bb1 (rwg_functions.c:42690)
-    [HintType.SELL_FOR_BONUS]:    { kind: 'dialog' },                                 // FUN_00422bb1 (rwg_functions.c:42717)
-    [HintType.SURPRISE_OPTION]:   { kind: 'dialog' },                                 // FUN_00422bb1 (rwg_functions.c:42749)
-};
-
 // Global frame divider DAT_005352c0 used by FUN_0040d281 (one typed char
 // every 3 update ticks). It is a global in the original, shared by all
 // HintController instances.
@@ -196,9 +168,12 @@ export class HintController {
         const text = this.getVisibleText();
         // Bitmap font approximated with canvas text; the _hint font art has a
         // dark outline around white glyphs (app/fonts/ArialBlack14_hint.png,
-        // screenshot 14).
+        // screenshot 14). Size calibrated like CreditsView FONT_CSS: the
+        // ArialBlack14_hint.txt WidthList gives 402 px for "Collect 15 coins
+        // to complete the level." (= screenshot 14: x 393 = 800 - 402 - 5);
+        // canvas Arial Black measures 21.06 px per px of size -> 19.1 px.
         ctx.save();
-        ctx.font = '14px "Arial Black", Arial, sans-serif';
+        ctx.font = '19.1px "Arial Black", Arial, sans-serif';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
         let tx = 10, ty = 0x252;
@@ -242,15 +217,18 @@ export class HintController {
 
     // FUN_0040d435 (rwg_functions.c:16346): pause (state +4 = 1, +0xd = 0;
     // GameView pauses while isShown()) and open the HintDialog with `text`.
-    showDialog(text) {
+    // Second arg (asm 0x40d472 -> FUN_0040d557 asm 0x40d602-0x40d613): the
+    // "Don't show" checkbox SetVisible flag. FUN_00422bb1 passes 1 (asm
+    // 0x422bc4), the level-4 raven hint FUN_00422690 passes 0 (asm 0x4226ce).
+    showDialog(text, showCheckbox = true) {
         if (this.mCurrentHint !== null) return;
-        this.mCurrentHint = { type: -1, text: text || '' };
+        this.mCurrentHint = { type: -1, text: text || '', showCheckbox: !!showCheckbox };
         this._openHtml();
     }
 
     // Open the HTML hint dialog.
     _openHtml() {
-        HtmlDialogs.open('hint', {
+        const node = HtmlDialogs.open('hint', {
             binds: { text: this.mCurrentHint.text, dontshow: false },
             actions: {
                 ok: () => {
@@ -261,11 +239,14 @@ export class HintController {
                     // (rwg_functions.c:16741): player +0x1c = !checked, then
                     // save (FUN_00410f28). player +0x1c gates only the tutorial
                     // modals of FUN_00422a24 (asm 0x422a52-0x422a5b). Applied
-                    // on OK here (the HTML checkbox has no change listener);
-                    // the initial checkbox state is UNKNOWN — not found in
-                    // decompiled (unchecked).
+                    // on OK here (the HTML checkbox has no change listener).
+                    // Initial state unchecked: Checkbox ctor FUN_0043d084
+                    // (rwg_functions.c) writes +0x8c (checked) = 0.
+                    // A hidden checkbox (raven hint) cannot be toggled, so
+                    // FUN_0040d875 never runs for it.
                     const dontShow = !!HtmlDialogs.read('hint', 'dontshow');
-                    if (this.mCore && this.mCore.mShowHints !== !dontShow) {
+                    if (this.mCurrentHint && this.mCurrentHint.showCheckbox !== false
+                        && this.mCore && this.mCore.mShowHints !== !dontShow) {
                         this.mCore.mShowHints = !dontShow;
                         if (this.mCore.save) this.mCore.save();
                     }
@@ -273,6 +254,8 @@ export class HintController {
                 },
             },
         });
+        const row = node && node.querySelector ? node.querySelector('.cc-dontshow') : null;
+        if (row) row.style.display = (this.mCurrentHint.showCheckbox === false) ? 'none' : '';
     }
 
     // vtable[0] FUN_0040d4bb (rwg_functions.c:16402): dialog closed ->
@@ -392,7 +375,7 @@ export class LevelTutorial {
         if (text === null) return;
         // FUN_00422bb1 (rwg_functions.c:42774): +0x47 = 1, FUN_0040d435(text).
         this.f47 = true;
-        ctx.hint.showDialog(text);
+        ctx.hint.showDialog(text, true);   // FUN_0040d435(text, 1) asm 0x422bc4
     }
 
     // +0x4c countdown shared by the level 1-3 dispatchers.
@@ -521,7 +504,8 @@ export class LevelTutorial {
             // raven controller +8 != 0 (ravens present)
             if (fc.mField.mRavens.some(r => r.mIsAlive)) {
                 this.f44 = true;
-                hint.showDialog('The ravens want to steal your chickens. Force the ravens away by clicking on them whenever they appear on screen.');
+                // FUN_0040d435(text, 0): no "Don't show" checkbox (asm 0x4226ce).
+                hint.showDialog('The ravens want to steal your chickens. Force the ravens away by clicking on them whenever they appear on screen.', false);
             }
             return;
         }
@@ -631,9 +615,9 @@ function isSickAction(c) {
 }
 
 // FUN_00421ec4 (rwg_functions.c:41741): first chick of the world list in a
-// sick action.
+// sick action (FUN_00402342 only; no other filter).
 function firstSickChick(fc) {
-    return fc.mField.mChickens.find(c => c.mIsAlive && !c.mIsCarried && isSickAction(c)) || null;
+    return fc.mField.mChickens.find(c => c.mIsAlive && isSickAction(c)) || null;
 }
 
 // Centre of the chick rect FUN_00409956 / Chick.getRect (asm

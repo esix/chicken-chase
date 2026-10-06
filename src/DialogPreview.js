@@ -191,7 +191,7 @@ if (name === 'select-level') {
 }
 if (name === 'intro-letter') {
     // Use the game's original letter -> illustrated page -> dismiss handlers.
-    app.mGameView._showIntroHtml();
+    app._openIntroduction(1);
 }
 if (name === 'shop-sell') {
     // Development fixture only: 13 chickens exercise both 10-row pages.

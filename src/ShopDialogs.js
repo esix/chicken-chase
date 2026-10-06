@@ -1,45 +1,60 @@
 // ShopDialog (SELL chickens) and SpecialShopDialog (BUY special items).
-// Verified per DECOMPILED_MAP.md section 13 + Shop research agent (2026-05-06).
+// Both are HTML dialogs (js/index.html 'shop-sell' / 'shop-buy'); this module
+// ports their game logic. The former canvas draw/mouse/key code was dead
+// (GameView never assigns mShopDialog) and has been removed.
 //
-// CRITICAL CORRECTION from earlier research:
 //   "ShopDialog" is the SELL UI (title "SHOP", per-row label "SELL").
-//   "SpecialShopDialog" is the BUY UI (title "SPECIAL SHOP", per-row label "BUY").
+//   "SpecialShopDialog" is the BUY UI (title "SPECIAL SHOP", per-row "BUY").
 //   It sells the per-level special items (seed/weapon upgrades, mouse,
 //   elephant — FUN_0041eae5 list, FieldController.getSpecialShopItems), NOT
 //   chickens: chickens are bought from the HUD slots (FUN_0041e8f5).
-//   There is no separate SellDialog class.
 //
-// ShopDialog (FUN_0041f031:38486):
-//   Box (200, 25, 400, 550). Title "SHOP". 10 rows / page (1 column).
-//   Click sells a chicken; "You cannot sell your last chicken" if total alive == 1.
+// ShopDialog — ctor FUN_0041f031 (rwg:38491), vtable 0x4df4b4:
+//   [7] AddedToManager FUN_0041f7fc, [13] Draw FUN_0041f462 (row FUN_0041f65c),
+//   [25] Resize FUN_0041f889, ButtonDepress FUN_0041f94a (rwg:39043),
+//   button visibility FUN_0041f325, page count FUN_0041f39f.
+//   Box (200, 25, 400, 550). 10 rows / page (SELL buttons x=bx+bw-0x7c,
+//   y=by+0x91+i*0x20, 100x0x1e).
 //
-// SpecialShopDialog (FUN_00420232:39763):
-//   Box (150, 25, 500, 550). Title "SPECIAL SHOP". 3 rows / page.
-//   Row (FUN_00420758:40114-40150): image DAT_005005d4[id], description
-//   DAT_005003a0[id], price = store +0 ("FREE" when < 1).
-//   Click → FUN_0041eb94 (rwg:40385); false → "You don't have enough money."
-//   (rwg:40388); success → SOUND_CLICK (DAT_004fed84, asm 0x420caf).
+// SpecialShopDialog — ctor FUN_00420232 (rwg:39768), vtable 0x4df600:
+//   AddedToManager FUN_00420959, Draw FUN_004205e3 (row FUN_00420758),
+//   Resize FUN_00420a27, ButtonDepress FUN_00420ae8 (rwg:40297),
+//   refresh FUN_00420474, page count FUN_00420533.
+//   Box (150, 25, 500, 550). 3 rows / page.
 //
-// Verified price tables (rwg_functions.c:6650-6749):
-//   BUY base (DAT_0050032c): LAYER=100, BROODY=200, ROOSTER=500, MAGIC=1000, HOLY=1200
-//   Mid    (DAT_0050033c): LAYER= 50, BROODY=100, ROOSTER=200, MAGIC= 300, HOLY= 500
-//   SELL base (DAT_0050035c): LAYER=500, BROODY=800, ROOSTER=400, MAGIC=3000, HOLY=6000
-//   Chicken buy prices never double (FUN_004058e7 = base × inflation).
-//   The SPECIAL item price (store +0 = 250) doubles after each purchase,
-//   floor 250 (FUN_0041eb94:37992-37996) — held by FieldController.
+// Both: header "PAGE %i OF %i" (0x4df47c; args page+1, page count or 1 when
+// 0 — asm 0x41f53a-0x41f551 / 0x420642-0x420662). Row buttons, PREV and NEXT
+// are shown/hidden with Widget::SetVisible (vt+0x40 = FUN_00438b09, flag +0x50),
+// not disabled. Errors open the OK-only "INFORMATION" dialog (FUN_0041efda /
+// FUN_004201bd -> DoDialog FUN_00421187), not an inline line.
 
 import { IMAGES, SOUNDS } from './Res.js';
-import { drawFitText } from './TextUtil.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
-import { foodCap } from './Chick.js';
+import { foodCap, drawWithParams } from './Chick.js';
 
-const TYPE_NAMES = ['Layer', 'Broody', 'Rooster', 'Magic', 'Holy'];
+// DAT_005352dc: process-wide "sell hint shown" flag (FUN_004227d0 asm
+// 0x4227db-0x4227e4); never reset.
+let sSellHintShown = false;
 
-// FUN_00403bd6 (asm 0x403bd6-0x403c72; called at rwg_functions.c:5340 and in
-// the sell-row draw FUN_0041f5xx): price from SELL base DAT_0050035c × food
-// ratio FUN_00403c75 — ported as Chick.getSellPrice().
-function sellPrice(chick) {
-    return chick.getSellPrice();
+function playClick() {
+    // DAT_004fed84 = SOUND_CLICK.
+    if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
+}
+
+// "INFORMATION" OK-only dialog: FUN_0041efda (rwg:38450, via FUN_0040f491) and
+// FUN_004201bd (rwg:39718); header "INFORMATION", body = message, footer "OK"
+// (DoDialog FUN_00421187, id 70000). HTML: js/index.html 'information'.
+function showInformation(text) {
+    HtmlDialogs.open('information', {
+        binds: { text },
+        actions: { ok: () => HtmlDialogs.close('information') },
+    });
+}
+
+// Show/hide like Widget::SetVisible (FUN_00438b09): a hidden widget is neither
+// drawn nor clickable; layout is kept.
+function setWidgetVisible(node, visible) {
+    if (node) node.style.visibility = visible ? '' : 'hidden';
 }
 
 // Sell-row AGE column — FUN_0041f65c (asm 0x41f721-0x41f785):
@@ -49,17 +64,35 @@ function sellAge(chick) {
     return Math.trunc(chick.getSellRatio() * 10.0 + 0.5);
 }
 // asm 0x41f73d-0x41f75c: if chick+0x34 (food) == FUN_004058af (food cap),
-// SetColor(Color(0,0,0xff)) (FUN_00450771: r=ECX=0, g=0, b=0xff, a=0xff);
+// SetColor(Color(0,0,0xff)) (FUN_00450771: r=0, g=0, b=0xff, a=0xff);
 // otherwise the colour stays DAT_005012a0 (white) set at 0x41f70e.
 function sellAgeIsFull(chick) {
     return chick.mFoodCounter === foodCap(chick.mLevel);
 }
 
-const SHOP_BOX = { x: 200, y: 25, w: 400, h: 550 };
-const SPECIAL_BOX = { x: 150, y: 25, w: 500, h: 550 };
+// Sell-row chick picture — FUN_0041f65c asm 0x41f6c9-0x41f702: image
+// FUN_0040a166(chick) (Chick._getActionImage), draw params FUN_00409d5c
+// (Chick._getDrawParams: cel, mirror, tint, reverse) with the scale field
+// (params +0x18, [ebp-0x44]) overwritten by _DAT_004dc858 = 0.5, drawn by
+// FUN_0041742b at (0x14, row*0x20+0x8c) dialog-relative. HTML: rendered once
+// per refresh into an <img> (the game is paused while the dialog is open).
+function chickIconSource(chick) {
+    if (typeof chick._getActionImage !== 'function') return '';
+    const img = chick._getActionImage();
+    if (!img || !img.img) return '';
+    const params = chick._getDrawParams(img);
+    params.scale = 0.5; // _DAT_004dc858 (asm 0x41f6e6-0x41f6ef)
+    const cols = img.mNumCols || 1;
+    const celW = (params.frame >= 0 && cols > 1) ? Math.trunc(img.mWidth / cols) : img.mWidth;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.trunc(celW * params.scale + 0.5));
+    canvas.height = Math.max(1, Math.trunc(img.mHeight * params.scale + 0.5));
+    drawWithParams({ ctx: canvas.getContext('2d') }, img, 0, 0, params);
+    return canvas.toDataURL();
+}
 
-// HTML icons use the already composited resource and one native cel, including
-// its alpha mask. Resource objects do not provide the former mPath property.
+// Special-shop row icon DAT_005005d4[id] (FUN_00420758 rwg:40136, single-cel
+// resources). Resource objects do not provide the former mPath property.
 const htmlIconCache = new WeakMap();
 function htmlIconSource(resource) {
     if (!resource?.img) return '';
@@ -72,576 +105,255 @@ function htmlIconSource(resource) {
     return htmlIconCache.get(resource);
 }
 
+// Chick vt[4] FUN_0040325a (rwg:3344): !FUN_00402342 (action 3/4 = sick)
+// && vt[5] isActive (FUN_0040327c / Broody FUN_00403dec). JS: chicks already
+// removed from the world list (mRemoved) are not in the original list.
+function isSellable(c) {
+    return !c.mRemoved && !c.mIsSick && c.isActive();
+}
+
+// World chick list size (app+0x14)+8 — every list entry, dying ones included
+// (asm 0x41f9f4-0x41f9fc). JS keeps removed chicks until the next field
+// update, so they are skipped here.
+function worldChickCount(fc) {
+    return fc.mField.mChickens.filter(c => !c.mRemoved).length;
+}
+
 export class ShopDialog {
-    // SELL UI. Title "SHOP", 10 chickens per page, button per row "SELL".
+    // FUN_0041e97b (rwg:37749) builds it after FUN_004227d0, then AddDialog.
     constructor(fieldController, onClose) {
         this.mFieldController = fieldController;
         this.mOnClose = onClose;
         this.mIsActive = true;
-        this.mPage = 0;
-        this.mInfoText = null;
-        this.mInfoTimer = 0;
+        this.mPage = 0;                       // +0x17c (ctor this[0x5f] = 0)
+        // List +0x170 (ctor loop rwg:38590-38617): world chicks (app+0x14)
+        // passing vt[4], in world order.
+        this.mChicks = fieldController.mField.mChickens.filter(isSellable);
+        // String +0x180 = FUN_004227d0 (rwg:42448, caller asm 0x41e9c2):
+        // "You can sell chickens here." once per run on level 5
+        // (level object game+0x34, +0x10 == 5), else "".
+        this.mText = '';
+        if (fieldController.mCurrentLevel === 5 && !sSellHintShown) {
+            sSellHintShown = true;
+            this.mText = 'You can sell chickens here.';
+        }
     }
 
     isShown() { return this.mIsActive; }
 
-    _aliveChickens() {
-        return this.mFieldController.mField.mChickens.filter(c => c.mIsAlive);
+    // FUN_0041f39f (rwg:38694): 0 when empty, else (n-1)/10 + 1.
+    _pageCount() {
+        const n = this.mChicks.length;
+        return n === 0 ? 0 : Math.trunc((n - 1) / 10) + 1;
     }
 
-    _maxPage() {
-        const n = this._aliveChickens().length;
-        return Math.max(1, Math.ceil(n / 10));
-    }
-
-    // Open + drive the HTML 'shop-sell' dialog. Reuses _sell / sellPrice for the
-    // real logic; rows/pagination are rendered into the HTML scaffold.
     openHtml() {
         HtmlDialogs.open('shop-sell', {
             actions: {
-                ok: () => { HtmlDialogs.close('shop-sell'); if (this.mOnClose) this.mOnClose(); },
-                prev: () => { this.mPage = Math.max(0, this.mPage - 1); this._renderHtml(); },
-                next: () => { this.mPage = Math.min(this._maxPage() - 1, this.mPage + 1); this._renderHtml(); },
-                sell: ({ index }) => {
-                    const c = this._visible && this._visible[index];
-                    if (c) this._sell(c, sellPrice(c));
-                    this._renderHtml();
-                },
+                ok: () => this._buttonDepress('ok'),
+                prev: () => this._buttonDepress('prev'),
+                next: () => this._buttonDepress('next'),
+                sell: ({ index }) => this._buttonDepress('sell', index),
             },
         });
         this._renderHtml();
+        // AddedToManager FUN_0041f7fc (rwg:38958): if string +0x180 is not
+        // empty (+0x194 = length), FUN_0041efda opens INFORMATION with it.
+        if (this.mText.length !== 0) showInformation(this.mText);
     }
 
+    // FUN_0041f94a (rwg:39043) ButtonDepress.
+    _buttonDepress(action, index) {
+        if (action === 'ok') {
+            // id 1000 (asm 0x41f981-0x41f9cb): SOUND_CLICK, KillDialog, game
+            // +4 = 0 / +0xd = 0 (GameView pause hook), FUN_00408a1b.
+            playClick();
+            HtmlDialogs.close('shop-sell');
+            this.mIsActive = false;
+            if (this.mOnClose) this.mOnClose();
+            return;
+        }
+        if (action === 'prev' || action === 'next') {
+            // asm 0x41fb24-0x41fb7e: SOUND_CLICK, page -/+ 1, FUN_0041f325.
+            playClick();
+            this.mPage += action === 'prev' ? -1 : 1;
+            this._renderHtml();
+            return;
+        }
+        // Row button id 3+i (asm 0x41f9d5-0x41fb22).
+        const fc = this.mFieldController;
+        if (worldChickCount(fc) === 1) {
+            // asm 0x41fa02-0x41fa15: FUN_0041efda("You cannot sell your
+            // last chicken") (0x4df48c); no sound, no refresh.
+            showInformation('You cannot sell your last chicken');
+            return;
+        }
+        const i = this.mPage * 10 + index;
+        const chick = this.mChicks[i];
+        if (chick) {
+            this._sell(chick);              // FUN_0041ea50 -> FUN_004047af
+            this.mChicks.splice(i, 1);      // FUN_00405184 (asm 0x41fadd)
+        }
+        // asm 0x41fae2-0x41fafc: page > 0 && pageCount <= page → page--.
+        if (this.mPage > 0 && this._pageCount() <= this.mPage) this.mPage--;
+        this._renderHtml();                 // FUN_0041f325
+        // asm 0x41fb12: DAT_004fed90 = SOUND_CHICK_SELL.
+        if (SOUNDS.SOUND_CHICK_SELL) SOUNDS.SOUND_CHICK_SELL.play();
+    }
+
+    // FUN_004047af (rwg:5324): when chick state != 6: money += FUN_00403bd6
+    // (FUN_00424b5d with the chick's field position — its effect only when
+    // pos.x >= 0, asm 0x424b87-0x424b92), FUN_0040466e (state 6, removed from
+    // the world list), world +0x260 (sold count) += 1.
+    _sell(chick) {
+        if (!chick.mIsAlive) return;
+        const fc = this.mFieldController;
+        const price = chick.getSellPrice();
+        if (fc.addMoney) {
+            if (chick.mPos && chick.mPos[0] >= 0) fc.addMoney(price, chick.mX, chick.mY);
+            else fc.addMoney(price);
+        } else {
+            fc.mMoney += price;
+        }
+        // JS bookkeeping only: release a claimed egg (the original's smart
+        // pointers drop the reference with the chick).
+        if (chick._endBrooding) chick._endBrooding();
+        chick.mIsAlive = false;
+        fc.mField.mSoldCount++;
+    }
+
+    // FUN_0041f325 (rwg:38656) button visibility + Draw FUN_0041f462 rows.
     _renderHtml() {
-        const all = this._aliveChickens();
-        const maxPage = this._maxPage();
-        if (this.mPage >= maxPage) this.mPage = Math.max(0, maxPage - 1);
-        this._visible = all.slice(this.mPage * 10, this.mPage * 10 + 10);
-        HtmlDialogs.set('shop-sell', 'page', `${this.mPage + 1} / ${maxPage}`);
-        HtmlDialogs.set('shop-sell', 'info', (this.mInfoText && this.mInfoTimer > 0) ? this.mInfoText : '');
+        const pageCount = this._pageCount();
         const dialog = document.querySelector('[data-dialog="shop-sell"]');
-        // Original pagination boundaries; keep keyboard-visible native buttons.
-        dialog.querySelector('[data-action="prev"]').disabled = this.mPage === 0;
-        dialog.querySelector('[data-action="next"]').disabled = this.mPage === maxPage - 1;
-        HtmlDialogs.fillList('shop-sell', 'rows', this._visible, (c, row) => {
-            const t = row.querySelector('.cc-cell-type'); if (t) t.textContent = TYPE_NAMES[c.mType] || '?';
-            const p = row.querySelector('.cc-cell-price'); if (p) p.textContent = String(sellPrice(c)); // "%i" (0x4dcda8), asm 0x41f7a5-0x41f7b2
-            // AGE: "%i" of ftol(ratio*10+0.5), blue (0,0,255) at food cap
-            // (FUN_0041f65c asm 0x41f721-0x41f785); else inherited white.
+        HtmlDialogs.set('shop-sell', 'page',
+            `PAGE ${this.mPage + 1} OF ${pageCount !== 0 ? pageCount : 1}`);
+        if (dialog) {
+            setWidgetVisible(dialog.querySelector('[data-action="prev"]'), 0 < this.mPage);
+            setWidgetVisible(dialog.querySelector('[data-action="next"]'), this.mPage < pageCount - 1);
+        }
+        // Rows/buttons with page*10 + i < list size are visible.
+        const visible = this.mChicks.slice(this.mPage * 10, this.mPage * 10 + 10);
+        HtmlDialogs.fillList('shop-sell', 'rows', visible, (c, row) => {
+            const ic = row.querySelector('.cc-cell-icon');
+            if (ic) ic.src = chickIconSource(c);
             const a = row.querySelector('.cc-cell-age');
             if (a) {
                 a.textContent = String(sellAge(c));
                 a.style.color = sellAgeIsFull(c) ? 'rgb(0,0,255)' : '';
             }
+            // PRICE: "%i" (0x4dcda8) of FUN_00403bd6, asm 0x41f7a5-0x41f7b2.
+            const p = row.querySelector('.cc-cell-price');
+            if (p) p.textContent = String(c.getSellPrice());
         });
-    }
-
-    draw(g) {
-        if (!this.mIsActive) return;
-        // Modal scrim
-        g.setColor(0, 0, 0, 150);
-        g.fillRect(0, 0, 800, 600);
-
-        const { x: bx, y: by, w: bw, h: bh } = SHOP_BOX;
-        const plate = g.drawDialogBox(IMAGES.IMAGE_DIALOG_BOX, bx, by, bw, bh);
-
-        // Title 'SHOP' (string rwg:38521) centered IN the top plate (no green
-        // badge — consistent with the other dialogs). FONT_DLG_HEADER family.
-        g.ctx.fillStyle = '#ffd700';
-        g.ctx.textAlign = 'center';
-        g.ctx.textBaseline = 'middle';
-        drawFitText(g.ctx, 'SHOP', bx + bw / 2, plate.plateCenterY, bw - 60,
-            'bold 18px "Arial Black", Arial, sans-serif');
-        g.ctx.textBaseline = 'alphabetic';
-
-        // Column headers — only AGE (rwg:38803) and PRICE (rwg:38808) exist in
-        // the decompiled (the 'Type' header was invented). FONT_DLG_LINES.
-        // Exact header x/y not recoverable (lost registers) — placed above the
-        // first row aligned with their columns.
-        g.ctx.fillStyle = '#3a1a05';
-        g.ctx.font = 'bold 12px "Arial Black", Arial, sans-serif';
-        g.ctx.textAlign = 'left';
-        g.ctx.fillText('AGE',   bx + 150, by + 124);
-        g.ctx.fillText('PRICE', bx + 230, by + 124);
-
-        // Rows: 10/page, stride 32 (rwg:39022). SELL button CONFIRMED
-        // rwg:39017/39020: x=bx+276 (200-0x7c+400=476 abs), y=by+145+i*32
-        // (by+0x91), w=100 (0x64), h=30 (0x1e). Content rows aligned to it.
-        const all = this._aliveChickens();
-        const maxPage = this._maxPage();
-        if (this.mPage >= maxPage) this.mPage = Math.max(0, maxPage - 1);
-        const start = this.mPage * 10;
-        const visible = all.slice(start, start + 10);
-        this._rowRects = [];
-        const rowH = 32;
-        for (let i = 0; i < visible.length; i++) {
-            const c = visible[i];
-            const price = sellPrice(c);
-            const rowY = by + 138 + i * rowH;
-            // Row background
-            g.ctx.fillStyle = (i % 2 === 0) ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
-            g.ctx.fillRect(bx + 30, rowY, bw - 60, rowH - 2);
-            // Type name
-            g.ctx.fillStyle = '#3a1a05';
-            g.ctx.font = '13px "Arial Black", Arial, sans-serif';
-            g.ctx.textAlign = 'left';
-            g.ctx.fillText(TYPE_NAMES[c.mType] || '?', bx + 40, rowY + 20);
-            // AGE number — FUN_0041f65c asm 0x41f66d-0x41f785: rowTop =
-            // i*0x20+0x8c, DrawString("%i", x=0x64, y=rowTop+0x19), font
-            // DAT_004fff28, colour blue (0,0,255) when food == cap else white
-            // DAT_005012a0.
-            const textY = by + i * 0x20 + 0x8c + 0x19;
-            g.ctx.font = '13px "Arial Black", Arial, sans-serif';
-            g.ctx.textAlign = 'left';
-            g.ctx.fillStyle = sellAgeIsFull(c) ? 'rgb(0,0,255)' : '#ffffff';
-            g.ctx.fillText(String(sellAge(c)), bx + 0x64, textY);
-            // Price — asm 0x41f799-0x41f7d8: white DAT_005012a0, "%i" of
-            // FUN_00403bd6, right-aligned: x = 0xe6 - font.StringWidth.
-            g.ctx.fillStyle = '#ffffff';
-            g.ctx.textAlign = 'right';
-            g.ctx.fillText(String(price), bx + 0xe6, textY);
-            g.ctx.textAlign = 'left';
-            // SELL button (rwg:39017/39020).
-            const btnX = bx + 276, btnY = by + 145 + i * rowH, btnW = 100, btnH = 30;
-            this._drawDialogButton(g, IMAGES.IMAGE_DIALOG_BUTTON, 'SELL', btnX, btnY, btnW, btnH);
-            this._rowRects.push({ x: btnX, y: btnY, w: btnW, h: btnH, chick: c, price });
-        }
-
-        // Info text (e.g. "You cannot sell your last chicken")
-        if (this.mInfoText && this.mInfoTimer > 0) {
-            g.ctx.fillStyle = '#bb2222';
-            g.ctx.font = 'bold 13px Arial, sans-serif';
-            g.ctx.textAlign = 'center';
-            g.ctx.fillText(this.mInfoText, bx + bw / 2, by + bh - 90);
-        }
-
-        // Pagination buttons
-        this._drawPagination(g, bx, by, bw, bh);
-
-        // OK button (slot 0)
-        const okW = 100, okH = 36;
-        const okX = bx + (bw - okW) / 2;
-        const okY = by + bh - okH - 38;
-        this._okRect = this._drawDialogButton(g, IMAGES.IMAGE_DIALOG_BUTTON, 'OK', okX, okY, okW, okH);
-    }
-
-    _drawPagination(g, bx, by, bw, bh) {
-        // Nav row at the TOP (rwg:39026-39031): navY=by+0x4b=by+75; PREV x=bx+0x1e
-        // =bx+30, NEXT x=bx+bw-nextW-0x1e. Arrows 74x36 (image-native).
-        const ctx = g.ctx;
-        const prevImg = IMAGES.IMAGE_BUTTON_PREV;
-        const nextImg = IMAGES.IMAGE_BUTTON_NEXT;
-        const navY = by + 75;
-        const prevW = (prevImg && prevImg.img) ? prevImg.mWidth : 74;
-        const prevH = (prevImg && prevImg.img) ? prevImg.mHeight : 36;
-        const nextW = (nextImg && nextImg.img) ? nextImg.mWidth : 74;
-        const nextH = (nextImg && nextImg.img) ? nextImg.mHeight : 36;
-
-        const prevX = bx + 30, nextX = bx + bw - 30 - nextW;
-        if (prevImg && prevImg.img && g._isReady && g._isReady(prevImg.img)) {
-            ctx.drawImage(prevImg.img, prevX, navY, prevW, prevH);
-        } else {
-            ctx.fillStyle = '#5cb830';
-            ctx.fillRect(prevX, navY, prevW, prevH);
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 18px Arial, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText('<', prevX + prevW / 2, navY + prevH / 2 + 6);
-        }
-        if (nextImg && nextImg.img && g._isReady && g._isReady(nextImg.img)) {
-            ctx.drawImage(nextImg.img, nextX, navY, nextW, nextH);
-        } else {
-            ctx.fillStyle = '#5cb830';
-            ctx.fillRect(nextX, navY, nextW, nextH);
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 18px Arial, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText('>', nextX + nextW / 2, navY + nextH / 2 + 6);
-        }
-        // Page indicator
-        ctx.fillStyle = '#3a1a05';
-        ctx.font = '13px Arial, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(`${this.mPage + 1} / ${this._maxPage()}`, bx + bw / 2, navY + 22);
-
-        this._prevRect = { x: prevX, y: navY, w: prevW, h: prevH };
-        this._nextRect = { x: nextX, y: navY, w: nextW, h: nextH };
-    }
-
-    _drawDialogButton(g, img, label, x, y, w, h) {
-        const ctx = g.ctx;
-        // Hover state — swap to IMAGE_DIALOG_BUTTON_OVER when mouse is over
-        // this button rect. mMouseX/Y updated by mouseMove routing from
-        // GameView; -1 default means no false hover before first mouseMove.
-        const mx = (typeof this._mouseX === 'number') ? this._mouseX : -1;
-        const my = (typeof this._mouseY === 'number') ? this._mouseY : -1;
-        const hover = mx >= x && mx < x + w && my >= y && my < y + h;
-        const overImg = hover ? IMAGES.IMAGE_DIALOG_BUTTON_OVER : null;
-        const useImg = (overImg && overImg.img && g._isReady && g._isReady(overImg.img))
-            ? overImg : img;
-        if (useImg && useImg.img && g._isReady && g._isReady(useImg.img)) {
-            ctx.drawImage(useImg.img, x, y, w, h);
-        } else {
-            ctx.fillStyle = '#5cb830';
-            ctx.fillRect(x, y, w, h);
-        }
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 13px Arial, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(label, x + w / 2, y + h / 2 + 5);
-        return { x, y, w, h };
-    }
-
-    mouseMove(x, y) {
-        // Track for button-hover state.
-        this._mouseX = x;
-        this._mouseY = y;
-        return false; // don't absorb — let other handlers run
-    }
-
-    update() {
-        if (this.mInfoTimer > 0) this.mInfoTimer--;
-    }
-
-    mouseDown(x, y, btn) {
-        if (!this.mIsActive || btn !== 0) return true;
-        if (this._inside(x, y, this._okRect)) { this._dismiss(); return true; }
-        if (this._inside(x, y, this._prevRect)) {
-            this.mPage = Math.max(0, this.mPage - 1);
-            return true;
-        }
-        if (this._inside(x, y, this._nextRect)) {
-            this.mPage = Math.min(this._maxPage() - 1, this.mPage + 1);
-            return true;
-        }
-        for (const r of this._rowRects || []) {
-            if (this._inside(x, y, r)) {
-                this._sell(r.chick, r.price);
-                return true;
-            }
-        }
-        return true;
-    }
-
-    keyDown(key) {
-        if (key === 'Escape') { this._dismiss(); return true; }
-        // Arrow keys for pagination — useful since the SELL dialog can have
-        // multiple pages when the player has 11+ chickens.
-        if (key === 'ArrowRight' || key === 'PageDown') {
-            if (this.mPage + 1 < this._maxPage()) this.mPage++;
-            return true;
-        }
-        if (key === 'ArrowLeft' || key === 'PageUp') {
-            if (this.mPage > 0) this.mPage--;
-            return true;
-        }
-        return true;
-    }
-
-    _inside(x, y, r) { return r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
-
-    _sell(chick, price) {
-        const fc = this.mFieldController;
-        const aliveCount = fc.mField.mChickens.filter(c => c.mIsAlive).length;
-        if (aliveCount <= 1) {
-            // Verified string at rwg_functions.c:39115-39117
-            this.mInfoText = 'You cannot sell your last chicken';
-            this.mInfoTimer = 200;
-            if (SOUNDS.SOUND_ERROR) SOUNDS.SOUND_ERROR.play();
-            return;
-        }
-        // Floating text at chick's position
-        if (fc.addFloatingText) {
-            fc.addFloatingText(chick.mX, chick.mY - 30, `Sold +$${price}`, '#5cff5c');
-        }
-        // Clean up brood state if broody chick was sitting on an egg
-        if (chick._endBrooding) chick._endBrooding();
-        chick.mIsAlive = false;
-        if (fc.addMoney) fc.addMoney(price); else fc.mMoney += price;
-        // rwg:5348 (sell path after FUN_00424b5d money add): world+0x260 += 1
-        // (Field ctor sets mSoldCount = 0; this is the only increment.)
-        fc.mField.mSoldCount++;
-        if (SOUNDS.SOUND_CHICK_SELL) SOUNDS.SOUND_CHICK_SELL.play();
-    }
-
-    _dismiss() {
-        this.mIsActive = false;
-        if (this.mOnClose) this.mOnClose();
     }
 }
 
 export class SpecialShopDialog {
-    // BUY UI. Title "SPECIAL SHOP", 3 rows per page.
-    // Each row shows a special item (image, description, price); "BUY" purchases it.
+    // FUN_0041e9f1 (rwg:37802) builds it and calls AddDialog.
     constructor(fieldController, onClose) {
         this.mFieldController = fieldController;
         this.mOnClose = onClose;
         this.mIsActive = true;
-        this.mPage = 0;
-        this.mInfoText = null;
-        this.mInfoTimer = 0;
+        this.mPage = 0;                       // +0x170 (ctor this[0x5c] = 0)
     }
 
     isShown() { return this.mIsActive; }
 
-    // Rows = FUN_0041eae5 list, rebuilt on every refresh by FUN_00420474
-    // (rwg_functions.c:39881) → FieldController.getSpecialShopItems(). Entries are item objects
-    // {id, name, desc, image}.
-    _availableTypes() {
+    // List +0x174 = FUN_0041eae5, rebuilt by every FUN_00420474 refresh.
+    _items() {
         const fc = this.mFieldController;
         if (!fc || typeof fc.getSpecialShopItems !== 'function') return [];
         return fc.getSpecialShopItems();
     }
 
+    // FUN_00420533 (rwg:39941): 0 when empty, else (n-1)/3 + 1.
+    _pageCount(n) {
+        return n === 0 ? 0 : Math.trunc((n - 1) / 3) + 1;
+    }
+
     // Price shown on every row = store +0 (FUN_00420758:40144).
-    _priceFor() {
+    _price() {
         const fc = this.mFieldController;
         return (fc && typeof fc.getSpecialShopPrice === 'function') ? fc.getSpecialShopPrice() : 0;
     }
 
-    // Open + drive the HTML 'shop-buy' dialog. Reuses _availableTypes / _priceFor
-    // / _buy for the real logic.
     openHtml() {
         HtmlDialogs.open('shop-buy', {
             actions: {
-                ok: () => { HtmlDialogs.close('shop-buy'); if (this.mOnClose) this.mOnClose(); },
-                prev: () => { this.mPage = Math.max(0, this.mPage - 1); this._renderHtml(); },
-                next: () => {
-                    const maxPage = Math.max(1, Math.ceil(this._availableTypes().length / 3));
-                    this.mPage = Math.min(maxPage - 1, this.mPage + 1); this._renderHtml();
-                },
-                buy: ({ index }) => {
-                    const type = this._visible && this._visible[index];
-                    if (type !== undefined) this._buy(type);
-                    this._renderHtml();
-                },
+                ok: () => this._buttonDepress('ok'),
+                prev: () => this._buttonDepress('prev'),
+                next: () => this._buttonDepress('next'),
+                buy: ({ index }) => this._buttonDepress('buy', index),
             },
         });
         this._renderHtml();
     }
 
-    _renderHtml() {
-        const types = this._availableTypes();
-        const maxPage = Math.max(1, Math.ceil(types.length / 3));
-        if (this.mPage >= maxPage) this.mPage = Math.max(0, maxPage - 1);
-        this._visible = types.slice(this.mPage * 3, this.mPage * 3 + 3);
-        HtmlDialogs.set('shop-buy', 'page', `${this.mPage + 1} / ${maxPage}`);
-        HtmlDialogs.set('shop-buy', 'info', (this.mInfoText && this.mInfoTimer > 0) ? this.mInfoText : '');
-        const dialog = document.querySelector('[data-dialog="shop-buy"]');
-        dialog.querySelector('[data-action="prev"]').disabled = this.mPage === 0;
-        dialog.querySelector('[data-action="next"]').disabled = this.mPage === maxPage - 1;
-        HtmlDialogs.fillList('shop-buy', 'rows', this._visible, (item, row) => {
-            // Image DAT_005005d4[id] (rwg:40136), text DAT_005003a0[id] (rwg:40142).
-            const img = IMAGES[item.image];
-            const ic = row.querySelector('.cc-buy-icon'); if (ic) ic.src = htmlIconSource(img);
-            const nm = row.querySelector('.cc-buy-name');
-            if (nm) nm.textContent = item.desc; // DAT_005003a0 = descriptions (names are DAT_00500480, used by RiskCaseOffensive asm 0x41af7f)
-            const price = this._priceFor(item);
-            const pr = row.querySelector('.cc-buy-price'); if (pr) pr.textContent = price < 1 ? 'FREE' : '$' + price;
-        });
-    }
-
-    draw(g) {
-        if (!this.mIsActive) return;
-        g.setColor(0, 0, 0, 150);
-        g.fillRect(0, 0, 800, 600);
-
-        const { x: bx, y: by, w: bw, h: bh } = SPECIAL_BOX;
-        const plate = g.drawDialogBox(IMAGES.IMAGE_DIALOG_BOX, bx, by, bw, bh);
-        // Title 'SPECIAL SHOP' (string rwg:39791) centered IN the top plate (no
-        // green badge — consistent with the other dialogs). FONT_DLG_HEADER family.
-        g.ctx.fillStyle = '#ffd700';
-        g.ctx.textAlign = 'center';
-        g.ctx.textBaseline = 'middle';
-        drawFitText(g.ctx, 'SPECIAL SHOP', bx + bw / 2, plate.plateCenterY, bw - 60,
-            'bold 18px "Arial Black", Arial, sans-serif');
-        g.ctx.textBaseline = 'alphabetic';
-
-        // 3 rows per page (rwg:39949). Row stride 0x74=116, rowBaseY = i*116+130
-        // (abs) = by+105+i*116 (rwg:40114). Clamp page if types shrank.
-        const types = this._availableTypes();
-        const maxPage = Math.max(1, Math.ceil(types.length / 3));
-        if (this.mPage >= maxPage) this.mPage = Math.max(0, maxPage - 1);
-        const start = this.mPage * 3;
-        const visible = types.slice(start, start + 3);
-        this._rowRects = [];
-
-        const rowH = 116; // 0x74 (rwg:40114/40276)
-        for (let i = 0; i < visible.length; i++) {
-            const item = visible[i];
-            const rowY = by + 105 + i * rowH; // rwg:40114
-            g.ctx.fillStyle = (i % 2 === 0) ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
-            g.ctx.fillRect(bx + 30, rowY, bw - 60, rowH - 8);
-            // Item image DAT_005005d4[id] (rwg:40136).
-            const img = IMAGES[item.image];
-            if (img && img.img && g._isReady && g._isReady(img.img)) {
-                g.ctx.drawImage(img.img, bx + 55, rowY + 26, 56, 56);
-            }
-            g.ctx.fillStyle = '#3a1a05';
-            g.ctx.font = 'bold 14px "Arial Black", Arial, sans-serif';
-            g.ctx.textAlign = 'left';
-            drawFitText(g.ctx, item.desc, bx + 135, rowY + 42, 220, 'bold 14px "Arial Black", Arial, sans-serif');
-            g.ctx.textAlign = 'left';
-            // Price — 'FREE' when price < 1 (rwg:40145-40146).
-            const price = this._priceFor(item);
-            g.ctx.font = '14px "Arial Black", Arial, sans-serif';
-            g.ctx.fillText(price < 1 ? 'FREE' : `$${price}`, bx + 135, rowY + 70);
-            // BUY button — x=526 abs=bx+376, y=190+i*116 abs=by+165+i*116, 100x30
-            // (rwg:40271/40274/40276).
-            const btnW = 100, btnH = 30;
-            const btnX = bx + 376;
-            const btnY = by + 165 + i * rowH;
-            const r = this._drawDialogButton(g, IMAGES.IMAGE_DIALOG_BUTTON, 'BUY', btnX, btnY, btnW, btnH);
-            r.type = item; r.price = price;
-            this._rowRects.push(r);
-        }
-
-        // Info text — "You don't have enough money."
-        if (this.mInfoText && this.mInfoTimer > 0) {
-            g.ctx.fillStyle = '#bb2222';
-            g.ctx.font = 'bold 13px Arial, sans-serif';
-            g.ctx.textAlign = 'center';
-            g.ctx.fillText(this.mInfoText, bx + bw / 2, by + bh - 90);
-        }
-
-        // Pagination
-        this._drawPagination(g, bx, by, bw, bh, types.length);
-
-        // OK button
-        const okW = 100, okH = 36;
-        const okX = bx + (bw - okW) / 2;
-        const okY = by + bh - okH - 38;
-        this._okRect = this._drawDialogButton(g, IMAGES.IMAGE_DIALOG_BUTTON, 'OK', okX, okY, okW, okH);
-    }
-
-    _drawPagination(g, bx, by, bw, bh, total) {
-        // Nav row at the TOP (rwg:40280-40285): navY=by+0x4b=by+75; PREV x=bx+0x1e
-        // =bx+30, NEXT x=bx+bw-nextW-0x1e. Arrows are 74x36 (image-native).
-        const navY = by + 75;
-        const ctx = g.ctx;
-        const prevImg = IMAGES.IMAGE_BUTTON_PREV;
-        const nextImg = IMAGES.IMAGE_BUTTON_NEXT;
-        const prevW = (prevImg && prevImg.img) ? prevImg.mWidth : 74;
-        const prevH = (prevImg && prevImg.img) ? prevImg.mHeight : 36;
-        const nextW = (nextImg && nextImg.img) ? nextImg.mWidth : 74;
-        const nextH = (nextImg && nextImg.img) ? nextImg.mHeight : 36;
-        const prevX = bx + 30;
-        const nextX = bx + bw - 30 - nextW;
-        if (prevImg && prevImg.img && g._isReady && g._isReady(prevImg.img)) {
-            ctx.drawImage(prevImg.img, prevX, navY, prevW, prevH);
-        } else {
-            ctx.fillStyle = '#5cb830';
-            ctx.fillRect(prevX, navY, prevW, prevH);
-        }
-        if (nextImg && nextImg.img && g._isReady && g._isReady(nextImg.img)) {
-            ctx.drawImage(nextImg.img, nextX, navY, nextW, nextH);
-        } else {
-            ctx.fillStyle = '#5cb830';
-            ctx.fillRect(nextX, navY, nextW, nextH);
-        }
-        const maxPage = Math.max(1, Math.ceil(total / 3));
-        ctx.fillStyle = '#3a1a05';
-        ctx.font = '13px Arial, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(`${this.mPage + 1} / ${maxPage}`, bx + bw / 2, navY + 22);
-        this._prevRect = { x: prevX, y: navY, w: prevW, h: prevH };
-        this._nextRect = { x: nextX, y: navY, w: nextW, h: nextH };
-    }
-
-    _drawDialogButton(g, img, label, x, y, w, h) {
-        const ctx = g.ctx;
-        // Hover state — swap to IMAGE_DIALOG_BUTTON_OVER when mouse is over
-        // this button rect. mMouseX/Y updated by mouseMove routing from
-        // GameView; -1 default means no false hover before first mouseMove.
-        const mx = (typeof this._mouseX === 'number') ? this._mouseX : -1;
-        const my = (typeof this._mouseY === 'number') ? this._mouseY : -1;
-        const hover = mx >= x && mx < x + w && my >= y && my < y + h;
-        const overImg = hover ? IMAGES.IMAGE_DIALOG_BUTTON_OVER : null;
-        const useImg = (overImg && overImg.img && g._isReady && g._isReady(overImg.img))
-            ? overImg : img;
-        if (useImg && useImg.img && g._isReady && g._isReady(useImg.img)) {
-            ctx.drawImage(useImg.img, x, y, w, h);
-        } else {
-            ctx.fillStyle = '#5cb830';
-            ctx.fillRect(x, y, w, h);
-        }
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 13px Arial, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(label, x + w / 2, y + h / 2 + 5);
-        return { x, y, w, h };
-    }
-
-    mouseMove(x, y) {
-        // Track for button-hover state.
-        this._mouseX = x;
-        this._mouseY = y;
-        return false; // don't absorb — let other handlers run
-    }
-
-    update() {
-        if (this.mInfoTimer > 0) this.mInfoTimer--;
-    }
-
-    mouseDown(x, y, btn) {
-        if (!this.mIsActive || btn !== 0) return true;
-        if (this._inside(x, y, this._okRect)) { this._dismiss(); return true; }
-        if (this._inside(x, y, this._prevRect)) {
-            this.mPage = Math.max(0, this.mPage - 1);
-            return true;
-        }
-        if (this._inside(x, y, this._nextRect)) {
-            const total = this._availableTypes().length;
-            const maxPage = Math.max(1, Math.ceil(total / 3));
-            this.mPage = Math.min(maxPage - 1, this.mPage + 1);
-            return true;
-        }
-        for (const r of this._rowRects || []) {
-            if (this._inside(x, y, r)) {
-                this._buy(r.type);
-                return true;
-            }
-        }
-        return true;
-    }
-
-    keyDown(key) {
-        if (key === 'Escape') { this._dismiss(); return true; }
-        // Pagination — SpecialShop has 3 rows/page; 5 chick types + 2 pets
-        // span 3 pages once unlocked.
-        const total = this._availableTypes().length;
-        const maxPage = Math.max(1, Math.ceil(total / 3));
-        if (key === 'ArrowRight' || key === 'PageDown') {
-            if (this.mPage + 1 < maxPage) this.mPage++;
-            return true;
-        }
-        if (key === 'ArrowLeft' || key === 'PageUp') {
-            if (this.mPage > 0) this.mPage--;
-            return true;
-        }
-        return true;
-    }
-
-    _inside(x, y, r) { return r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
-
-    // FUN_00420ae8 click handler (rwg:40360-40395): FUN_0041eb94 (price check,
-    // apply, spend, double) — FieldController.buySpecialItem.
-    _buy(item) {
+    // FUN_00420ae8 (rwg:40297) ButtonDepress.
+    _buttonDepress(action, index) {
         const fc = this.mFieldController;
-        if (!item || !fc || typeof fc.buySpecialItem !== 'function') return;
-        if (!fc.buySpecialItem(item.id)) {
-            // rwg:40388 "You don't have enough money." (INFORMATION dialog
-            // FUN_004201bd; shown here as the info line).
-            this.mInfoText = "You don't have enough money.";
-            this.mInfoTimer = 200;
+        if (action === 'ok') {
+            // id 1000 (asm 0x420b10-0x420b9e): SOUND_CLICK, KillDialog;
+            // store +0x19 (BUY widget) = row button 0 visible (page*3 < list
+            // size); store +0x18 unchanged; game +4 = 0 / +0xd = 0 (GameView
+            // pause hook); FUN_00408a1b.
+            playClick();
+            HtmlDialogs.close('shop-buy');
+            if (fc && fc.mLevelConfig) {
+                fc.mLevelConfig.specialShopButton = this.mPage * 3 < this._items().length;
+            }
+            this.mIsActive = false;
+            if (this.mOnClose) this.mOnClose();
             return;
         }
-        // asm 0x420caa-0x420cb9: SOUND_CLICK (DAT_004fed84).
-        if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
+        if (action === 'prev' || action === 'next') {
+            // asm 0x420cd4-0x420d21: SOUND_CLICK, page -/+ 1, FUN_00420474.
+            playClick();
+            this.mPage += action === 'prev' ? -1 : 1;
+            this._renderHtml();
+            return;
+        }
+        // Row button id 3+i: item page*3 + i of list +0x174.
+        const item = this._items()[this.mPage * 3 + index];
+        if (item && fc && typeof fc.buySpecialItem === 'function') {
+            // FUN_0041eb94 (price check, apply, spend, double).
+            if (!fc.buySpecialItem(item.id)) {
+                // rwg:40388: FUN_004201bd("You don't have enough money.");
+                // return without refresh or sound.
+                showInformation("You don't have enough money.");
+                return;
+            }
+        }
+        // asm 0x420c7e-0x420cbf: clamp page, FUN_00420474, SOUND_CLICK.
+        const n = this._items().length;
+        if (this.mPage > 0 && this._pageCount(n) <= this.mPage) this.mPage--;
+        this._renderHtml();
+        playClick();
     }
 
-    _dismiss() {
-        this.mIsActive = false;
-        if (this.mOnClose) this.mOnClose();
+    // FUN_00420474 (rwg:39887) visibility + Draw FUN_004205e3 rows.
+    _renderHtml() {
+        const items = this._items();
+        const pageCount = this._pageCount(items.length);
+        const dialog = document.querySelector('[data-dialog="shop-buy"]');
+        HtmlDialogs.set('shop-buy', 'page',
+            `PAGE ${this.mPage + 1} OF ${pageCount !== 0 ? pageCount : 1}`);
+        if (dialog) {
+            setWidgetVisible(dialog.querySelector('[data-action="prev"]'), 0 < this.mPage);
+            setWidgetVisible(dialog.querySelector('[data-action="next"]'), this.mPage < pageCount - 1);
+        }
+        const visible = items.slice(this.mPage * 3, this.mPage * 3 + 3);
+        const price = this._price();
+        HtmlDialogs.fillList('shop-buy', 'rows', visible, (item, row) => {
+            // Image DAT_005005d4[id] (rwg:40136), text DAT_005003a0[id] (rwg:40142).
+            const ic = row.querySelector('.cc-buy-icon'); if (ic) ic.src = htmlIconSource(IMAGES[item.image]);
+            const nm = row.querySelector('.cc-buy-name');
+            if (nm) nm.textContent = item.desc; // DAT_005003a0 = descriptions (names are DAT_00500480, used by RiskCaseOffensive asm 0x41af7f)
+            // Price: "FREE" when store +0 < 1 (rwg:40144-40146), else "%i"
+            // (0x4dcda8, asm 0x420855-0x420861).
+            const pr = row.querySelector('.cc-buy-price');
+            if (pr) pr.textContent = price < 1 ? 'FREE' : String(price);
+        });
     }
 }

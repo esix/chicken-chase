@@ -14,6 +14,9 @@ import { PLAYER_NAME_MAX_LEN } from './Core.js';
 import { drawFitText } from './TextUtil.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
 
+// AllowChar FUN_0040f43e: characters the name edit box rejects.
+const NEWPLAYER_REJECT = /[ #$%&()*+\-.:@^]/g;
+
 export class NewPlayerDialog {
     // mode: 'firstLaunch' (cancel hidden) or 'addPlayer'
     constructor(core, onComplete, mode = 'addPlayer') {
@@ -31,38 +34,58 @@ export class NewPlayerDialog {
     isShown() { return this.mIsActive; }
 
     // Open + drive the HTML 'new-player' dialog. Reuses addPlayer/selectPlayer.
+    // Enter in the edit box = EditWidgetText FUN_0040f47e → ButtonDepress(1000).
+    // AllowChar FUN_0040f43e (rwg:18956) rejects space and # $ % & ( ) * + - . : @ ^.
     openHtml() {
         HtmlDialogs.open('new-player', {
             binds: { name: this.mInput || '', error: '' },
             visible: { cancel: this.mShowCancel },
             actions: {
                 ok: () => {
-                    this.mInput = (HtmlDialogs.read('new-player', 'name') || '').trim();
+                    this.mInput = HtmlDialogs.read('new-player', 'name') || '';
                     this._submitHtml();
                 },
                 cancel: () => {
+                    // FUN_0040f3c5: click sound first (vtable+0xc4), then 0x3e9 closes.
+                    if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
                     HtmlDialogs.close('new-player');
                     this.mIsActive = false;
                     if (this.mOnComplete) this.mOnComplete(null);
-                    if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
                 },
             },
         });
+        const input = document.querySelector('[data-dialog="new-player"] input[data-bind="name"]');
+        if (!input) return;
+        input._ccOwner = this;   // Enter goes to the dialog instance now open
+        if (!input._ccNewPlayerHooked) {
+            input._ccNewPlayerHooked = true;
+            input.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' || !input._ccOwner) return;
+                e.preventDefault();
+                const owner = input._ccOwner;
+                owner.mInput = input.value;
+                owner._submitHtml();
+            });
+            input.addEventListener('input', () => {
+                const filtered = input.value.replace(NEWPLAYER_REJECT, '').slice(0, PLAYER_NAME_MAX_LEN);
+                if (filtered !== input.value) input.value = filtered;
+            });
+        }
     }
 
+    // ButtonDepress FUN_0040f3c5 (rwg:18887): plays the click sound for any
+    // button; id 1000 with an empty name (+0xf4 == 0) does nothing more.
+    // Otherwise the name goes to the listener (Core.addPlayer selects an
+    // existing player of the same name, rwg:28111) and the dialog is removed.
     _submitHtml() {
-        const name = this.mInput.trim();
-        if (!name) { HtmlDialogs.set('new-player', 'error', 'Please enter a name'); return; }
-        if (this.mCore._findPlayer && this.mCore._findPlayer(name)) {
-            HtmlDialogs.set('new-player', 'error', 'That name is taken'); return;
-        }
+        if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
+        const name = this.mInput;
+        if (!name) return;
         const player = this.mCore.addPlayer(name);
         if (player) {
-            this.mCore.selectPlayer(player.name);
             this.mIsActive = false;
             HtmlDialogs.close('new-player');
             if (this.mOnComplete) this.mOnComplete(player.name);
-            if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
         }
     }
 

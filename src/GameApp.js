@@ -21,7 +21,7 @@
 //   FUN_00423e95 (rwg:43997) TitleScreen::Draw
 
 import { SexyAppBase, SoundManager } from './SexyApp.js';
-import { Res, SOUNDS } from './Res.js';
+import { Res, SOUNDS, IMAGES } from './Res.js';
 import { GameView } from './GameView.js';
 import { HandMode } from './Hand.js';
 import { MainMenuView, SelectLevelView } from './MainMenuView.js';
@@ -179,20 +179,33 @@ export class GameApp extends SexyAppBase {
         requestAnimationFrame(() => this._gameLoop());
     }
 
-    // TitleScreen::Draw — FUN_00423e95 (rwg:43997-44028).
-    //   SetColor(DAT_005012b0) + FillRect(0, 0, w, h)          rwg:44014-44016
-    //     DAT_005012b0 = Sexy Color::Black (same global is the black bottom/
-    //     right bevel of the stock ButtonWidget draw, rwg:69455-69459).
-    //   DrawImageF(IMAGE_PROGRESSBAR_BACK = DAT_0050002c, x, y) rwg:44017-44018
-    //     x involves (width - back.width) / 2; y UNKNOWN (float args lost).
-    //   repeat N times: DrawImageF(IMAGE_PROGRESSBAR = DAT_00500028, x, y)
-    //     N = ftol(f(progress +0x84)); f, x, y UNKNOWN.        rwg:44019-44027
-    // The previous "Loading..." text / green bar / percentage were invented
-    // and are removed. Only the verified black fill is drawn:
-    // progress-bar placement is UNKNOWN — not found in decompiled.
+    // TitleScreen::Draw — FUN_00423e95 (rwg:43997-44028; disassembly
+    // @0x423e95-0x423f59, w/h = widget +0x38/+0x3c = 800x600):
+    //   SetColor(DAT_005012b0 = Color::Black); FillRect(0, 0, w, h)
+    //   DrawImage(IMAGE_PROGRESSBAR_BACK, (w - back.w) / 2, h / 2 - 0x1e)
+    //   n = ftol(progress(+0x84) * 14.0 + 0.5)    (_DAT_004e9270 = 14.0,
+    //                                               _DAT_004e90c8 = 0.5)
+    //   step = bar.w + 3; x = w / 2 - (step * 14) / 2; y = h / 2
+    //   repeat n: DrawImage(IMAGE_PROGRESSBAR, x, y); x += step
+    // All divisions are C signed int division (cltd/sub/sar).
     _drawLoadingScreen() {
-        this.mCtx.fillStyle = '#000';
-        this.mCtx.fillRect(0, 0, this.mWidth, this.mHeight);
+        const ctx = this.mCtx;
+        const w = this.mWidth, h = this.mHeight;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+        const back = IMAGES.IMAGE_PROGRESSBAR_BACK;
+        const bar = IMAGES.IMAGE_PROGRESSBAR;
+        if (back && back.img) {
+            this.mGraphics.drawImage(back, Math.trunc((w - back.mWidth) / 2),
+                Math.trunc(h / 2) - 0x1e);
+        }
+        if (bar && bar.img) {
+            const n = Math.trunc(this.mLoadProgress * 14.0 + 0.5);
+            const step = bar.mWidth + 3;
+            let x = Math.trunc(w / 2) - Math.trunc((step * 0xe) / 2);
+            const y = Math.trunc(h / 2);
+            for (let i = 0; i < n; i++, x += step) this.mGraphics.drawImage(bar, x, y);
+        }
     }
 
     // FUN_00408799 (rwg:10760) - show MainMenuView. Music (rwg:10801-10805):
@@ -214,7 +227,6 @@ export class GameApp extends SexyAppBase {
         this.mCurrentView = this.mGameView;
         this.mCanvas.style.cursor = 'none';
         this.mGameView.startLevel(level);
-        this.mGameView.showLevelIntro(level);
         this.playGameMusic();
     }
 
@@ -253,6 +265,9 @@ export class GameApp extends SexyAppBase {
     // the original); the select-level and intro dialogs are HTML over the
     // SelectLevelView field background (screenshot 18).
     showSelectLevel(level = -1) {
+        // rwg:10880-10885: an already visible SelectLevelView is left as is
+        // (no +0x9c update, no AddedToManager dispatch).
+        if (this.mSelectLevelView && this.mCurrentView === this.mSelectLevelView) return;
         if (level === 1000) { this.showCredits(); return; }
         if (!this.mSelectLevelView) {
             this.mSelectLevelView = new SelectLevelView(this);
@@ -287,10 +302,6 @@ export class GameApp extends SexyAppBase {
     //           SelectLevelDialog. The level only starts from its START.
     // The two pages are the HTML dialogs 'intro-letter' and 'intro-panel'.
     _openIntroduction(level) {
-        // JS guard: GameView.startLevel also opens the intro on level 1
-        // (to be removed by the GameView owner) — mark it as already shown so
-        // it does not appear a second time after START.
-        if (this.mGameView) this.mGameView._introShown = true;
         HtmlDialogs.open('intro-letter', {
             actions: {
                 next: () => {
@@ -315,6 +326,8 @@ export class GameApp extends SexyAppBase {
     // FUN_0042474a), then FUN_00424a7f(view, nextLevel, player decorations
     // (FUN_00408234), available upgrades (FUN_00416162)). No music change.
     showUpgrades(nextLevel) {
+        // rwg:11101: an already visible UpgradesView skips the setup.
+        if (this.mUpgradesView && this.mCurrentView === this.mUpgradesView) return;
         if (!this.mUpgradesView) {
             this.mUpgradesView = new UpgradesView(this);
         }
@@ -402,21 +415,7 @@ export class GameApp extends SexyAppBase {
     // Maps to FUN_004028ca (rwg_functions.c:2598).
     showChangePlayer() {
         if (!this.mCore) return;
-        new ChangePlayerDialog(this.mCore, () => {
-            // Volumes are app-global in the original (registry, not per
-            // player) — re-applying them here is a no-op safety sync.
-            if (this.mCore) {
-                SoundManager.setMusicVolume(this.mCore.mMusicVolume ?? DEFAULT_MUSIC_VOLUME);
-                SoundManager.setSfxVolume(this.mCore.mSoundVolume ?? DEFAULT_SFX_VOLUME);
-            }
-            // Pet ownership isn't saved to profile (within-session only).
-            // Reset on profile switch so the new player doesn't inherit
-            // the previous player's bought Mouse/Elephant.
-            if (this.mGameView && this.mGameView.mFieldController) {
-                this.mGameView.mFieldController.mHasMouse = false;
-                this.mGameView.mFieldController.mHasElephant = false;
-            }
-        }).openHtml();
+        new ChangePlayerDialog(this.mCore).openHtml();
     }
 
     // Credits — FUN_004088d0(1000) (main-menu CREDITS, FUN_0040ea92
@@ -435,19 +434,13 @@ export class GameApp extends SexyAppBase {
         this.mCurrentView = new CreditsView(this, 'win');
     }
 
-    // unlockNextLevel — bumps player profile's max-level-reached and persists.
-    // The original has no separate unlock: completing level L appends its
-    // time to the player's times vector (FUN_0041111b rwg:21406), and
+    // unlockNextLevel — kept for FieldController's call order only. The
+    // original has no separate unlock: completing level L appends its time to
+    // the current player's times vector (FUN_0041111b rwg:21406, called from
+    // FUN_00421948 rwg:41372 only when a current player exists), and
     // maxUnlocked = min(50, count + 1) (FUN_0041614b:28638). Core.recordLevelTime
-    // mirrors that; this helper is kept for FieldController's call order.
-    unlockNextLevel(level) {
-        if (this.mCore) {
-            if (level > (this.mCore.mMaxLevelReached || 1)) {
-                this.mCore.mMaxLevelReached = level;
-            }
-            if (this.mCore.save) this.mCore.save();
-        }
-    }
+    // does both, so this is intentionally a no-op.
+    unlockNextLevel(level) {}
 
     // Override input handling to route to current view
     _setupInput() {

@@ -77,6 +77,57 @@ const MASK_PATH_OVERRIDE = {
     'images/shop_slot_open.PNG': 'images/shop_slot_open_.png',
 };
 
+// Cel layout. resources.xml gives no rows/cols, so every image loads as a
+// single cel (rows = cols = 1). After the Game group is loaded, the resource
+// binder FUN_00417990 (rwg:30841-31760) fixes up a specific set of images:
+//   image+0xc (rows) = 1, image+0x10 (cols) = width / height (integer div)
+// resource-name strings at rwg:31147 (BROOD_IDLE), 31167 (HOLY_SPELL),
+// 31177 (EGG), 31232-31252 (ALIENs), 31262-31307 (COINs, DIAMONDs), 31497
+// (SPELL), 31507 (SHADOW), 31538 (ICON_RISK), 31617 (CHICK_HUNGRY), each
+// followed by the fix-up. In the 5-type chick loop (rwg:30995-31140) every
+// per-type image incl. the PREVIEW gets the same width/height fix-up.
+const CELS_FROM_HEIGHT = new Set([
+    'IMAGE_CHICK_IDLE0_LAYER', 'IMAGE_CHICK_IDLE1_LAYER', 'IMAGE_CHICK_PECK_LAYER',
+    'IMAGE_CHICK_WALK_LAYER', 'IMAGE_CHICK_SICK_START_LAYER', 'IMAGE_CHICK_SICK_IDLE_LAYER',
+    'IMAGE_CHICK_LAYER_LAYER', 'IMAGE_CHICK_DEATH_LAYER',
+    'IMAGE_CHICK_IDLE0_BROODY', 'IMAGE_CHICK_IDLE1_BROODY', 'IMAGE_CHICK_PECK_BROODY',
+    'IMAGE_CHICK_WALK_BROODY', 'IMAGE_CHICK_DEATH_BROODY',
+    'IMAGE_CHICK_BROOD_IDLE_BROODY', 'IMAGE_CHICK_BROOD_START_BROODY',
+    'IMAGE_CHICK_IDLE0_ROOSTER', 'IMAGE_CHICK_IDLE1_ROOSTER', 'IMAGE_CHICK_PECK_ROOSTER',
+    'IMAGE_CHICK_WALK_ROOSTER', 'IMAGE_CHICK_DEATH_ROOSTER',
+    'IMAGE_CHICK_IDLE0_MAGIC', 'IMAGE_CHICK_IDLE1_MAGIC', 'IMAGE_CHICK_PECK_MAGIC',
+    'IMAGE_CHICK_WALK_MAGIC', 'IMAGE_CHICK_DEATH_MAGIC',
+    'IMAGE_CHICK_IDLE0_HOLY', 'IMAGE_CHICK_IDLE1_HOLY', 'IMAGE_CHICK_PECK_HOLY',
+    'IMAGE_CHICK_WALK_HOLY', 'IMAGE_CHICK_DEATH_HOLY', 'IMAGE_CHICK_HOLY_SPELL',
+    'IMAGE_CHICK_PREVIEW_LAYER', 'IMAGE_CHICK_PREVIEW_BROODY', 'IMAGE_CHICK_PREVIEW_ROOSTER',
+    'IMAGE_CHICK_PREVIEW_MAGIC', 'IMAGE_CHICK_PREVIEW_HOLY',
+    'IMAGE_EGG', 'IMAGE_ALIEN_DOWN', 'IMAGE_ALIEN_CATCH', 'IMAGE_ALIEN_UP',
+    'IMAGE_COIN_GOLD', 'IMAGE_COIN_SILVER', 'IMAGE_DIAMOND_BLUE', 'IMAGE_DIAMOND_RED',
+    'IMAGE_SPELL', 'IMAGE_SHADOW', 'IMAGE_ICON_RISK', 'IMAGE_CHICK_HUNGRY',
+]);
+// FUN_0041a5b6 (rwg:31939): cols = width / celWidth, rows = 1. Cel widths:
+//   pets — stack table @0x41973b-0x419749 (mouse 0x46, elephant 0x64, wolf 0x87),
+//          applied rwg:31571/31587/31602;
+//   dog idle anims — 0x6f (rwg:31726, 31739). IMAGE_DOG itself is not fixed up.
+const CEL_WIDTH = {
+    IMAGE_PET_IDLE_MOUSE: 0x46, IMAGE_PET_WALK_MOUSE: 0x46,
+    IMAGE_PET_IDLE_ELEPHANT: 0x64, IMAGE_PET_WALK_ELEPHANT: 0x64,
+    IMAGE_PET_WALK_WOLF: 0x87, IMAGE_PET_SPECIAL_WOLF: 0x87,
+    IMAGE_DOG_IDLE0: 0x6f, IMAGE_DOG_IDLE1: 0x6f,
+};
+function _celCols(id, w, h) {
+    if (CELS_FROM_HEIGHT.has(id)) return Math.trunc(w / h);
+    const cel = CEL_WIDTH[id];
+    if (cel) return Math.trunc(w / cel);
+    return 1;
+}
+
+// resources.xml group "Game" contains 11 <Font> entries ahead of the images;
+// they count toward the loader's total (+0x4cc) and done count (+0x4d0)
+// (FUN_0040860b rwg:10710-10721). The port does not load bitmap fonts, so
+// they are counted as already loaded.
+const GAME_GROUP_FONT_COUNT = 11;
+
 export class Res {
     static loaded = false;
 
@@ -153,8 +204,8 @@ export class Res {
             ['IMAGE_CHICK_PECK_HOLY', 'images/chicken/holy/peck.jpg'],
             ['IMAGE_CHICK_WALK_HOLY', 'images/chicken/holy/walk.jpg'],
             ['IMAGE_CHICK_DEATH_HOLY', 'images/chicken/holy/death.jpg'],
-            // spell.jpg — 15-frame holy-spell cast animation.
-            ['IMAGE_CHICK_HOLY_SPELL', 'images/chicken/holy/spell.jpg', 15],
+            // spell.jpg — cols = width/height = 15 (rwg:31167-31176).
+            ['IMAGE_CHICK_HOLY_SPELL', 'images/chicken/holy/spell.jpg'],
             // Previews (mixed .png/.PNG)
             ['IMAGE_CHICK_PREVIEW_LAYER', 'images/chicken/layer/preview.PNG'],
             ['IMAGE_CHICK_PREVIEW_BROODY', 'images/chicken/broody/preview.png'],
@@ -173,15 +224,7 @@ export class Res {
             ['IMAGE_ALIEN_CATCH', 'images/alien_catch.jpg'],
             ['IMAGE_ALIEN_UP', 'images/alien_up.jpg'],
             // Items
-            // egg.png is a 5-frame cracking strip (320x64 = 5 × 64-wide cells):
-            // frame 0 = whole egg, frame 4 = fully cracked. Egg.draw advances
-            // frames as the egg's lifetime ticks down. Explicit cols omitted
-            // so Image.load's width/height auto-detect picks 5 — matches the
-            // original's mNumCols = mWidth / mHeight calc (FUN_xxxxxxxx:31176,
-            // `*piVar7 / *piVar1`). Previously hard-coded 6, producing
-            // mis-aligned 53.33×64 cells that straddled actual frame
-            // boundaries (so the "whole egg" frame 0 showed 53px of frame 0
-            // plus 11px of frame 1, and the last frame ran off the image).
+            // egg.png 320x64 → cols = width/height = 5 (rwg:31177-31186).
             ['IMAGE_EGG', 'images/egg.png'],
             ['IMAGE_EGG_REF', 'images/egg_ref.png'],
             ['IMAGE_EGG_REF_FOR_BROOD', 'images/egg_ref_for_brood.png'],
@@ -236,27 +279,20 @@ export class Res {
             ['IMAGE_OFFENSIVE_SEEDS_CALORIES2', 'images/specials/seeds_calories2.png'],
             ['IMAGE_OFFENSIVE_GUN_POWER', 'images/specials/gun_power.png'],
             ['IMAGE_ICON_RISK', 'images/icon_risk.jpg'],
-            // Pets: cel widths passed to FUN_0041a5b6 by the loader
-            // (asm 0x41973b-0x419749: mouse 0x46, elephant 0x64, wolf 0x87);
-            // cols = image width / cel width:
+            // Pets: cel widths in CEL_WIDTH (FUN_0041a5b6) →
             //   mouse idle 350/70 = 5, walk 700/70 = 10
             //   elephant idle/walk 1200/100 = 12
             //   wolf walk 1350/135 = 10, eat 1755/135 = 13
-            ['IMAGE_PET_IDLE_MOUSE', 'images/pets/mouse/idle.png', 5],
-            ['IMAGE_PET_WALK_MOUSE', 'images/pets/mouse/walk.png', 10],
-            ['IMAGE_PET_IDLE_ELEPHANT', 'images/pets/elephant/idle.png', 12],
-            ['IMAGE_PET_WALK_ELEPHANT', 'images/pets/elephant/walk.png', 12],
-            ['IMAGE_PET_WALK_WOLF', 'images/pets/wolf/walk.jpg', 10],
-            ['IMAGE_PET_SPECIAL_WOLF', 'images/pets/wolf/eat.jpg', 13],
+            ['IMAGE_PET_IDLE_MOUSE', 'images/pets/mouse/idle.png'],
+            ['IMAGE_PET_WALK_MOUSE', 'images/pets/mouse/walk.png'],
+            ['IMAGE_PET_IDLE_ELEPHANT', 'images/pets/elephant/idle.png'],
+            ['IMAGE_PET_WALK_ELEPHANT', 'images/pets/elephant/walk.png'],
+            ['IMAGE_PET_WALK_WOLF', 'images/pets/wolf/walk.jpg'],
+            ['IMAGE_PET_SPECIAL_WOLF', 'images/pets/wolf/eat.jpg'],
             // Additional
             ['IMAGE_INTRODUCTION', 'images/Introduction.jpg'],
             ['IMAGE_INTRODUCTION_LETTER', 'images/letter.jpg'],
-            // chick_hungry.png is 450x50 — auto-detect picks 9 frames at 50x50,
-            // matching the original's mNumCols = width/height calc per
-            // FUN_xxxxxxxx:31626 (`*piVar7 / *piVar1`). Previously hardcoded
-            // as 6 frames, producing 75x50 mis-aligned cells that straddled
-            // actual frame boundaries — the thought-bubble animation showed
-            // half-frames bleeding into each other instead of clean transitions.
+            // chick_hungry.png 450x50 → cols = width/height = 9 (rwg:31617-31626).
             ['IMAGE_CHICK_HUNGRY', 'images/chick_hungry.png'],
             ['IMAGE_UFO', 'images/ufo.jpg'],
             // Main menu buttons
@@ -304,11 +340,10 @@ export class Res {
             ['IMAGE_UPGRADE_PREVIEW15', 'images/upgrade icons/icon15.png'],
             ['IMAGE_UPGRADE_PREVIEW16', 'images/upgrade icons/icon16.png'],
             // Dog: IMAGE_DOG is a single 111x80 image; IDLE0/IDLE1 get cel
-            // width 0x6f = 111 (FUN_0041a5b6, rwg_functions.c:31726/31739):
-            // 1776/111 = 16 and 888/111 = 8 cels.
-            ['IMAGE_DOG', 'images/dog.png', 1],
-            ['IMAGE_DOG_IDLE0', 'images/dog_idle0.png', 16],
-            ['IMAGE_DOG_IDLE1', 'images/dog_idle1.png', 8],
+            // width 0x6f = 111 (CEL_WIDTH): 1776/111 = 16 and 888/111 = 8 cels.
+            ['IMAGE_DOG', 'images/dog.png'],
+            ['IMAGE_DOG_IDLE0', 'images/dog_idle0.png'],
+            ['IMAGE_DOG_IDLE1', 'images/dog_idle1.png'],
         ];
 
         const soundList = [
@@ -351,11 +386,11 @@ export class Res {
 
         // Progress = loaded / total of the Game group, stored into
         // TitleScreen+0x84 (FUN_0040860b rwg:10710-10721).
-        const total = imageList.length + soundList.length;
-        let loaded = 0;
+        const total = GAME_GROUP_FONT_COUNT + imageList.length + soundList.length;
+        let loaded = GAME_GROUP_FONT_COUNT;
 
-        const loadImage = async ([id, path, cols]) => {
-            const img = new Image(BASE_PATH + path, 1, cols || undefined);
+        const loadImage = async ([id, path]) => {
+            const img = new Image(BASE_PATH + path, 1, 1);
             try {
                 await img.load();
             } catch (e) {
@@ -386,6 +421,12 @@ export class Res {
                 }
             }
 
+            // Cel fix-up of FUN_00417990 / FUN_0041a5b6 (see CELS_FROM_HEIGHT).
+            if (img.mWidth > 0 && img.mHeight > 0) {
+                img.mNumRows = 1;
+                img.mNumCols = _celCols(id, img.mWidth, img.mHeight);
+            }
+
             IMAGES[id] = img;
             loaded++;
             if (progressCallback) progressCallback(loaded / total);
@@ -410,7 +451,7 @@ export class Res {
         const savedCb = progressCallback;
         progressCallback = null;
         await Promise.all(initList.map(item => loadImage(item)));
-        loaded = 0;
+        loaded = GAME_GROUP_FONT_COUNT;
         progressCallback = savedCb;
 
         // Load in batches for performance
