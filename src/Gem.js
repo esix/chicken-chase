@@ -120,6 +120,10 @@ export class Gem {
         this.mIsAlive = true;           // JS: list membership (Update() result)
     }
 
+    // Field position (+0x0c/+0x10) — inverse projection FUN_00409533.
+    get mFieldX() { return (this.mX - 10) / 6.0; }
+    get mFieldY() { return (this.mY - 367) / 2.8; }
+
     // Base Sexy::Gem slot [1] is FUN_004a2016 (purecall) — subclasses override.
     update() {}
 
@@ -381,24 +385,56 @@ export class Egg extends Gem {
         this.mEggType = eggType;
         // Collect value DAT_0050033c[type] (rwg_functions.c:6711-6727) via FUN_004072fa.
         this.mEggSellValue = EGG_VALUE_BY_JS_TYPE[eggType] || EGG_VALUE_BY_JS_TYPE[0];
-        // +0x1c hatch-animation progress (FUN_00407038 sets 0). It only grows
-        // once hatching started (FUN_00406c85:8489-8496, += _DAT_004e9150 = 0.01
-        // per tick while > 0). The JS brooding code (Chick.js) hatches eggs
-        // directly, so this stays 0 here.
+        this.mBroodDuration = 4000;     // +0x14 (FUN_00407038:8775)
+        this.mBroodCountdown = -1;      // +0x18
+        // +0x1c hatch-animation progress (FUN_00407038 sets 0); set to 0.001
+        // when the broody gets up (FUN_0040258b) and then grows by 0.01 per
+        // tick (FUN_00406c85); at 1.0 the egg hatches.
         this.mHatchProgress = 0;
-        // Player brood-intent flag / progress, written by Chick.js and
-        // FieldController.js (JS port brood bookkeeping).
-        this.mBrooding = false;
-        this.mBroodProgress = 0;
+        this.mBroodStarted = false;     // +0x20 (set on the first sit-down)
+        this.mHatchSlowdown = 1.0;      // _DAT_004fc3b4 (Field sets it)
+        this.mHatchNow = false;         // JS: signal to Field.update
+        // JS: egg is in the brood-request list (egg controller +0xc).
+        this._brooding = false;
     }
 
-    // Egg controller update FUN_00406c85 (rwg_functions.c:8432-8530) only
-    // decrements the +0x18 brood countdown and advances the +0x1c hatch anim;
-    // an egg leaves the field only when collected (FUN_004072fa) or hatched.
-    // There is no lifetime expiry for eggs (the +0x14 = 4000 written by
-    // FUN_00407038:8775 is the brood duration used by FUN_00406ac9, not a
-    // lifetime). Brood countdown/hatch are driven by Chick.js in the port.
-    update() {}
+    get mBrooding() { return this._brooding; }
+    // Cancel (FieldController, rwg_functions.c:8584-8586): +0x18 = -1,
+    // +0x20 = 0, removed from the brood list.
+    set mBrooding(v) {
+        this._brooding = !!v;
+        if (!v) {
+            this.mBroodCountdown = -1;
+            this.mBroodStarted = false;
+        }
+    }
+
+    // FUN_00406ac9 (asm 0x406ac9-0x406b07): 0 when +0x18 == -1, else
+    // 1 - countdown / ftol(_DAT_004fc3b4 * 1000.0 + 0.5).
+    get mBroodProgress() {
+        if (this.mBroodCountdown === -1) return 0;
+        const total = Math.trunc(this.mHatchSlowdown * 1000.0 + 0.5);
+        return Math.fround(1 - this.mBroodCountdown / total);
+    }
+    set mBroodProgress(v) {}
+
+    // Egg controller update FUN_00406c85 (rwg_functions.c:8427) per egg:
+    //   if hatch progress < 1.0 (FUN_00406ab6): countdown (+0x18) > 0 → --;
+    //     hatch (+0x1c) > 0 → += 0.01 (_DAT_004e9150); >= 1.0 → 1.0, hatch.
+    // Hatching (chick + SOUND_EGG_BROODED) is done by Field.update.
+    update() {
+        if (!this.mIsAlive || this.mCollected) return false;
+        if (!(this.mHatchProgress >= 1.0)) {
+            if (this.mBroodCountdown > 0) this.mBroodCountdown--;
+            if (this.mHatchProgress > 0.0) {
+                this.mHatchProgress = Math.fround(this.mHatchProgress + 0.009999999776482582);
+            }
+            if (!(this.mHatchProgress >= 1.0)) return true;
+            this.mHatchProgress = 1.0;
+        }
+        this.mHatchNow = true;
+        return true;
+    }
 
     getValue() { return this.mEggSellValue; }
 

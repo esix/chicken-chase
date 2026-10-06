@@ -18,16 +18,19 @@
 //   FUN_0041ea9a shop inflation → ... → FUN_0041b901 risk → FUN_0040cc71 hand →
 //   FUN_00421b21 task check / level end.
 
-import { Field } from './Field.js';
+import { Field, fieldToScreen } from './Field.js';
+
+// thunk_FUN_00429891: Mersenne twister masked with 0x7fffffff (asm 0x429891).
+function mtRand() { return Math.floor(Math.random() * 0x80000000); }
 import { createChick, ChickType } from './Chick.js';
-import { TaskType, getLevelConfig } from './LevelData.js';
+import { TaskType, getLevelConfig, getInitialChicks, SHOP_ITEMS, SHOP_ITEM_LIST } from './LevelData.js';
 import { IMAGES, SOUNDS } from './Res.js';
-import { Wolf, Mouse, Elephant } from './Pet.js';
+import { Wolf, Mouse, Elephant, randomSpawnPoint } from './Pet.js';
 
 // DAT_0050032c chicken buy prices (rwg_functions.c:6690-6706).
 const CHICK_BASE_PRICES = [100, 200, 500, 1000, 1200];
-// DAT_0050034c seeds dropped per click by seed upgrade level (rwg_functions.c:6677-6685),
-// read by FUN_0041bfe2 (rwg_functions.c:34304).
+// DAT_0050034c seeds dropped per click, indexed by seed controller +0x20
+// (rwg_functions.c:6677-6685), read by FUN_0041bfe2 (rwg_functions.c:34304).
 const SEEDS_PER_DROP = [5, 9, 12];
 // FUN_0041bfe2 asm 0x41c01d-0x41c02f: price = ftol(count * 0.4 + 0.5)
 // (_DAT_004e93d8 = 0.4 double, _DAT_004e90c8 = 0.5 double).
@@ -36,46 +39,22 @@ const SEED_PRICE_FACTOR = 0.4;
 const CURE_COST = 50;
 // FUN_0040cc71 (rwg_functions.c:16117-16121): raven killed → FUN_00424b5d(+0x32).
 const RAVEN_KILL_REWARD = 50;
-// FUN_0041050c asm 0x410567: wolf killed → FUN_00406b22(0x1f4).
+// FUN_0041050c (rwg_functions.c:~20180, asm 0x410567): wolf killed →
+// FUN_00406b22(money, 500) → FUN_00424b5d.
 const WOLF_KILL_REWARD = 500;
+// Store +0 (FUN_0041e7f2:37614): special-shop item price 0xfa; after each
+// purchase FUN_0041eb94 (rwg_functions.c:37974-37996) doubles it, floor 0xfa.
+const SHOP_ITEM_BASE_PRICE = 0xfa;
+// Seed food value per seed controller +0x1c level (passed to every new seed
+// by FUN_0041c0a8 → FUN_0041bdcb:+0x20). The actual food the original gives
+// per seed level is UNKNOWN — not found in decompiled; 30/50/80 are the JS
+// food units the port already used for the same three tiers.
+const JS_SEED_CALORIES = [30, 50, 80];
 
-// FUN_00422d10 money caps: *(iVar4 + 8) = N (cases 0x1e, 0x24, 0x2f, 0x30, 0x31:
-// rwg_functions.c:43316, 43381, 43489, 43504, 43514). All other levels keep the
-// FUN_00406069 default of -1 (no cap, rwg_functions.c:7531).
-const MONEY_CAP_BY_LEVEL = { 30: 500, 36: 1000, 47: 800, 48: 800, 49: 1000 };
-
-// FUN_00422d10 cases that write *(iVar10 + 4) = 1 (shop object app+0x30, +4
-// = price-inflation flag read by FUN_0041ea9a): 0x20, 0x25, 0x27, 0x2b, 0x31, 0x32.
-const INFLATION_LEVELS = new Set([32, 37, 39, 43, 49, 50]);
-
-// FUN_00422d10: cases that zero raven-controller +0x14/+0x1c/+0x18 (no raven attacks).
-const RAVENS_OFF_LEVELS = new Set([1, 2, 3, 9, 10, 11, 12, 19, 26, 41]);
-// FUN_00422d10: cases that zero +0xc/+0x10 (no wolf attacks). Includes the
-// goto targets LAB_00422e7f (4,5) and LAB_00422fe6 (9, 21).
-const WOLVES_OFF_LEVELS = new Set([1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 17,
-    18, 19, 21, 22, 23, 24, 41]);
-// FUN_00422d10: *(iVar2 + 0x3c) = 1 for cases 0x1c, 0x2c, 0x2e, 0x31 (no-rooster
-// levels) → FUN_0040134a uses the flat _DAT_004e93c0 = 0.02 attack chance.
-const IGNORE_ROOSTER_LEVELS = new Set([28, 44, 46, 49]);
-
-// Bonus ("competitive") levels → FUN_00423cb3(level, N, mult) with
-// task 0xd = EAX*100 ticks. N/mult from the C (rwg_functions.c:43094-43509),
-// EAX seconds from the asm at the switch targets (jump table 0x4238d4):
-//   L8 0x422f98 (push 0x1e), L13 0x4230c7→0x422fa4 (0x1e), L16/20 0x42317b (0x2d),
-//   L25 0x423310 (0x14), L33 0x4234dd→0x423316 (0x14), L38 0x423601→0x42331c (0x14),
-//   L45 0x42378f→0x422fa4 (0x1e).
-// mult floats: _DAT_004e941c=0.8, _DAT_004e9418=0.9, 1.0, _DAT_004e9414=1.1,
-// _DAT_004e92a8=1.2 (read from app/chicken_chase.RWG .rdata).
-const BONUS_LEVELS = {
-    8:  { chicks: 3, mult: 0.8, seconds: 30 },
-    13: { chicks: 4, mult: 0.9, seconds: 30 },
-    16: { chicks: 4, mult: 1.0, seconds: 45 },
-    20: { chicks: 4, mult: 1.0, seconds: 45 },
-    25: { chicks: 4, mult: 1.1, seconds: 20 },
-    33: { chicks: 4, mult: 1.2, seconds: 20 },
-    38: { chicks: 5, mult: 0.9, seconds: 20 },
-    45: { chicks: 5, mult: 1.0, seconds: 30 },
-};
+// All per-level values (start money, money cap, raven/wolf controller, bonus
+// data, inflation flag, buy slots, starting chickens, shop unlocks) come from
+// LevelData.getLevelConfig / getInitialChicks (FUN_0042166f, FUN_00422c01,
+// FUN_00422d10 and helpers) — no per-level tables are kept here.
 
 // rand()/RAND_MAX — FUN_00401148 (rwg_functions.c:203): rand() / _DAT_004e9178 (32767.0).
 function rand01() {
@@ -134,7 +113,13 @@ export class FieldController {
         this.mHasMouse = false;
         this.mSicknessFactor = 0;
         this.mBonusAchieved = false;
-        this.mNextUpgradeHalfPrice = false;
+        this.mNextUpgradeHalfPrice = false; // legacy flag (unused; see mHalfPriceLevel)
+        this.mHalfPriceLevel = -1;          // DAT_004fc2f8 (FUN_00421948:41391)
+        this.mUpgradePrice = SHOP_ITEM_BASE_PRICE; // store +0
+        this.mShopLists = { seed: [], weapon: [], pet: [] };
+        this.mBuySlots = [0, 0, 0, 0, 0];   // store +8 slot values
+        this.mSeedQuality = 0;              // seed ctl +0x1c
+        this.mSeedCountLevel = 0;           // seed ctl +0x20
         this._bonusStartChicks = 0;         // level obj +0x50 (FUN_00423cb3:43857)
         // JS-only visual effects (not present in the original).
         this.mFloatingTexts = [];
@@ -242,16 +227,14 @@ export class FieldController {
     // FUN_0042166f (level object + starter chickens, rwg_functions.c:41149) →
     // FUN_00422c01 (money / raven defaults, rwg_functions.c:42819) →
     // FUN_00422d10 (per-level switch, rwg_functions.c:42903).
+    // Every per-level value is read from LevelData (single source of truth).
     startLevel(level) {
         this.mCurrentLevel = level;
         this.mLevelConfig = getLevelConfig(level);
         const cfg = this.mLevelConfig;
-        const bonus = BONUS_LEVELS[level] || null;
 
-        // Level object +0x48 (FUN_00422d10, e.g. case 1: 0x2c) is the Ace time in
-        // seconds: screenshots/17.png shows L1 "Ace time 00:44" = 0x2c
-        // (LevelData `aceTime`). Bonus levels never write +0x48 (FUN_00423cb3)
-        // → UNKNOWN — not found in decompiled (0 shown as 00:00).
+        // Level object +0x48 = Ace time in seconds (LevelData `aceTime`;
+        // FUN_0040dde4 asm 0x40df31). Bonus levels never write it (0).
         this.mLevelAceTime = (cfg.aceTime > 0) ? cfg.aceTime * 1000 : 0;
 
         this.mField = new Field();
@@ -264,12 +247,21 @@ export class FieldController {
         this.mIsPaused = false;
         this.mBonusAchieved = false;
 
+        // Per-level upgrade state — the original rebuilds the seed controller
+        // (app+0x1c: +0x1c seed quality, +0x20 seeds-per-click index), the
+        // weapon object (app+0x40: +0x10 area, +0x11 power) and the pet list
+        // (app+0x44) for every level in FUN_00406069; they are only raised by
+        // special-shop purchases (FUN_0041ebd3) during the level.
         // Player-profile upgrades are re-applied by GameView after this call.
         this.mPlayerHouseUpgrade = 0;
-        this.mSeedCalories = 30;
+        this.mSeedQuality = 0;              // seed ctl +0x1c
+        this.mSeedCountLevel = 0;           // seed ctl +0x20
+        this.mSeedCalories = JS_SEED_CALORIES[0];
         this.mSeedCount = SEEDS_PER_DROP[0];
-        this.mGunPower = 1;
-        this.mGunArea = false;
+        this.mGunPower = 1;                 // (app+0x40)+0x11 clear
+        this.mGunArea = false;              // (app+0x40)+0x10 clear
+        this.mHasMouse = false;             // pet list rebuilt (app+0x44)
+        this.mHasElephant = false;
         this.mField.mUpgradeLevel = Math.max(cfg.upgradeLevel || 0, this.mPlayerHouseUpgrade || 0);
 
         this.mTotalMoney = 0;
@@ -288,85 +280,68 @@ export class FieldController {
         this.mLaySoundCd = 0;
         this.mSickSoundCd = 0;
 
-        // Tasks. Bonus levels: FUN_00423cb3:43837 task 0xd = EAX*100 ticks.
-        if (bonus) {
-            this.mTasks = [{ type: TaskType.TIME_LIMIT, target: bonus.seconds * 1000 }];
-            this.mTimeLimit = bonus.seconds * 1000;
-        } else {
-            this.mTasks = cfg.tasks;
-            this.mTimeLimit = cfg.timeLimit;
-        }
+        // Tasks (LevelData; bonus levels carry task 0xd as TIME_LIMIT with
+        // origTaskId BONUS_TIME, FUN_00423cb3:43840).
+        this.mTasks = cfg.tasks;
+        this.mTimeLimit = cfg.timeLimit;
         this.mTaskProgress = this.mTasks.map(() => 0);
         this.mTaskFlash = this.mTasks.map(() => 0);
 
-        // Money object (FUN_00406069:7524-7531): flag 0, money 0, cap -1.
+        // Money object (FUN_00406069:7524-7533): flag 0, cap -1; per-level cap
+        // from FUN_00422d10 (LevelData moneyCap, Infinity = -1).
         this.mMoneyFrozen = false;
-        this.mMoneyCap = MONEY_CAP_BY_LEVEL[level] || -1;
+        this.mMoneyCap = Number.isFinite(cfg.moneyCap) ? cfg.moneyCap : -1;
         this.mEggSellDisabled = false;
         // _DAT_004fc3b8 = 1.0 (FUN_00405540:6655, called from FUN_00406069).
         this.mChickPriceInflation = 1.0;
         this.mInflationTick = 0;
-        this.mInflationEnabled = (cfg.priceRisesOverTime !== undefined)
-            ? !!cfg.priceRisesOverTime : INFLATION_LEVELS.has(level);
-        // Shop slot purchase counters — JS mirror of the per-slot limits.
-        this._specialShopBoughtCount = [0, 0, 0, 0, 0];
-
-        // FUN_0042166f:41259 money = 1000000 while the starter chickens are bought.
-        this.mMoney = 1000000;
-        this._setupStartingChickens();
-
-        // FUN_00422c01 (rwg_functions.c:42840-42858): money = 200 / 300 (lvl>9) /
-        // 400 (lvl>29), +100 when FUN_00405886 (level < 7). screenshots/13.png:
-        // L1 shows $294 after three $2 seed drops = 300 start.
-        let startMoney = 200;
-        if (level > 9) startMoney = 300;
-        if (level > 0x1d) startMoney = 400;
-        if (level < 7) startMoney += 100;
-        this.mMoney = startMoney;
-
-        // FUN_00422c01 / FUN_00422d10 / FUN_00423cb3 raven+wolf controller.
-        this._setupRavenController(level, bonus, cfg.raven);
-
-        if (bonus) {
-            // FUN_00423cb3:43850 FUN_00423deb(N): buy layers until N chickens
-            // (money temporarily 1000000, FUN_00423deb:43941-43958).
-            this._buyStarterUntil(bonus.chicks);
-            // FUN_00423cb3:43857 level +0x50 = chicken count (perfect check).
-            this._bonusStartChicks = this.mField.getAliveChickCount();
-            // FUN_00423cb3:43859 money = 10000.
-            this.mMoney = 10000;
-        } else {
-            this._bonusStartChicks = 0;
+        // Store +4 (FUN_00422d10 cases 0x20/0x25/0x27/0x2b/0x31/0x32).
+        this.mInflationEnabled = !!cfg.priceRisesOverTime;
+        // Store buy-slot vector +8 (FUN_00422c01 -1 ×5 + case writes); JS keeps
+        // the live remaining counts here (FUN_0041e8f5:37718 decrements > 0).
+        this.mBuySlots = (cfg.buySlots || [0, 0, 0, 0, 0]).slice();
+        // Store +0 special-shop price (FUN_0041e7f2:37614 = 0xfa), halved when
+        // DAT_004fc2f8 == this level, then DAT_004fc2f8 = -1 (37665-37673).
+        this.mUpgradePrice = SHOP_ITEM_BASE_PRICE;
+        if (this.mHalfPriceLevel > 0) {
+            if (this.mHalfPriceLevel === level) this.mUpgradePrice = Math.trunc(this.mUpgradePrice / 2);
+            this.mHalfPriceLevel = -1;
         }
-        if (level === 0x22 || level === 0x25) {
-            // FUN_00423e5a (rwg_functions.c:43976-43989), cases 0x22 / 0x25:
-            // money obj +0 = 1 (no income), money = 5000, egg selling off.
+        this.mNextUpgradeHalfPrice = false;
+        // Special-shop item lists (FUN_00423d75 / direct FUN_0040ca85 pushes).
+        this.mShopLists = { seed: [], weapon: [], pet: [] };
+        for (const id of cfg.shopUnlockItems || []) {
+            const item = SHOP_ITEM_LIST[id];
+            if (item) this.mShopLists[item.list].push(id);
+        }
+
+        // FUN_0042166f:41259 money = 1000000 while the starter chickens are
+        // bought (asm 0x421816-0x421917, LevelData.getInitialChicks), then
+        // FUN_00423deb(N) tops up with layers (L35, bonus levels).
+        this.mMoney = 1000000;
+        const start = getInitialChicks(level);
+        for (let i = 0; i < start.layer; i++) this._spawnBoughtChick(ChickType.LAYER);
+        for (let i = 0; i < start.broody; i++) this._spawnBoughtChick(ChickType.BROODY);
+        // FUN_0042166f:41297-41301 FUN_00404c34 (level>1) raises each chick's
+        // +0x34 food to FUN_00405899()*5 — Chick.js uses a different food scale,
+        // so this is not applied. UNKNOWN — not mappable to Chick.js units.
+        if (start.fillLayersToTotal > 0) this._buyStarterUntil(start.fillLayersToTotal);
+
+        // Final money: FUN_00422c01 default, or FUN_00423cb3 (10000) /
+        // FUN_00423e5a (5000) — LevelData startMoney.
+        this.mMoney = cfg.startMoney;
+        if (cfg.budgetFlags) {
+            // FUN_00423e5a (rwg_functions.c:43980-43990), cases 0x22 / 0x25:
+            // money obj +0 = 1 (FUN_00424b5d adds nothing), egg ctl +0x28 = 1
+            // (FUN_004072fa: eggs give no money).
             this.mMoneyFrozen = true;
-            this.mMoney = 5000;
             this.mEggSellDisabled = true;
         }
-        if (level === 0x23) {
-            // case 0x23 (rwg_functions.c:43360): FUN_00423deb(10); money restored.
-            this._buyStarterUntil(10);
-        }
+        // FUN_00423cb3:43857 level +0x50 = chicken count (perfect check).
+        this._bonusStartChicks = cfg.isBonus ? this.mField.getAliveChickCount() : 0;
 
-        // Pets — the original rebuilds the pet list (app+0x44) per level; whether
-        // purchased pets carry over is UNKNOWN — not found in decompiled.
-        // JS keeps the previous behaviour (re-add owned pets).
-        if (this.mHasMouse) {
-            const m = new Mouse();
-            m.mX = 100 + Math.random() * 600;
-            m.mY = 380 + Math.random() * 180;
-            m.mDirection = m.mX < 400 ? 1 : 0;
-            this.mField.addPet(m);
-        }
-        if (this.mHasElephant) {
-            const e = new Elephant();
-            e.mX = 100 + Math.random() * 600;
-            e.mY = 380 + Math.random() * 180;
-            e.mDirection = e.mX < 400 ? 1 : 0;
-            this.mField.addPet(e);
-        }
+        // FUN_00422c01 / FUN_00422d10 / FUN_00423cb3 raven+wolf controller.
+        this._setupRavenController(cfg.raven);
 
         // JS-only VFX reset.
         this.mFloatingTexts = [];
@@ -377,28 +352,8 @@ export class FieldController {
         this.mMoneyFlashTimer = 0;
     }
 
-    // FUN_0042166f starter purchases, decoded from asm 0x421828-0x421917
-    // (chicken type is passed in EAX, slot index in ESI — not visible in the C
-    // at rwg_functions.c:41260-41300):
-    //   slot0 limit 3, buy type 0 ×3                       (always)
-    //   if FUN_00405886 (level<7): slot0=1, slot1=1, buy 0, buy 1
-    //   if level>=10 && level!=29: slot1=1, buy 1
-    //   if level>=30: slot0=1, buy 0
-    // screenshots/13.png (L1): four layers + one broody.
-    _setupStartingChickens() {
-        const lvl = this.mCurrentLevel;
-        const types = [ChickType.LAYER, ChickType.LAYER, ChickType.LAYER];
-        if (lvl < 7) types.push(ChickType.LAYER, ChickType.BROODY);
-        if (lvl >= 10 && lvl !== 0x1d) types.push(ChickType.BROODY);
-        if (lvl >= 0x1e) types.push(ChickType.LAYER);
-        for (const t of types) this._spawnBoughtChick(t);
-        // FUN_0042166f:41297-41301 FUN_00404c34 (level>1) raises each chick's
-        // +0x34 food to FUN_00405899()*5 — Chick.js uses a different food scale,
-        // so this is not applied. UNKNOWN — not mappable to Chick.js units.
-    }
-
-    // FUN_00423deb (rwg_functions.c:43926): buy type-0 chickens until the
-    // field holds N, with money temporarily 1000000, then restore money.
+    // FUN_00423deb (rwg_functions.c:43926): slot0 = -1, buy type-0 chickens
+    // until the field holds N, with money temporarily 1000000, then restore.
     _buyStarterUntil(n) {
         const saved = this.mMoney;
         this.mMoney = 1000000;
@@ -408,82 +363,47 @@ export class FieldController {
         this.mMoney = saved;
     }
 
-    // FUN_00404865 (rwg_functions.c:5395) via FUN_0041e8f5: the chick is built
-    // by FUN_00403ec2 → FUN_004032ca (state 4 = adult, scale 1.0,
-    // rwg_functions.c:3441, 3480) at a random world point FUN_00408107
-    // (rand%128, rand%72). The world→screen mapping is UNKNOWN — not found in
-    // decompiled; the JS yard rectangle below is kept.
+    // FUN_00404865 (rwg_functions.c:5395) via FUN_0041e8f5:37723-37727: the
+    // buy passes point (-1,-1) (_DAT_004e9230), so x < 0 (asm 0x404894-0x4048aa)
+    // → FUN_00408107 (rwg_functions.c:10260): x = mt%128 (signed-mod form),
+    // y = mt%72 (thunk_FUN_00429891 = MT masked 0x7fffffff). The chick is
+    // built at that field point by FUN_00403ff5 → FUN_00403ec2. Size/age are
+    // owned by Chick.js (FUN_00409d5c, from food).
     _spawnBoughtChick(type) {
-        const x = 120 + Math.random() * 560;
-        const y = 380 + Math.random() * 180;
-        const c = createChick(type, x, y);
-        c.mIsAdult = true;
-        c.mScale = 1.0;
-        c.mGrowTimer = 800;
+        const fx = mtRand() % 128;   // FUN_00408107: uVar1 & 0x8000007f
+        const fy = mtRand() % 0x48;  // FUN_00408107: uVar2 % 0x48
+        const s = fieldToScreen(fx, fy, 0);
+        const c = createChick(type, s.x, s.y);
+        // Exact field point (avoid the screen round-trip rounding).
+        c.mPos[0] = fx;
+        c.mPos[1] = fy;
         this.mField.addChick(c);
         this.mTotalRaisedChicks++;
         return c;
     }
 
-    // Raven/wolf controller app+0x10. Defaults FUN_00401202 (rwg_functions.c:284),
-    // per-level base FUN_00422c01 (rwg_functions.c:42858-42879), overrides
-    // FUN_00422d10 / FUN_00423cb3.
-    // When LevelData supplies the same raw fields (cfg.raven, derived from the
-    // same functions) they are used; the local tables are the fallback.
-    _setupRavenController(level, bonus, raw) {
+    // Raven/wolf controller app+0x10 — raw fields from LevelData `raven`
+    // (ctor FUN_00401202:284, FUN_00422c01:42863-42889, FUN_00422d10 cases,
+    // FUN_00423cb3:43841-43846).
+    _setupRavenController(raw) {
         this.mRavenScaredTimer = 0;                                   // +0x30
-        if (raw) {
-            this.mRavenCtl = {
-                wolvesPerAttack: raw.wolvesPerWave, unk10: raw.f10,
-                waveSize: raw.perWave, ravenHP: raw.f18, maxActive: raw.atOnce,
-                remaining: 0, rollTick: 0, waveTimer: 0, attacking: false,
-                bonusRate: raw.f34, rateDelay: raw.f38,
-                ignoreRoosters: !!raw.fixedChance, speedMult: raw.f40,
-            };
-            return;
-        }
-        const ctl = {
-            wolvesPerAttack: level >= 0x1f ? 2 : 1,                  // +0x0c (local_8)
-            unk10: level >= 0x1f ? 6 : 7,                             // +0x10 — use UNKNOWN
-            waveSize: level >= 0x1f ? 0x19 : (level > 10 ? 0xc : 8),  // +0x14
-            ravenHP: level > 0x28 ? 2 : 1,                            // +0x18 (raven ctor HP, asm 0x40128f)
-            maxActive: 4,                                             // +0x1c
-            remaining: 0,                                             // +0x20
-            rollTick: 0,                                              // +0x24
-            waveTimer: 0,                                             // +0x28
-            attacking: false,                                         // +0x2c
-            bonusRate: 1.0,                                           // +0x34
-            rateDelay: -1,                                            // +0x38
-            ignoreRoosters: false,                                    // +0x3c
-            speedMult: 1.0,                                           // +0x40 (raven ctor arg, asm 0x401288)
+        const r = raw || { wolvesPerWave: 0, f10: 0, perWave: 0, f18: 0, atOnce: 0,
+            f34: 1.0, f38: -1, fixedChance: false, f40: 1.0 };
+        this.mRavenCtl = {
+            wolvesPerAttack: r.wolvesPerWave,   // +0x0c
+            wolfHP: r.f10,                      // +0x10 (asm 0x4015c7 → wolf +0x38)
+            waveSize: r.perWave,                // +0x14
+            ravenHP: r.f18,                     // +0x18 (asm 0x40128f → raven +0x44)
+            maxActive: r.atOnce,                // +0x1c
+            remaining: 0,                       // +0x20
+            rollTick: 0,                        // +0x24
+            waveTimer: 0,                       // +0x28
+            attacking: false,                   // +0x2c
+            bonusRate: r.f34,                   // +0x34
+            rateDelay: r.f38,                   // +0x38 (ticks)
+            ignoreRoosters: !!r.fixedChance,    // +0x3c
+            speedMult: r.f40,                   // +0x40 (asm 0x401288 → raven +0x4c)
         };
-        if (RAVENS_OFF_LEVELS.has(level)) {
-            ctl.waveSize = 0; ctl.maxActive = 0; ctl.ravenHP = 0;
-        }
-        if (WOLVES_OFF_LEVELS.has(level)) {
-            ctl.wolvesPerAttack = 0; ctl.unk10 = 0;
-        }
-        if (IGNORE_ROOSTER_LEVELS.has(level)) ctl.ignoreRoosters = true;
-        if (level === 0x23) {
-            // case 0x23 (rwg_functions.c:43354-43359): _DAT_004dc820 = 0.4.
-            ctl.bonusRate = 0.4; ctl.rateDelay = 0;
-            ctl.waveSize = 2; ctl.maxActive = 2; ctl.ravenHP = 1;
-        } else if (level === 0x24) {
-            ctl.bonusRate = 1.0; ctl.rateDelay = 24000;      // rwg_functions.c:43369-43370
-        } else if (level === 0x2a) {
-            ctl.bonusRate = 1.0; ctl.rateDelay = 30000;      // rwg_functions.c:43445-43446
-        }
-        if (bonus) {
-            // FUN_00423cb3 (rwg_functions.c:43838-43846): +0x34 = _DAT_004dc7f8 (6.0),
-            // +0x40 = mult, +0x38 = 0, +0x14 = +0x1c = N, +0x18 = 1.
-            ctl.bonusRate = 6.0;
-            ctl.speedMult = bonus.mult;
-            ctl.rateDelay = 0;
-            ctl.waveSize = bonus.chicks;
-            ctl.maxActive = bonus.chicks;
-            ctl.ravenHP = 1;
-        }
-        this.mRavenCtl = ctl;
     }
 
     _activeRavenCount() {
@@ -530,27 +450,36 @@ export class FieldController {
         }
     }
 
-    // FUN_00401543 (rwg_functions.c:620): wolf attack.
+    // FUN_00401543 (rwg_functions.c:620): wolf attack. SOUND_WOLF, then
+    // n = +0x0c (2 if n > 2 and an elephant exists, FUN_004104b3(1)); per wolf
+    // FUN_0040178e(ctl, allowRooster = 1) picks a target chick (asm 0x4015a9-
+    // 0x4015c0) and only then FUN_00410299(pets, 2, +0x10) creates the wolf.
+    // There is no "alive wolves" cap in the original.
     _startWolfAttack() {
         const ctl = this.mRavenCtl;
         if (SOUNDS.SOUND_WOLF) SOUNDS.SOUND_WOLF.play();    // DAT_004feda0 :645
         let n = ctl.wolvesPerAttack;
         if (n > 2 && this._hasElephant()) n = 2;
         for (let i = 0; i < n; i++) {
-            // FUN_0040178e picks a target chick; no target → no wolf.
-            if (this.mField.getAliveChickCount() === 0) continue;
-            // Wolf spawn position (pet factory FUN_00410299) UNKNOWN — not found
-            // in decompiled; JS spawns at a field edge.
-            const wolf = new Wolf();
-            wolf.mX = Math.random() < 0.5 ? 50 : 750;
-            wolf.mY = 380 + Math.random() * 180;
-            wolf.mDirection = wolf.mX < 400 ? 1 : 0;
-            this.mField.addWolf(wolf);
+            const target = this.mField._pickRavenTarget
+                ? this.mField._pickRavenTarget(true)
+                : (this.mField.getAliveChickCount() > 0);
+            if (!target) continue;
+            // FUN_00410299 wolf branch (asm 0x4102d6-0x41030b): position =
+            // FUN_00408107 (rand%128, rand%72), then x = -3.0 (_DAT_004e929c)
+            // when rand01 < 0.5 (_DAT_004dc858) else 131.0 (_DAT_004e9298);
+            // HP = controller +0x10 (wolf ctor FUN_00424be6 +0x38).
+            const [, fy] = randomSpawnPoint();
+            const fx = rand01() < 0.5 ? -3.0 : 131.0;
+            this.mField.addWolf(new Wolf(ctl.wolfHP, fx, fy));
         }
     }
 
-    // RiskCaseRavensAttack (FUN_0041b4ac) entry point used by RiskController.js.
+    // RiskCaseRavensAttack (FUN_0041b4ac, rwg_functions.c:33294): controller
+    // +0x30 (scarecrow timer) = 0, then FUN_00401491. Entry point used by
+    // RiskController.js.
     startAttackWave() {
+        this.mRavenScaredTimer = 0;
         this.startRavenAttack();
     }
 
@@ -659,8 +588,6 @@ export class FieldController {
             this.mConfettiTimer--;
             if (this.mConfettiTimer % 18 === 0) this.addConfetti(20);
         }
-        if (this.mRiskReady) this.mRiskAnimTimer = (this.mRiskAnimTimer || 0) + 1;
-        else this.mRiskAnimTimer = 0;
     }
 
     _tickGameLogic() {
@@ -675,34 +602,8 @@ export class FieldController {
 
         if (this.mSickSoundCd > 0) this.mSickSoundCd--;
         if (this.mLaySoundCd > 0) this.mLaySoundCd--;
-        // Random sickness. The original makes one random eligible chick sick every
-        // FUN_00404caf() ticks (60/40/30/15/10 s by chicken count, halved by field
-        // +0x26c) inside FUN_004043fd (rwg_functions.c:5084-5180) — Field scope.
-        // This per-chick probability roll is the previous JS stand-in:
-        // UNKNOWN — not found in decompiled (left unchanged until Field.js ports
-        // FUN_004043fd).
-        if (this.mSicknessFactor > 0) {
-            for (const c of this.mField.mChickens) {
-                if (c.mIsAlive && c.mIsAdult && !c.mIsSick
-                    && Math.random() < 0.0001 * this.mSicknessFactor) {
-                    c.mIsSick = true;
-                    if (SOUNDS.SOUND_SICK && (this.mSickSoundCd || 0) === 0) {
-                        SOUNDS.SOUND_SICK.play();
-                        this.mSickSoundCd = 200;
-                    }
-                }
-            }
-        }
-
-        // JS bookkeeping: release an egg whose claiming broody died/was sold.
-        for (const gem of this.mField.mGems) {
-            if (gem.mType === 4 && gem.mIsAlive && gem.mBrooding
-                && gem._claimedBy
-                && (!gem._claimedBy.mIsAlive || gem._claimedBy.mBroodingEgg !== gem)) {
-                gem._claimedBy = null;
-                gem.mBroodProgress = 0;
-            }
-        }
+        // Sickness (FUN_004043fd/FUN_00404caf) and brooding (FUN_0040412c)
+        // are ticked inside Field.update().
 
         // FUN_0041ea9a — chicken price inflation.
         this._updateInflation();
@@ -774,7 +675,7 @@ export class FieldController {
             case TaskType.RAISE_ROOSTERS:         // FUN_00404ad0(2)
                 return this.mField.getChickCountByType(ChickType.ROOSTER);
             case TaskType.TIME_LIMIT:             // state+8 elapsed
-            case TaskType.EARN_MONEY_TIMED:
+            case TaskType.BONUS_TIME:
                 return this.mTimeElapsed;
             default:
                 return 0;
@@ -784,7 +685,7 @@ export class FieldController {
     _taskTarget(task) {
         // Task 0xc/0xd target lives in mTimeLimit so RiskCasePlusTime
         // (FUN_0041b0b3: target += 3000 ticks) can extend it.
-        if (task.type === TaskType.TIME_LIMIT || task.type === TaskType.EARN_MONEY_TIMED) {
+        if (task.type === TaskType.TIME_LIMIT || task.type === TaskType.BONUS_TIME) {
             return this.mTimeLimit;
         }
         return task.target;
@@ -803,7 +704,7 @@ export class FieldController {
                 const flashes = task.type !== TaskType.EARN_MONEY
                     && task.type !== TaskType.RAISE_CHICKENS
                     && task.type !== TaskType.TIME_LIMIT
-                    && task.type !== TaskType.EARN_MONEY_TIMED;
+                    && task.type !== TaskType.BONUS_TIME;
                 if (flashes) this.mTaskFlash[i] = 15;
                 this.mTaskProgress[i] = value;
             }
@@ -811,7 +712,8 @@ export class FieldController {
     }
 
     _isBonus() {
-        return !!BONUS_LEVELS[this.mCurrentLevel];
+        // level +0x14 (FUN_00423cb3:43854) — LevelData isBonus.
+        return !!(this.mLevelConfig && this.mLevelConfig.isBonus);
     }
 
     // FUN_00421afa (rwg_functions.c:41460): "lost" = no chickens, or task 0xc
@@ -859,9 +761,10 @@ export class FieldController {
             // FUN_00423d5b (rwg_functions.c:43870): perfect = chicken count == level +0x50.
             const perfect = this.mField.getAliveChickCount() === this._bonusStartChicks;
             this.mBonusAchieved = perfect;
-            // :41391 DAT_004fc2f8 = level + 1 → next level's upgrade price halved
-            // (FUN_0041e7f2:37670-37677).
-            if (perfect) this.mNextUpgradeHalfPrice = true;
+            // :41391 DAT_004fc2f8 = level + 1 → the special-shop price (store
+            // +0) is halved if that level is the next one started
+            // (FUN_0041e7f2:37665-37673).
+            if (perfect) this.mHalfPriceLevel = this.mCurrentLevel + 1;
         }
         // JS-only celebration VFX.
         this.addConfetti(80);
@@ -931,35 +834,18 @@ export class FieldController {
         return Math.floor(base * this.mChickPriceInflation + 0.5);
     }
 
-    // Shop-slot limit (FUN_0040bfb3 slot value): -1 unlimited, 0 closed, N left.
-    // The per-level slot values are carried by LevelData (hasBuy/buyableTypes/
-    // hasMagicHoly/maxBuyPerType).
+    // Shop-slot value (store +8 vector, FUN_0040bfb3): -1 unlimited, 0 closed,
+    // N = buys left. Initial values: FUN_00422c01:42836-42849 (-1 ×5) +
+    // FUN_00423c04 / FUN_00422d10 writes (LevelData buySlots); screenshots/13
+    // (L1: all closed) and 19 (L2: layer open, no count). Independent of the
+    // BUY button (store +0x19).
     _slotLimit(type) {
-        const cfg = this.mLevelConfig;
-        if (!cfg) return 0;
-        const bought = (this._specialShopBoughtCount && this._specialShopBoughtCount[type]) || 0;
-        if (Array.isArray(cfg.buySlots)) {
-            // FUN_00422c01:42836-42849 (-1 ×5) + FUN_00423c04 / FUN_00422d10 slot writes;
-            // screenshots/19.png (L2): layer slot open at 100 with no count.
-            const base = cfg.buySlots[type];
-            if (base === 0) return 0;
-            if (base < 0) return -1;
-            return Math.max(0, base - bought);
-        }
-        if (!cfg.hasBuy) return 0;
-        const typeKeys = ['layer', 'broody', 'rooster', 'magic', 'holy'];
-        const bt = cfg.buyableTypes || {};
-        if (bt[typeKeys[type]] === false) return 0;
-        if ((type === 3 || type === 4) && !cfg.hasMagicHoly) return 0;
-        const maxBuy = (cfg.maxBuyPerType || {})[typeKeys[type]];
-        if (typeof maxBuy === 'number') {
-            return Math.max(0, maxBuy - bought);
-        }
-        return -1;
+        const v = this.mBuySlots ? this.mBuySlots[type] : 0;
+        return (typeof v === 'number') ? v : 0;
     }
 
     // FUN_0041e8f5 (rwg_functions.c:37701) without the slot gate — used by the
-    // level-start purchases, which set their own slot limits.
+    // level-start purchases (FUN_00423deb sets slot0 = -1 first, 43941).
     _buySlot(type) {
         if (!this.spendMoney(this.getChickPrice(type))) {
             if (SOUNDS.SOUND_ERROR) SOUNDS.SOUND_ERROR.play();   // DAT_004fedac :37736
@@ -969,9 +855,13 @@ export class FieldController {
         return true;
     }
 
-    // HUD slot click: FUN_00409ba0 (rwg_functions.c:12469) → FUN_0041e8f5.
+    // HUD slot click: FUN_00409ba0 (rwg_functions.c:12469) → FUN_0041e8f5
+    // (rwg_functions.c:37701-37740):
     //   slot value 0 → nothing (no sound); money < price → SOUND_ERROR;
-    //   success → chick spawned, slot value decremented if > 0, SOUND_CHICK_BUY.
+    //   success → chick spawned, slot value decremented if > 0 (37718-37721),
+    //   SOUND_CHICK_BUY (DAT_004fed80, rwg_functions.c:12495).
+    // Chicken prices never double per purchase (FUN_004058e7 = base × global
+    // inflation factor); the only rise is FUN_0041ea9a's ×1.003.
     buyChick(type) {
         if (this._slotLimit(type) === 0) return false;
         const price = this.getChickPrice(type);
@@ -981,24 +871,109 @@ export class FieldController {
         }
         this.spendMoney(price);
         this._spawnBoughtChick(type);
-        if (!this._specialShopBoughtCount) this._specialShopBoughtCount = [0, 0, 0, 0, 0];
-        this._specialShopBoughtCount[type]++;
+        if (this.mBuySlots[type] > 0) this.mBuySlots[type]--;
         if (type === ChickType.MAGIC) this.mHatchedMagic++;
         else if (type === ChickType.HOLY) this.mHatchedHoly++;
         else if (type === ChickType.ROOSTER) this.mHatchedRooster++;
-        // DAT_004fed80 (rwg_functions.c:12495).
         if (SOUNDS.SOUND_CHICK_BUY) SOUNDS.SOUND_CHICK_BUY.play();
         return true;
     }
 
-    // Seed upgrade level = seed controller +0x20 (FUN_0041bfe2:34304). The JS
-    // upgrade effects only raise mSeedCalories (seeds_1 → 50, seeds_2 → 80), so
-    // the level is derived from it. The writer of +0x20 is UNKNOWN — not found
-    // in decompiled.
+    // Seed controller +0x20 (seeds-per-click index into DAT_0050034c, read by
+    // FUN_0041bfe2:34304); written by FUN_0041c3c6 (items 0 → 1, 5 → 2).
     _seedUpgradeLevel() {
-        if (this.mSeedCalories >= 80) return 2;
-        if (this.mSeedCalories >= 50) return 1;
-        return 0;
+        return this.mSeedCountLevel || 0;
+    }
+
+    // ---- Special shop (BUY button, SpecialShopDialog FUN_00420232) ----------
+    // FUN_0041eae5 (rwg_functions.c:37926): the item list shown by the special
+    // shop and used by RiskCaseOffensive (FUN_0041aeaf):
+    //   FUN_0041c25e (34473): seed list → [2 if present else 6 if present],
+    //                         then [0 if present else 5 if present];
+    //   then the whole weapon list (app+0x40)+4 (FUN_0040c998), then the whole
+    //   pet list (app+0x44)+0xc (FUN_00410209).
+    getSpecialShopItems() {
+        const L = this.mShopLists || { seed: [], weapon: [], pet: [] };
+        const ids = [];
+        if (L.seed.includes(2)) ids.push(2);
+        else if (L.seed.includes(6)) ids.push(6);
+        if (L.seed.includes(0)) ids.push(0);
+        else if (L.seed.includes(5)) ids.push(5);
+        for (const id of L.weapon) ids.push(id);
+        for (const id of L.pet) ids.push(id);
+        return ids.map((id) => ({
+            id,
+            name: SHOP_ITEM_LIST[id].name,
+            desc: SHOP_ITEM_LIST[id].desc,
+            image: 'IMAGE_OFFENSIVE_' + SHOP_ITEMS[id],   // DAT_005005d4[id] (rwg:31518-31538)
+        }));
+    }
+
+    // Special-shop price = store +0 (row text FUN_00420758:40144-40150, "FREE"
+    // when < 1).
+    getSpecialShopPrice() {
+        return this.mUpgradePrice;
+    }
+
+    // FUN_0041eb94 (rwg_functions.c:37974): money < price → false (dialog shows
+    // "You don't have enough money.", rwg:40388); else apply the item
+    // (FUN_0041ebd3), spend the price, price *= 2 with floor 0xfa.
+    buySpecialItem(id) {
+        const price = this.mUpgradePrice;
+        if (this.mMoney < price) return false;
+        this._applyShopItem(id);
+        this.spendMoney(price);
+        let next = price * 2;
+        if (next < SHOP_ITEM_BASE_PRICE) next = SHOP_ITEM_BASE_PRICE;
+        this.mUpgradePrice = next;
+        return true;
+    }
+
+    // RiskCaseOffensive (FUN_0041aeaf asm 0x41aee9): same list as the shop.
+    getRiskOffensiveItems() {
+        return this.getSpecialShopItems();
+    }
+
+    // RiskCaseOffensive apply (asm 0x41afbd-0x41afc9): FUN_0041ebd3(id), free.
+    giveRiskOffensiveItem(id) {
+        this._applyShopItem(id);
+    }
+
+    // FUN_0041ebd3 (rwg_functions.c:38003): seed list first (FUN_0041c3c6),
+    // else weapon list (remove id; 3 → +0x10, 7 → +0x11), else pet list
+    // (FUN_00410223: remove id; 1 → mouse, 4 → elephant spawned).
+    _applyShopItem(id) {
+        const L = this.mShopLists;
+        const take = (list) => {
+            const i = list.indexOf(id);
+            if (i < 0) return false;
+            list.splice(i, 1);           // FUN_0040ca0e removes every match
+            while (list.indexOf(id) >= 0) list.splice(list.indexOf(id), 1);
+            return true;
+        };
+        if (take(L.seed)) {
+            // FUN_0041c3c6:34596-34607
+            if (id === 2) this.mSeedQuality = 1;
+            else if (id === 6) this.mSeedQuality = 2;
+            else if (id === 0) this.mSeedCountLevel = 1;
+            else if (id === 5) this.mSeedCountLevel = 2;
+            this.mSeedCalories = JS_SEED_CALORIES[this.mSeedQuality];
+            this.mSeedCount = SEEDS_PER_DROP[this.mSeedCountLevel];
+            return true;
+        }
+        // FUN_0041ebd3:38018-38024 — the weapon list removal runs for any id.
+        take(L.weapon);
+        if (id === 3) { this.mGunArea = true; return true; }
+        if (id === 7) { this.mGunPower = 2; return true; }
+        if (!take(L.pet)) return false;
+        if (id === 1 || id === 4) {
+            // FUN_00410299 type 0 / 1 at FUN_00408107 (rand%128, rand%72).
+            const [fx, fy] = randomSpawnPoint();
+            const pet = id === 1 ? new Mouse(fx, fy) : new Elephant(fx, fy);
+            this.mField.addPet(pet);
+            if (id === 1) this.mHasMouse = true; else this.mHasElephant = true;
+        }
+        return true;
     }
 
     // drawHUD — part of GameView::Draw FUN_0040a3d6 (rwg_functions.c:13085).
@@ -1103,7 +1078,7 @@ export class FieldController {
             [TaskType.HATCH_HOLY]: 'IMAGE_MISSION_CHICKENS_HOLY',
             [TaskType.RAISE_ROOSTERS]: 'IMAGE_MISSION_CHICKENS_ROOSTER',
             [TaskType.TIME_LIMIT]: 'IMAGE_MISSION_TIME',
-            [TaskType.EARN_MONEY_TIMED]: 'IMAGE_MISSION_TIME',
+            [TaskType.BONUS_TIME]: 'IMAGE_MISSION_TIME',
         };
         const order = this.mTasks.map((t, i) => i)
             .sort((a, b) => this.mTasks[a].type - this.mTasks[b].type);
@@ -1118,7 +1093,7 @@ export class FieldController {
             if (ready(iconImg)) ctx.drawImage(iconImg.img, 605, ty - 2);
             ctx.font = 'bold 14px Arial, sans-serif';
             ctx.textAlign = 'center';
-            if (task.type === TaskType.TIME_LIMIT || task.type === TaskType.EARN_MONEY_TIMED) {
+            if (task.type === TaskType.TIME_LIMIT || task.type === TaskType.BONUS_TIME) {
                 // Remaining time in red (255,50,50); white when remaining < 0x3e9
                 // ticks and (remaining / 0x32) is odd (:13760-13771).
                 const remTicks = Math.max(0, Math.floor((target - this.mTimeElapsed) / 10));
@@ -1185,28 +1160,26 @@ export class FieldController {
         ctx.fillText(this._formatTicks(Math.floor(this.mTimeElapsed / 10)), 787, 27);
         ctx.fillText(String(this.mMoney), 787, 69);
 
-        // Risk icon — FUN_00409af0:12452: x = 0x2da, y = (count-1)*slot.h + 0x75,
-        // shown when (app+0x48)+9 is set (:13899-13905). Gate on level >= 7 is
-        // the previous JS behaviour (RiskController scope).
-        if (this.mRiskReady && taskIdx > 0 && this.mCurrentLevel >= 7) {
-            const ry = (taskIdx - 1) * 42 + 0x75;
+        // Risk icon — shown when (app+0x48)+9 (ready) is set (rwg:13899).
+        // Rect FUN_00409af0 (rwg:12452-12457, asm 0x409b6a-0x409b98):
+        // x = 0x2da, y = (count-1) * DAT_004fffc4(IMAGE_NUMBER_SLOT_TASK)+8
+        // (height) + 0x75, w/h = DAT_00500014 (IMAGE_ICON_RISK) +4/+8 = the
+        // whole image width/height (asm 0x409b88/0x409b8b). Drawn by
+        // FUN_0041742b at rect x,y with cel = phase(+0x10) * numCols
+        // (rwg:13901-13905; RiskController.getIconCel).
+        const risk = this.mRiskController;
+        if (this.mRiskReady && risk) {
+            const slotH = ready(slotTaskImg) ? slotTaskImg.mHeight : 0;
+            const ry = (taskIdx - 1) * slotH + 0x75;
             const riskImg = IMAGES.IMAGE_ICON_RISK;
             if (ready(riskImg)) {
                 const fw = riskImg.getCelWidth();
                 const fh = riskImg.getCelHeight();
-                // Frame timing UNKNOWN — not found in decompiled (FUN_0041742b frame
-                // argument from (app+0x48)+0x10); JS cycles 6 ticks/frame.
-                const numFrames = (riskImg.mNumCols || 1) * (riskImg.mNumRows || 1);
-                const frame = numFrames > 1
-                    ? Math.floor((this.mRiskAnimTimer || 0) / 6) % numFrames
-                    : 0;
-                const cols = riskImg.mNumCols || 1;
-                const sx = (frame % cols) * fw;
-                const sy = Math.floor(frame / cols) * fh;
-                ctx.drawImage(riskImg.img, sx, sy, fw, fh, 0x2da, ry, fw, fh);
-                this._riskIconRect = { x: 0x2da, y: ry, w: fw, h: fh };
+                const cel = risk.getIconCel(riskImg.mNumCols || 1);
+                ctx.drawImage(riskImg.img, cel * fw, 0, fw, fh, 0x2da, ry, fw, fh);
+                this._riskIconRect = { x: 0x2da, y: ry, w: riskImg.mWidth, h: riskImg.mHeight };
             } else {
-                this._riskIconRect = { x: 0x2da, y: ry, w: 40, h: 40 };
+                this._riskIconRect = null;
             }
         } else {
             this._riskIconRect = null;
@@ -1241,16 +1214,6 @@ export class FieldController {
         }
     }
 
-    // Closest point of the crosshair square (centre x,y, half-size h) to the
-    // entity centre — rect overlap test of FUN_0040d241 (rwg_functions.c:16195)
-    // against an entity hit box exposed only through contains().
-    static _crosshairPoint(ex, ey, x, y, h) {
-        return {
-            x: Math.max(x - h, Math.min(x + h, ex)),
-            y: Math.max(y - h, Math.min(y + h, ey)),
-        };
-    }
-
     // Hand click — FUN_0040cc71 (rwg_functions.c:15843-16190). Modes:
     // 0 seeds, 1 cure, 2 gun (FUN_0040cc01). The hovered raven/wolf/sick chick is
     // picked by the auto-cursor (GameView); this applies the "fire" action.
@@ -1279,16 +1242,30 @@ export class FieldController {
                 if (raven.mHP < 1) this.addMoney(RAVEN_KILL_REWARD, raven.mX, raven.mY);
                 return;
             }
+            // Crosshair rect (rwg_functions.c:15926-15936): (x - aim/2,
+            // y - (aim>>1), aim, aim).
+            const cross = { x: x - Math.trunc(aim / 2), y: y - h, w: aim, h: aim };
             for (const wolf of this.mField.mWolves || []) {
                 if (!wolf.mIsAlive) continue;
-                // Wolf hit box (±60, ±50) is the JS Pet.js sprite box; the original
-                // rect FUN_00409800 is UNKNOWN.
-                const p = FieldController._crosshairPoint(wolf.mX, wolf.mY, x, y, h);
-                if (Math.abs(wolf.mX - p.x) > 60 || Math.abs(wolf.mY - p.y) > 50) continue;
-                // FUN_0041050c (rwg_functions.c:20161): if not dead → hit(dmg),
-                // SOUND_SHOOT (DAT_004fed88), dead now → +$500 at the wolf.
+                // Pet list loop (rwg_functions.c:15971-16010): type 2 pets whose
+                // rect FUN_00409800 (Pet.getRect) overlaps the crosshair
+                // (FUN_0040d241, strict).
+                const r = wolf.getRect ? wolf.getRect() : null;
+                if (!r) continue;
+                if (!(cross.x < r.x + r.w && cross.y < r.y + r.h
+                    && r.x < cross.x + cross.w && r.y < cross.y + cross.h)) continue;
+                // Hit direction (rwg_functions.c:15990-16008): vector from the
+                // crosshair centre to the rect centre, normalised to length 1.0
+                // by FUN_00403cdf.
+                let dx = (r.x + Math.trunc(r.w / 2)) - (cross.x + h);
+                let dy = (r.y + Math.trunc(r.h / 2)) - (cross.y + h);
+                const len = Math.sqrt(dx * dx + dy * dy);
+                if (len > 0) { dx /= len; dy /= len; }
+                // FUN_0041050c (rwg_functions.c:20161): if not dead → vtable hit
+                // (power, dir), SOUND_SHOOT (DAT_004fed88), dead now → +$500
+                // (FUN_00406b22 → FUN_00424b5d).
                 if (wolf.isDead && wolf.isDead()) return;
-                if (wolf.hit) wolf.hit(dmg, wolf.mX > x ? 1 : -1, -1);
+                if (wolf.hit) wolf.hit(dmg, dx, dy);
                 if (SOUNDS.SOUND_SHOOT) SOUNDS.SOUND_SHOOT.play();
                 if (wolf.isDead && wolf.isDead()) {
                     this.addMoney(WOLF_KILL_REWARD, wolf.mX, wolf.mY);
@@ -1299,21 +1276,25 @@ export class FieldController {
         }
 
         if (handMode === 'cure') {
-            // Mode 1 (:16144-16153): gem under the cursor is collected first
-            // (FUN_0040c6a5); otherwise the hovered sick chick is cured.
-            if (this._collectGemAt(x, y)) return;
+            // Mode 1 (:16020-16040, 16144-16153): only when a sick chick
+            // (FUN_00402342) is under the cursor (FUN_00407ad4): a gem under the
+            // cursor is collected first (FUN_0040c6a5); otherwise that chick is
+            // cured (FUN_0040490a).
+            let sick = null;
+            // rwg_functions.c:16080-16094: first chick with FUN_00402342
+            // (action 3/4) whose rect FUN_00409956 (Chick.getRect) contains
+            // the cursor (FUN_00407ad4: x in [rx, rx+w), y in [ry, ry+h)).
             for (const c of this.mField.mChickens) {
-                if (c.mIsAlive && c.mIsSick && !c.mIsCarried) {
-                    // Chick hit box (mX±25, mY-70..mY+15) shared with GameView's
-                    // auto-cursor — original FUN_00407ad4 rect UNKNOWN.
-                    const inX = Math.abs(c.mX - x) <= 25;
-                    const inY = (y >= c.mY - 70 && y <= c.mY + 15);
-                    if (inX && inY) {
-                        this._cureChick(c);
-                        return;
+                if (c.mIsAlive && c.mIsSick) {
+                    const r = c.getRect();
+                    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+                        sick = c; break;
                     }
                 }
             }
+            if (!sick) return;
+            if (this._collectGemAt(x, y)) return;
+            this._cureChick(sick);
             return;
         }
 

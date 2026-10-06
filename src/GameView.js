@@ -23,9 +23,8 @@ import { Widget } from './SexyApp.js';
 import { FieldController } from './FieldController.js';
 import { Hand, HandMode } from './Hand.js';
 import { RiskController } from './RiskController.js';
-import { HintController, HintType } from './HintController.js';
+import { HintController, LevelTutorial } from './HintController.js';
 import { IMAGES, SOUNDS } from './Res.js';
-import { UPGRADE_TIERS, openUpgradeChoices } from './UpgradeSelectDialog.js';
 import { ShopDialog, SpecialShopDialog } from './ShopDialogs.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
 import { SurpriseDialog } from './SurpriseDialog.js';
@@ -91,61 +90,38 @@ export class GameView extends Widget {
     // the GameView. Kept as the JS entry point used by GameApp.startGame.
     startLevel(level) {
         this.mFieldController.startLevel(level);
-        // Re-apply persisted upgrades from the player profile.
-        const purchased = (this.mGameApp && this.mGameApp.mCore
-            && this.mGameApp.mCore.mUpgradesPurchased) || [];
-        for (const key of purchased) {
-            this._applyUpgradeEffect(key, /*silent*/ true);
-        }
+        // FUN_00406069 rwg:7661-7664 builds a NEW RiskController (Core+0x48)
+        // per level start; FUN_00422d10 writes +0x08 = 0 for levels 1-6
+        // (asm 0x422dad/0x422df3/0x422e53/0x422e8b/0x422f00) -> riskEnabled.
+        const lc = this.mFieldController.mLevelConfig;
+        this.mRiskController = new RiskController(lc ? lc.riskEnabled : true);
+        // Field decorations = player's upgrade ids (FUN_004248b4 called with
+        // FUN_00408234 at rwg:13310-13321). Drawn by Field.draw — see report.
+        const core = this.mGameApp && this.mGameApp.mCore;
+        this.mFieldController.mField.mDecorations =
+            (core && core.getUpgradeIds) ? core.getUpgradeIds() : [];
         this.mShowDialog = null;
         this.mPendingButton = -1;
         this.mPauseTextShown = false;
         this.mMouseRightDown = false;
         this.mHandTick = 0;
         this.mHandLastActionTick = 0;
-        // Reset per-level hint trackers so hints fire again on restart.
-        this.mShownSickHint = false;
-        this.mShownEggHint = false;
+        this._endShown = false;
+        this._offersUpgrade = false;
 
-        // IntroductionDialog (FUN_0040d936:16823). In the original it is opened
-        // by SelectLevelView::AddedToManager FUN_0041d22e (rwg:35567-35569) when
-        // FUN_0041614b() == 1, not by GameView. Kept here as HTML.
-        const maxReached = (this.mGameApp.mCore && this.mGameApp.mCore.mMaxLevelReached) || 1;
-        if (level === 1 && !this._introShown && maxReached <= 1) {
-            this._introShown = true;
-            this._showIntroHtml();
+        // Core::StartLevel FUN_00406069 allocates a fresh HintController
+        // (game+0x2c, rwg_functions.c:7621-7635: empty text, no pointer) and
+        // a fresh level object whose tutorial fields are zeroed by
+        // FUN_0042166f (rwg_functions.c:41196-41221).
+        if (this.mHintController && this.mHintController.isShown()) {
+            this.mHintController.dismiss();
         }
-
-        // Trigger first-time hints per decompiled hint table (rwg_functions.c:41991+)
-        this._triggerLevelHint(level);
-    }
-
-    // Maps level to its initial hint, per the strings cited in DECOMPILED_MAP.md.
-    // Hint dispatch is the hint controller's job (FUN_00422a24 etc.) — not audited here.
-    _triggerLevelHint(level) {
-        switch (level) {
-            case 1: this.mHintController.showHint(HintType.FIRST_CHICKENS); break;
-            case 2: this.mHintController.showHint(HintType.COLLECT_EGG); break;
-            case 3: this.mHintController.showHint(HintType.HATCH_GOAL); break;
-            case 4: this.mHintController.showHint(HintType.RAVEN_WARNING); break;
-            case 5: this.mHintController.showHint(HintType.SELL_FOR_BONUS); break;
-            case 7: this.mHintController.showHint(HintType.SURPRISE_OPTION); break;
-        }
-    }
-
-    // Intro shown as HTML dialogs: letter page first (screenshot 10), then the
-    // introduction panel (screenshot 11). FUN_0040d936 / FUN_0040daeb.
-    _showIntroHtml() {
-        HtmlDialogs.open('intro-letter', {
-            actions: {
-                next: () => {
-                    HtmlDialogs.close('intro-letter');
-                    HtmlDialogs.open('intro-panel', {
-                        actions: { ok: () => HtmlDialogs.close('intro-panel') },
-                    });
-                },
-            },
-        });
+        this.mHintController = new HintController(core);
+        this.mLevelTutorial = new LevelTutorial(level);
+        // The IntroductionDialog is opened by SelectLevelView::AddedToManager
+        // FUN_0041d22e (rwg:35567-35569) before the level starts (GameApp).
+        // No hint is opened here: all level hints come from the tutorial
+        // dispatcher ticked in update() (FUN_00421b21 -> FUN_00422036).
     }
 
     // FUN_0040a3d6 (rwg_functions.c:13092) GameView::Draw
@@ -164,11 +140,9 @@ export class GameView extends Widget {
             g.ctx.translate(shake.x, shake.y);
         }
 
-        // Field (FUN_004248b4 rwg:13321 + entity loops).
-        // MISSING: the dog idle animation drawn right after the background at
-        // (0x166, 0xe2) = (358, 226) (rwg:13330) needs a hook between the
-        // background and entities inside Field.draw; frame durations come from
-        // DAT_004dcd88 (rwg:11668) — UNKNOWN — not found in decompiled.
+        // Field (FUN_004248b4 rwg:13321 + entity loops). Field.draw also
+        // draws the dog (rwg:13318-13330) and the depth-sorted chicks; the dog
+        // tick FUN_004091b8 runs inside Field.update.
         this.mFieldController.mField.draw(g);
 
         if (shake.x || shake.y) g.ctx.restore();
@@ -178,6 +152,10 @@ export class GameView extends Widget {
 
         // Child widgets (MENU/SELL/BUY are drawn by drawHUD in this port).
         super.draw(g);
+
+        // Hint text bar + pointer (rwg:13930-13962, asm 0x40b973-0x40ba8f):
+        // after the HUD, before GAME PAUSED.
+        this.mHintController.draw(g);
 
         // FieldController effects (click ripples / floating texts / particles):
         // FieldController features, not part of FUN_0040a3d6 — left as is.
@@ -195,9 +173,6 @@ export class GameView extends Widget {
             g.fillRect(0, 0, 800, 600);
             this._drawDialog(g, this.mShowDialog);
         }
-
-        // HintDialog modal (HintController).
-        this.mHintController.draw(g);
 
         // Legacy canvas modals (never assigned by this file; kept for API).
         if (this.mOptionsDialog) this.mOptionsDialog.draw(g);
@@ -300,83 +275,58 @@ export class GameView extends Widget {
     update() {
         // Pause the field while an HTML / hint modal is displayed. The original
         // dialog openers set state+4 = 1 and +0xd = 0 (FUN_0040bce7 rwg:14103-14104,
-        // FUN_0041e97b rwg:37769-37770, FUN_0041e9f1 rwg:37820-37821).
+        // FUN_0041e97b rwg:37769-37770, FUN_0041e9f1 rwg:37820-37821,
+        // HintDialog FUN_0040d435 rwg:16365-16366).
+        const fc = this.mFieldController;
         const modalShown = !!((this.mHintController && this.mHintController.isShown())
             || HtmlDialogs.isOpen());
         if (modalShown) this.mPauseTextShown = false;
-        if (modalShown && !this.mFieldController.mIsPaused) {
+        if (modalShown && !fc.mIsPaused) {
             this._pausedByHint = true;
-            this.mFieldController.mIsPaused = true;
+            fc.mIsPaused = true;
         } else if (this._pausedByHint && !modalShown) {
             this._pausedByHint = false;
-            this.mFieldController.mIsPaused = false;
+            fc.mIsPaused = false;
         }
 
-        this.mFieldController.update();
+        // Game tick FUN_00405fcf (rwg:7464-7480) runs only when state+4 == 0;
+        // FieldController.update covers ravens/field/seeds/eggs/gems/inflation.
+        const running = !fc.mIsPaused && !fc.mIsLevelComplete && !fc.mIsLevelFailed;
+        // FUN_00421948 computes the LevelCompleted "upgrade" flag BEFORE the
+        // time is recorded (FUN_0041111b @0x4219d6), which FieldController
+        // does inside update(): sample maxUnlocked first.
+        const maxUnlockedBefore = (this.mGameApp && this.mGameApp.getMaxUnlocked)
+            ? this.mGameApp.getMaxUnlocked() : 1;
+        const level = fc.mCurrentLevel;
+        fc.update();
+        if (running) {
+            // FUN_0040d281 hint bar tick (rwg:7472).
+            this.mHintController.update();
+        }
 
         // Open the HTML level-end dialog once when the flag first trips.
-        // (Opened by the level logic in the original, not by GameView.)
-        if (this.mFieldController.mIsLevelComplete) {
-            if (!this._endShown) { this._endShown = true; this._openCompleteHtml(); }
-        } else if (this.mFieldController.mIsLevelFailed) {
+        if (fc.mIsLevelComplete) {
+            if (!this._endShown) {
+                this._endShown = true;
+                this._offersUpgrade = !!(this.mGameApp && this.mGameApp.levelOffersUpgrade
+                    && this.mGameApp.levelOffersUpgrade(level, maxUnlockedBefore));
+                this._openCompleteHtml();
+            }
+        } else if (fc.mIsLevelFailed) {
             if (!this._endShown) { this._endShown = true; this._openFailedHtml(); }
         } else {
             this._endShown = false;
         }
-        // Risk cooldown tick — RiskController FUN_0041b901 is called from the
-        // unpaused game update (rwg:7477).
-        if (!this.mFieldController.mIsPaused
-            && !this.mFieldController.mIsLevelComplete
-            && !this.mFieldController.mIsLevelFailed) {
+        // Risk cooldown tick — RiskController FUN_0041b901 (rwg:7477).
+        if (running) {
             this.mRiskController.update();
         }
         if (this.mShopDialog && this.mShopDialog.update) this.mShopDialog.update();
 
-        // Contextual hint triggers. These belong to the hint controller
-        // (FUN_00422228 / FUN_00422990 / FUN_00422a24), not to GameView — left
-        // as is, not audited here.
-        if (!this.mShownSickHint) {
-            for (const c of this.mFieldController.mField.mChickens) {
-                if (c.mIsAlive && c.mIsSick) {
-                    this.mHintController.showHint(HintType.SICK_CHICKEN);
-                    this.mShownSickHint = true;
-                    break;
-                }
-            }
-        }
-        if (!this.mShownEggHint) {
-            for (const gem of this.mFieldController.mField.mGems) {
-                if (gem.mType === 4 && gem.mIsAlive) {
-                    this.mHintController.showHint(HintType.COLLECT_EGG);
-                    this.mShownEggHint = true;
-                    break;
-                }
-            }
-        }
-        const fc = this.mFieldController;
-        const chickens = fc.mField.mChickens.filter(c => c.mIsAlive);
-        if (fc.mLevelConfig && fc.mLevelConfig.hasBuy) {
-            this.mHintController.showHint(HintType.BUY_CHICKEN);
-        }
-        if (fc.mLevelConfig && fc.mLevelConfig.hasRavens) {
-            const hasRooster = chickens.some(c => c.mType === 2 /* ROOSTER */);
-            if (!hasRooster && chickens.length > 0) {
-                this.mHintController.showHint(HintType.BUY_ROOSTER);
-            }
-        }
-        const hungryMagic = chickens.some(c =>
-            c.mType === 3 /* MAGIC */ && c.mIsAlive && c.mFoodCounter < 1500);
-        if (hungryMagic) {
-            const hasMagicEgg = fc.mField.mGems.some(g =>
-                g.mIsAlive && g.mType === 4 && g.mEggType === 1);
-            if (!hasMagicEgg) {
-                this.mHintController.showHint(HintType.NEED_MAGIC_EGGS);
-            }
-        }
-
         // Mirror the ready flag onto FieldController for HUD draw
         // (risk icon shown when risk+9 != 0, rwg:13899).
-        this.mFieldController.mRiskReady = this.mRiskController.isReady();
+        fc.mRiskReady = this.mRiskController.isReady();
+        fc.mRiskController = this.mRiskController; // icon cel phase (+0x10)
         super.update();
 
         // FUN_004093d9 rwg:11947-11950: a pending button id is executed via
@@ -392,29 +342,35 @@ export class GameView extends Widget {
         //   rwg:15890  tick (+0xc) += 1 every update
         //   rwg:15904-15917 right flag DAT_004fff01 held: fire when
         //                   last(+0x10) + 0x14 < tick, then last = tick
-        //   rwg:16199-16204 fire drops seeds only in hand mode 0 and y >= 0x15f (351)
-        if (!this.mFieldController.mIsPaused
-            && !this.mFieldController.mIsLevelComplete
-            && !this.mFieldController.mIsLevelFailed) {
+        //   rwg:16199-16204 fire drops seeds only in hand mode 0; the drop is
+        //   FUN_0041bfe2 (y >= 0x15f, 5/9/12 seeds, price ftol(n*0.4+0.5)),
+        //   ported as FieldController.dropSeedsAt.
+        if (running) {
             this.mHandTick++;
             if (this.mMouseRightDown && !this.mShowDialog) {
                 if (this.mHandLastActionTick + 0x14 < this.mHandTick) {
                     this.mHandLastActionTick = this.mHandTick;
-                    if (this.mHand.mMode === HandMode.SEEDS && this.mHand.mY >= 0x15f) {
-                        // Seed drop FUN_0041bfe2 (rwg:34299) charges the money
-                        // object via FUN_00403e23; the charged amount is a
-                        // float->int conversion — UNKNOWN — not found in
-                        // decompiled. $1 per drop left as is.
-                        if (this.mFieldController.mMoney > 0) {
-                            this.mFieldController.mMoney--;
-                            this.mFieldController.mField.dropSeeds(
-                                this.mHand.mX, this.mHand.mY,
-                                this.mFieldController.mSeedCount,
-                                this.mFieldController.mSeedCalories);
-                        }
+                    if (this.mHand.mMode === HandMode.SEEDS) {
+                        fc.dropSeedsAt(this.mHand.mX, this.mHand.mY);
                     }
                 }
             }
+        }
+
+        // Level update FUN_00421b21 (rwg:7479, last in the tick): while a task
+        // is open and the level is not lost it runs the tutorial dispatcher
+        // FUN_00422036 (rwg:41522-41530). FieldController._checkTasks covers
+        // the complete/failed branches, so: running before and after.
+        if (running && !fc.mIsLevelComplete && !fc.mIsLevelFailed && this.mLevelTutorial) {
+            this.mLevelTutorial.tick({
+                fc,
+                hint: this.mHintController,
+                core: this.mGameApp && this.mGameApp.mCore,
+                riskReady: this.mRiskController.isReady(),
+                // FUN_0041eae5(0): list of special-shop items not empty.
+                specialShopAvailable: () => (typeof fc.getSpecialShopItems === 'function')
+                    && fc.getSpecialShopItems().length > 0,
+            });
         }
     }
 
@@ -462,10 +418,11 @@ export class GameView extends Widget {
             && !this.mFieldController.mIsLevelFailed) {
             let newMode = HandMode.SEEDS;
             for (const c of this.mFieldController.mField.mChickens) {
-                if (c.mIsAlive && c.mIsSick && !c.mIsCarried) {
-                    const inX = Math.abs(c.mX - x) <= 25;
-                    const inY = (y >= c.mY - 70 && y <= c.mY + 15);
-                    if (inX && inY) {
+                // rwg_functions.c:16080-16094: FUN_00402342 (action 3/4) and
+                // FUN_00407ad4 on the rect FUN_00409956 (Chick.getRect).
+                if (c.mIsAlive && c.mIsSick) {
+                    const r = c.getRect();
+                    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
                         newMode = HandMode.CURE;
                         break;
                     }
@@ -485,9 +442,20 @@ export class GameView extends Widget {
                 }
             }
             if (newMode === HandMode.SEEDS) {
+                // FUN_0040cc71 rwg_functions.c:15928-15936: crosshair rect
+                // (x - aim/2, y - (aim>>1), aim, aim), aim = 8, or 0x14 with the
+                // gun-area upgrade (app+0x40)+0x10. :15998-16017: for each pet
+                // of type 2 (wolf) whose rect FUN_00409800 (Pet.getRect)
+                // overlaps it (FUN_0040d241, strict) → FUN_0040cc01 (gun cursor).
+                // Same test as FieldController.handleClick.
+                const aim = fc.mGunArea ? 0x14 : 8;
+                const cross = { x: x - Math.trunc(aim / 2), y: y - (aim >> 1), w: aim, h: aim };
                 for (const w of this.mFieldController.mField.mWolves || []) {
                     if (!w.mIsAlive) continue;
-                    if (Math.abs(w.mX - x) <= 60 && Math.abs(w.mY - y) <= 50) {
+                    const r = w.getRect ? w.getRect() : null;
+                    if (!r) continue;
+                    if (cross.x < r.x + r.w && cross.y < r.y + r.h
+                        && r.x < cross.x + cross.w && r.y < cross.y + cross.h) {
                         newMode = gunMode;
                         break;
                     }
@@ -544,28 +512,29 @@ export class GameView extends Widget {
         // Original: for i < FUN_0040bfa0() (shop-slot vector size), rect = slot
         // image (w x h) at (w*i, 0); FUN_0041e8f5 buys; SOUND_CHICK_BUY
         // (DAT_004fed80, rwg:31750) on success; handled either way.
-        // Slot count/model follow FieldController.drawHUD (5 slots on hasBuy
-        // levels, 80x81 = shop_slot_*.png size).
-        if (cfg && cfg.hasBuy) {
-            for (let i = 0; i < 5; i++) {
-                if (rectContains({ x: 80 * i, y: 0, w: 80, h: 81 }, x, y)) {
-                    fc.buyChick(i);
-                    return true;
-                }
+        // The slot vector always has 5 entries (FUN_0041e7f2 ctor loop,
+        // rwg_functions.c:37640-37660); closed slots (value 0) are rejected by
+        // FUN_0041e8f5 (FieldController.buyChick) but the click is consumed.
+        // 80x81 = shop_slot_*.png size.
+        for (let i = 0; i < 5; i++) {
+            if (rectContains({ x: 80 * i, y: 0, w: 80, h: 81 }, x, y)) {
+                fc.buyChick(i);
+                return true;
             }
         }
 
         // --- MENU / SELL / BUY widgets (FUN_0040bbea rwg:14005-14012) ---
-        // SELL/BUY visible iff level+0x18 / +0x19 (FUN_0040a3d6 rwg:13293-13299).
+        // SELL/BUY visible iff store (game+0x30) +0x18 / +0x19 (FUN_0040a3d6
+        // rwg:13293-13299) = LevelData sellButton / specialShopButton.
         if (rectContains(MENU_RECT, x, y)) {
             this.buttonDepress(BTN_MENU);
             return true;
         }
-        if (cfg && cfg.hasSell && rectContains(SELL_RECT, x, y)) {
+        if (cfg && cfg.sellButton && rectContains(SELL_RECT, x, y)) {
             this.buttonDepress(BTN_SELL);
             return true;
         }
-        if (cfg && cfg.hasBuy && rectContains(BUY_RECT, x, y)) {
+        if (cfg && cfg.specialShopButton && rectContains(BUY_RECT, x, y)) {
             this.buttonDepress(BTN_BUY);
             return true;
         }
@@ -675,9 +644,9 @@ export class GameView extends Widget {
             if (fc.mIsLevelComplete || fc.mIsLevelFailed) return true;
             this.mPauseTextShown = false;               // +0xd = 0
             fc.mIsPaused = !fc.mIsPaused;               // +4 = !+4
-            // When pausing, FUN_004090b9 -> FUN_0040cc01(hand) resets the
-            // cursor mode; the mode value (EAX) is UNKNOWN — not found in
-            // decompiled, so the hand mode is left unchanged.
+            // When pausing (rwg:11494-11495), FUN_004090b9 -> FUN_0040cc01
+            // (Core+0x20 hand) with mode 0: asm 0x4090c4 `xorl %eax,%eax`.
+            if (fc.mIsPaused) this.mHand.setMode(HandMode.SEEDS);
             this.mPauseTextShown = true;                // +0xd = 1
             return true;
         }
@@ -756,6 +725,8 @@ export class GameView extends Widget {
         new SurpriseDialog({
             riskController: this.mRiskController,
             fc,
+            // Core+0x20 hand, reset by FUN_004090b9 (rwg:33697)
+            hand: this.mHand,
             core: this.mGameApp && this.mGameApp.mCore,
             setPaused: (paused) => {
                 this._pausedByHint = false;
@@ -773,6 +744,9 @@ export class GameView extends Widget {
         this.mGameApp.openOptions({
             inGame: true,
             onMainMenu: () => { if (this.mGameApp.showMainMenu) this.mGameApp.showMainMenu(); },
+            // OptionsDialog RESTART FUN_0040fe56 (rwg:19603-19609): FUN_00406389
+            // + Core::StartLevel FUN_00406069 only — no FUN_00408dae, so the
+            // music is not re-rolled.
             onRestart: () => { this.startLevel(this.mFieldController.mCurrentLevel); },
         });
     }
@@ -783,6 +757,7 @@ export class GameView extends Widget {
         const core = this.mGameApp.mCore;
         const isBonus = fc.mLevelConfig && fc.mLevelConfig.isBonus;
         const level = fc.mCurrentLevel;
+        const best = (core && core.getBestTimeRecord) ? core.getBestTimeRecord(level) : null;
         const fmt = (ms) => {
             if (!ms || ms <= 0) return '--:--';
             const s = Math.floor(ms / 1000), m = Math.floor(s / 60), r = s % 60;
@@ -793,8 +768,10 @@ export class GameView extends Widget {
                 title: isBonus ? 'BONUS LEVEL COMPLETED' : 'LEVEL COMPLETED',
                 yourtime: fmt(fc.mTimeElapsed || 0),
                 acetime: fmt(fc.mLevelAceTime || 0),
-                bestlabel: 'Best time - by ' + ((core && core.mCurrentName) || ''),
-                besttime: fmt(core && core.getBestTime ? core.getBestTime(level) : 0),
+                // FUN_0040dde4 rwg:17165-17200: best record over all players
+                // FUN_0041605e; none -> empty name and time.
+                bestlabel: 'Best time - by ' + (best ? best.name : ''),
+                besttime: best ? fmt(best.time) : '',
                 bonus: isBonus
                     ? (fc.mBonusAchieved
                         ? "Perfect! You have got a bonus for the next level: one of special shop upgrades will be allowed at half price!"
@@ -807,20 +784,13 @@ export class GameView extends Widget {
     }
 
     // LevelCompletedDialog CONTINUE — FUN_0040dd6a (rwg:17086-17107): SOUND_CLICK,
-    // remove dialog, then if dialog+0xd8 == 0 FUN_004088d0(level + 1) (shows
-    // SelectLevelView FUN_0041ccf8 for the next level, which owns the upgrade
-    // offer), else FUN_00408c24 (win view FUN_0042474a).
-    // DISCREPANCY (not changed): this port starts the next level directly and
-    // offers the upgrade every 3 levels; the real upgrade condition lives in
-    // SelectLevelView (not ported) — UNKNOWN — not found in decompiled here.
+    // remove dialog, then flag +0xd8 == 0 -> FUN_004088d0(level + 1)
+    // (SelectLevelView; level 51 -> win) else FUN_00408c24(level + 1)
+    // (UpgradesView). The flag is sampled at completion (see update()).
     _onLevelContinue() {
         if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play(); // rwg:17098
         HtmlDialogs.close('level-complete');
-        const finishedLvl = this.mFieldController.mCurrentLevel;
-        if (finishedLvl >= 50) { if (this.mGameApp.showWin) this.mGameApp.showWin(); return; }
-        const nextLvl = finishedLvl + 1;
-        if ((nextLvl - 1) % 3 === 0) this._showUpgradeDialog(() => this.startLevel(nextLvl));
-        else this.startLevel(nextLvl);
+        this.mGameApp.continueAfterLevel(this.mFieldController.mCurrentLevel, this._offersUpgrade);
     }
 
     // LEVEL FAILED — HTML dialog (FUN_0040e0ea). Buttons per FUN_0040e217
@@ -836,7 +806,8 @@ export class GameView extends Widget {
                 restart: () => {
                     if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play(); // rwg:17473
                     HtmlDialogs.close('level-failed');
-                    this.startLevel(fc.mCurrentLevel);
+                    // FUN_00408dae: Core::StartLevel + GameView + music re-roll.
+                    this.mGameApp.startGame(fc.mCurrentLevel);
                 },
                 mainmenu: () => {
                     if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play(); // rwg:17473
@@ -845,58 +816,6 @@ export class GameView extends Widget {
                 },
             },
         });
-    }
-
-    // FUN_00423f8a UpgradeSelectDialog — HTML. See _onLevelContinue note.
-    _showUpgradeDialog(onComplete) {
-        const fc = this.mFieldController;
-        const core = this.mGameApp.mCore;
-        const tier = Math.min(UPGRADE_TIERS.length - 1, Math.floor((fc.mCurrentLevel - 1) / 3));
-        const opts = UPGRADE_TIERS[tier] || UPGRADE_TIERS[0];
-        openUpgradeChoices(opts, opt => {
-            if (core && opt.key) {
-                core.mUpgradesPurchased = core.mUpgradesPurchased || [];
-                if (!core.mUpgradesPurchased.includes(opt.key)) core.mUpgradesPurchased.push(opt.key);
-                if (core.save) core.save();
-            }
-            if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
-            this._applyUpgradeEffect(opt.key);
-            HtmlDialogs.close('upgrade');
-            if (onComplete) onComplete();
-        });
-    }
-
-    // Apply gameplay effect for the chosen upgrade (port-specific glue; the
-    // effect values are not audited here). `silent` skips the jingle when
-    // re-applying the saved list at level start.
-    _applyUpgradeEffect(key, silent = false) {
-        const fc = this.mFieldController;
-        if (!fc) return;
-        switch (key) {
-            case 'house_1':
-                fc.mPlayerHouseUpgrade = Math.max(fc.mPlayerHouseUpgrade || 0, 1);
-                fc.mField.mUpgradeLevel = Math.max(fc.mField.mUpgradeLevel, 1);
-                break;
-            case 'house_2':
-                fc.mPlayerHouseUpgrade = Math.max(fc.mPlayerHouseUpgrade || 0, 2);
-                fc.mField.mUpgradeLevel = Math.max(fc.mField.mUpgradeLevel, 2);
-                break;
-            case 'seeds_1':
-                fc.mSeedCalories = Math.max(fc.mSeedCalories, 50);
-                break;
-            case 'seeds_2':
-                fc.mSeedCalories = Math.max(fc.mSeedCalories, 80);
-                break;
-            case 'gun_1':
-                fc.mGunPower = Math.max(fc.mGunPower || 1, 2);
-                break;
-            case 'gun_area':
-                fc.mGunArea = true;
-                break;
-        }
-        if (!silent && SOUNDS && SOUNDS.SOUND_FIELD_UPGRADE) {
-            SOUNDS.SOUND_FIELD_UPGRADE.play();
-        }
     }
 
     // FUN_0040bce7 case 2 -> FUN_0041e97b (rwg:37749): pause (+4 = 1, +0xd = 0),

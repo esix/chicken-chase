@@ -6,9 +6,12 @@ import { HtmlDialogs } from './HtmlDialogs.js';
 import { Core } from './Core.js';
 import { ChangePlayerDialog } from './PlayerDialogs.js';
 import { HintController, HintType } from './HintController.js';
-import { openUpgradeChoices, UPGRADE_TIERS } from './UpgradeSelectDialog.js';
+import { openUpgradeChoices, upgradeOptions } from './UpgradeSelectDialog.js';
 import { SelectLevelView } from './MainMenuView.js';
 import { ShopDialog, SpecialShopDialog } from './ShopDialogs.js';
+import { createChick, foodCap } from './Chick.js';
+import { FieldController } from './FieldController.js';
+import { getLevelConfig, SHOP_ITEM_LIST } from './LevelData.js';
 import { RiskCaseNothing, RiskCaseOffensive, RiskCasePlusMoney, RiskCasePlusTime, RiskCaseRavensScared, RiskCaseStealChickens, RiskCaseMinusMoney, RiskCaseChickFlu, RiskCaseRavensAttack } from './RiskController.js';
 import { openSurpriseResult } from './SurpriseDialog.js';
 
@@ -174,7 +177,8 @@ if (name === 'level-failed') {
     });
 }
 if (name === 'upgrade') {
-    openUpgradeChoices(UPGRADE_TIERS[0], () => HtmlDialogs.close(name));
+    // Real available ids of the isolated preview player (FUN_00423f8a list).
+    openUpgradeChoices(upgradeOptions(previewCore.getAvailableUpgrades()), () => HtmlDialogs.close(name));
 }
 if (name === 'select-level') {
     // Preview every original level without changing real or isolated progression.
@@ -196,10 +200,15 @@ if (name === 'shop-sell') {
     const count = params.has('count') ? Math.max(0, Math.min(100, Number(params.get('count')) || 0)) : 13;
     const field = {
         mMoney: 0,
-        mField: { mChickens: Array.from({ length: count }, (_, i) => ({
-            mType: i % 5, mIsAlive: true, mIsAdult: i % 3 !== 0,
-            mGrowTimer: 200 + (i % 3) * 200, mX: 0, mY: 0,
-        })) },
+        mField: { mSoldCount: 0, mChickens: Array.from({ length: count }, (_, i) => {
+            // Real Chick instances (level 1 → foodCap = 500*33 = 16500).
+            // Food steps through 0..cap so AGE (0..10) and price vary;
+            // every 4th chick sits exactly at the cap (blue AGE highlight).
+            const c = createChick(i % 5, 400, 450);
+            const cap = foodCap(c.mLevel);
+            c.mFoodCounter = (i % 4 === 3) ? cap : Math.trunc(cap * (i % 4) / 4);
+            return c;
+        }) },
     };
     new ShopDialog(field, () => {}).openHtml();
 }
@@ -217,7 +226,20 @@ if (name === 'shop-buy') {
             addPet(pet) { this.mPets.push(pet); },
         },
         spendMoney(price) { this.mMoney -= price; },
+        // Real FieldController special-shop logic (FUN_0041eae5 list,
+        // store +0 price, FUN_0041eb94 buy, FUN_0041ebd3 apply) on this
+        // isolated fixture; lists built as FieldController.startLevel does.
+        mUpgradePrice: 0xfa,  // FUN_0041e7f2:37614
+        mShopLists: { seed: [], weapon: [], pet: [] },
+        getSpecialShopItems: FieldController.prototype.getSpecialShopItems,
+        getSpecialShopPrice: FieldController.prototype.getSpecialShopPrice,
+        buySpecialItem: FieldController.prototype.buySpecialItem,
+        _applyShopItem: FieldController.prototype._applyShopItem,
     };
+    for (const id of getLevelConfig(field.mCurrentLevel).shopUnlockItems || []) {
+        const item = SHOP_ITEM_LIST[id];
+        if (item) field.mShopLists[item.list].push(id);
+    }
     new SpecialShopDialog(field, () => {}).openHtml();
 }
 if (name === 'surprise-ask') {

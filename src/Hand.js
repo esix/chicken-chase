@@ -88,13 +88,18 @@ export class Hand {
 
     // The hand image is installed as the application cursor image
     // (FUN_004422b3: app+0x378, then app vtable +0x30) and drawn by the
-    // framework cursor code, not by game code.
-    // UNKNOWN — not found in decompiled: the framework's cursor hotspot.
-    // Kept centered on the mouse position as before.
+    // framework's software cursor (DDInterface, asm 0x450079-0x4500bf):
+    //   S = cursor area size 0x40 (DDInterface ctor asm 0x44e8f2-0x44e954)
+    //   x = mouseX + trunc((S - w) / 2) - trunc(S / 2)
+    //   y = mouseY + trunc((S - h) / 2) - trunc(S / 2)
+    // i.e. the image is centred on the mouse position.
     draw(g) {
         const img = this.getCursorImage();
         if (img && img.img) {
-            g.drawImage(img, this.mX - img.mWidth / 2, this.mY - img.mHeight / 2);
+            const S = 0x40;
+            const x = this.mX + Math.trunc((S - img.mWidth) / 2) - Math.trunc(S / 2);
+            const y = this.mY + Math.trunc((S - img.mHeight) / 2) - Math.trunc(S / 2);
+            g.drawImage(img, x, y);
         }
     }
 

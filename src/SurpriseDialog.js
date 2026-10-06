@@ -5,7 +5,8 @@
 //   FUN_0041b94a (33659) open:
 //     risk+4 = 0, risk+10 = 1, risk+9 = 0           (33688-33690)
 //     game state +4 = 1 (paused), +0xd = 0           (33692-33695)
-//     FUN_004090b9 -> FUN_0040cc01(hand)              (33697; hand mode UNKNOWN)
+//     FUN_004090b9 -> FUN_0040cc01(hand, 0)            (33697; asm 0x4090c4
+//        xor eax,eax -> mode 0 = seeds cursor)
 //     if player+0x1d ("show SURPRISE! prompt"):       (33702)
 //        FUN_0040279c("SURPRISE!", "Do you feel clucky?")  (33711-33716)
 //        = the same YES/NO StdDialog builder as "QUIT?" (rwg:19564-19569)
@@ -23,6 +24,7 @@
 //     (FUN_0040f491 rwg:19014 "OK" footer).              (33817-33826)
 
 import { HtmlDialogs } from './HtmlDialogs.js';
+import { HandMode } from './Hand.js';
 
 // Open the "SURPRISE!" result box showing riskCase's text. The verbatim
 // strings are the [data-risk-case] templates in index.html (RiskCase+4 in the
@@ -46,28 +48,33 @@ export function openSurpriseResult(riskCase, onOk) {
 export class SurpriseDialog {
     // riskController: RiskController; fc: FieldController; core: player Core
     // (mShowSurprise = player+0x1d, save() = FUN_00410f28);
-    // setPaused(bool): game state +4 (and +0xd = 0).
-    constructor({ riskController, fc, core, setPaused }) {
+    // setPaused(bool): game state +4 (and +0xd = 0); hand: Hand (Core+0x20).
+    constructor({ riskController, fc, core, setPaused, hand }) {
         this.mRisk = riskController;
         this.mFC = fc;
         this.mCore = core;
         this.mSetPaused = setPaused;
-        this.mCase = null;
+        this.mHand = hand || null;
     }
 
-    // FUN_0041b94a (rwg:33659)
+    // FUN_0041b94a (rwg:33659, asm 0x41b94a-0x41b9ce)
     open() {
-        // risk+4 = 0, +9 = 0, +10 = 1 (rwg:33688-33690)
-        this.mRisk.requestRoll();
+        // risk+9 == 0 -> return (asm 0x41b958); else risk+4 = 0, +0xa = 1,
+        // +9 = 0 (rwg:33688-33690)
+        if (!this.mRisk.requestRoll()) return false;
         // state +4 = 1, +0xd = 0 (rwg:33692-33695)
         this.mSetPaused(true);
+        // FUN_004090b9 (asm 0x4090b9-0x4090cc): FUN_0040cc01(Core+0x20, 0)
+        if (this.mHand) this.mHand.setMode(HandMode.SEEDS);
         if (this.mCore && this.mCore.mShowSurprise) {
-            // rwg:33711-33716 FUN_0040279c(header "SURPRISE!", lines "Do you feel clucky?")
+            // rwg:33711-33716 FUN_0040279c(header "SURPRISE!" 0x4dee48,
+            // lines "Do you feel clucky?" 0x4dee54)
             HtmlDialogs.open('surprise-ask', {
                 actions: {
                     // 72000 -> vtable[0] FUN_0041b9cf (rwg:40808-40818)
                     yes: () => { HtmlDialogs.close('surprise-ask'); this._onListener(); },
-                    // 73000 -> vtable[1] FUN_0040d4bb (rwg:40820-40830, 16402-16411)
+                    // 73000 -> vtable[1] FUN_0040d4bb (rwg:40820-40830, 16402-16411):
+                    // only +4 = 0, +0xd = 0 (risk+0xa stays set).
                     no: () => { HtmlDialogs.close('surprise-ask'); this.mSetPaused(false); },
                 },
             });
@@ -75,33 +82,33 @@ export class SurpriseDialog {
             // rwg:33704 (**(code **)*this)() -> FUN_0041b9cf
             this._onListener();
         }
+        return true;
     }
 
-    // FUN_0041b9cf (rwg:33734) — listener vtable[0].
+    // FUN_0041b9cf (rwg:33734, asm 0x41b9cf-0x41ba26) — listener vtable[0].
     _onListener() {
-        if (this.mCase === null) {
-            // risk+10 != 0 branch (rwg:33753-33763)
+        if (this.mRisk.mPending) {
+            // risk+0xa != 0 branch (rwg:33753-33763): +0xa = 0
+            this.mRisk.mPending = false;
             if (this.mCore && this.mCore.mShowSurprise) {
                 this.mCore.mShowSurprise = false;        // rwg:33759
                 if (this.mCore.save) this.mCore.save();  // FUN_00410f28 rwg:33760
             }
             this._roll();
         } else {
-            // risk+10 == 0 branch (rwg:33746-33751): apply, unpause.
-            const c = this.mCase;
-            this.mCase = null;
-            c.apply(this.mFC);
+            // risk+0xa == 0 branch (rwg:33746-33751): cases[+0xc] apply, unpause.
+            this.mRisk.applyResult(this.mFC);
             this.mSetPaused(false);
         }
     }
 
     // FUN_0041ba27 (rwg:33776)
     _roll() {
-        // rwg:33799-33815 roll (RiskController.rollRisk clears risk+10).
-        this.mCase = this.mRisk.rollRisk(this.mFC);
+        // rwg:33799-33815 roll
+        const riskCase = this.mRisk.rollRisk(this.mFC);
         // rwg:33817-33826 FUN_0040f491(header "SURPRISE!", lines = case+4 string)
         // OK = 72000 -> vtable[0] FUN_0041b9cf (rwg:40808-40818)
-        openSurpriseResult(this.mCase,
+        openSurpriseResult(riskCase,
             () => { HtmlDialogs.close('surprise-result'); this._onListener(); });
     }
 }

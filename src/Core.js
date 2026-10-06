@@ -41,6 +41,10 @@ export const DEFAULT_MUSIC_VOLUME = 0.6;
 // SexyAppBase ctor FUN_00440396 rwg:77188 (_DAT_004e9340 = 0.85)
 export const DEFAULT_SFX_VOLUME = 0.85;
 
+// DAT_004de1c0 (FUN_00416162 rwg:28704): prerequisite upgrade id for
+// upgrades 0..14 (-1 = none). Entries 15/16 are -1 but unused by the loop.
+export const UPGRADE_PREREQ = [-1, -1, -1, 2, 3, -1, 5, 6, 7, 8, 8, 8, 8, 1, 1, -1, -1];
+
 // FUN_0041605e:28586 — sentinel "no time yet" (local_30 = 1000000)
 const BEST_TIME_SENTINEL = 1000000;
 
@@ -49,7 +53,7 @@ function makeProfile(name) {
     return {
         name,
         maxLevel: 1,          // = completed-level count + 1 (FUN_0041614b:28638)
-        upgrades: [],         // set<int> at +0x34 (FUN_00410be5 rwg:21039); ids < 0x11 (rwg:21157)
+        upgradeIds: [],       // set<int> at +0x30/+0x34 (FUN_00410be5 rwg:21039); ids < 0x11 (rwg:21157)
         bestTimes: {},        // vector<int> at +0x24 (rwg:21034), index = level-1
         disabledHints: [],    // JS-only per-type opt-out (see mShowHints)
         showHints: true,      // +0x1c = 1 (FUN_00410be5 rwg:21032)
@@ -65,7 +69,11 @@ export class Core {
         this.mCurrentName = null;    // current-player iterator
         // Active fields (point to current profile's data — kept for legacy callers)
         this.mMaxLevelReached = 1;
-        this.mUpgradesPurchased = [];
+        // Player upgrade set<int> (+0x30, copied by FUN_0040821a / FUN_00408234).
+        // Upgrade id i == house decoration i (IMAGE_GAME_BACK_UPGRADE<i>, drawn
+        // by FUN_004248b4) == dialog icon IMAGE_UPGRADE_PREVIEW<i> (FUN_00423f8a
+        // rwg:44128-44131). Kept sorted (std::set iteration order).
+        this.mUpgradeIds = [];
         this.mPlayerName = '';
         this.mShowHints = true;
         this.mShowSurprise = true;
@@ -131,7 +139,7 @@ export class Core {
         this.mCurrentName = name;
         this.mPlayerName = p.name;
         this.mMaxLevelReached = p.maxLevel;
-        this.mUpgradesPurchased = p.upgrades || [];
+        this.mUpgradeIds = (p.upgradeIds || []).slice();
         this.mBestTimes = p.bestTimes || {};
         this.mDisabledHints = p.disabledHints || [];
         this.mShowHints = p.showHints ?? true;
@@ -196,6 +204,50 @@ export class Core {
         return best ? { name: best.name, time: bestTime } : null;
     }
 
+    // FUN_00408234 (rwg:10397) → FUN_0040821a: copy of the current player's
+    // upgrade set (+0x30). Ascending, as std::set iterates.
+    getUpgradeIds() {
+        return (this.mUpgradeIds || []).slice().sort((a, b) => a - b);
+    }
+
+    hasUpgrade(id) {
+        return (this.mUpgradeIds || []).includes(id);
+    }
+
+    // FUN_00423f5c (rwg:44035): current player (FUN_0043fb14) set.insert(id)
+    // (FUN_0040ca85), then save the player file (FUN_00410f28).
+    addUpgrade(id) {
+        if (!this.mCurrentName) return;
+        this.mUpgradeIds = this.mUpgradeIds || [];
+        if (!this.mUpgradeIds.includes(id)) {
+            this.mUpgradeIds.push(id);
+            this.mUpgradeIds.sort((a, b) => a - b);
+        }
+        this.save();
+    }
+
+    // FUN_00416162 (rwg:28665-28760) — upgrades the player may receive now:
+    //   for i in 0..14: if i not owned and (PREREQ[i] == -1 or PREREQ[i]
+    //   owned) → add i;
+    //   then, if the owned set has more than 14 entries (0xe < size,
+    //   rwg:28719): add 15 if not owned, add 16 if not owned.
+    // PREREQ = int table DAT_004de1c0 (rwg:28704), read from the .data of
+    // app/chicken_chase.RWG.
+    getAvailableUpgrades() {
+        const owned = new Set(this.mUpgradeIds || []);
+        const out = [];
+        for (let i = 0; i <= 0xe; i++) {
+            if (owned.has(i)) continue;
+            const pre = UPGRADE_PREREQ[i];
+            if (pre === -1 || owned.has(pre)) out.push(i);
+        }
+        if (owned.size > 0xe) {
+            if (!owned.has(15)) out.push(15);
+            if (!owned.has(16)) out.push(16);
+        }
+        return out;
+    }
+
     // Persist current legacy fields back to the active profile, then write
     // list + app-global settings.
     save() {
@@ -203,7 +255,10 @@ export class Core {
             const p = this._findPlayer(this.mCurrentName);
             if (p) {
                 p.maxLevel = this.mMaxLevelReached;
-                p.upgrades = this.mUpgradesPurchased;
+                // Old saves carried an invented `upgrades` string-key list;
+                // ignored on load and dropped here (upgrades = upgradeIds).
+                delete p.upgrades;
+                p.upgradeIds = (this.mUpgradeIds || []).slice();
                 p.bestTimes = this.mBestTimes || p.bestTimes || {};
                 p.disabledHints = this.mDisabledHints || p.disabledHints || [];
                 p.showHints = this.mShowHints ?? true;
@@ -260,7 +315,6 @@ export class Core {
                     if (data.playerName) {
                         const p = makeProfile(data.playerName);
                         p.maxLevel = data.maxLevel || 1;
-                        p.upgrades = data.upgrades || [];
                         this.mPlayers.push(p);
                         this.selectPlayer(p.name);
                         this.save();
@@ -277,7 +331,7 @@ export class Core {
         const p = this._findPlayer(this.mCurrentName);
         if (!p) return;
         p.maxLevel = 1;
-        p.upgrades = [];
+        p.upgradeIds = [];
         this.selectPlayer(p.name);
         this.save();
     }

@@ -159,7 +159,7 @@ const ftol = Math.trunc;
 // translate (1,1). Draw FUN_0043ea73 (disassembly @0x43ea73-0x43ed17):
 // DrawImageBox((0,0,w,h), over ? overImg : componentImg); label at
 //   x = (w - StringWidth)/2, y = (h - asc/6 - ascentPadding(0) - 1 + asc)/2.
-class DialogButton extends ButtonWidget {
+export class DialogButton extends ButtonWidget {
     constructor(id, listener, label) {
         super(id, listener);
         this.mLabel = label;

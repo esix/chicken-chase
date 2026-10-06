@@ -1,9 +1,12 @@
-// ShopDialog (SELL chickens) and SpecialShopDialog (BUY chickens).
+// ShopDialog (SELL chickens) and SpecialShopDialog (BUY special items).
 // Verified per DECOMPILED_MAP.md section 13 + Shop research agent (2026-05-06).
 //
 // CRITICAL CORRECTION from earlier research:
 //   "ShopDialog" is the SELL UI (title "SHOP", per-row label "SELL").
 //   "SpecialShopDialog" is the BUY UI (title "SPECIAL SHOP", per-row label "BUY").
+//   It sells the per-level special items (seed/weapon upgrades, mouse,
+//   elephant — FUN_0041eae5 list, FieldController.getSpecialShopItems), NOT
+//   chickens: chickens are bought from the HUD slots (FUN_0041e8f5).
 //   There is no separate SellDialog class.
 //
 // ShopDialog (FUN_0041f031:38486):
@@ -12,34 +15,44 @@
 //
 // SpecialShopDialog (FUN_00420232:39763):
 //   Box (150, 25, 500, 550). Title "SPECIAL SHOP". 3 rows / page.
-//   Click buys; "You don't have enough money." if can't afford.
+//   Row (FUN_00420758:40114-40150): image DAT_005005d4[id], description
+//   DAT_005003a0[id], price = store +0 ("FREE" when < 1).
+//   Click → FUN_0041eb94 (rwg:40385); false → "You don't have enough money."
+//   (rwg:40388); success → SOUND_CLICK (DAT_004fed84, asm 0x420caf).
 //
 // Verified price tables (rwg_functions.c:6650-6749):
 //   BUY base (DAT_0050032c): LAYER=100, BROODY=200, ROOSTER=500, MAGIC=1000, HOLY=1200
 //   Mid    (DAT_0050033c): LAYER= 50, BROODY=100, ROOSTER=200, MAGIC= 300, HOLY= 500
 //   SELL base (DAT_0050035c): LAYER=500, BROODY=800, ROOSTER=400, MAGIC=3000, HOLY=6000
-//   Buy doubles after each purchase, floor 250 (line 37992-37996).
+//   Chicken buy prices never double (FUN_004058e7 = base × inflation).
+//   The SPECIAL item price (store +0 = 250) doubles after each purchase,
+//   floor 250 (FUN_0041eb94:37992-37996) — held by FieldController.
 
 import { IMAGES, SOUNDS } from './Res.js';
-import { ChickType, createChick } from './Chick.js';
-import { Mouse, Elephant } from './Pet.js';
 import { drawFitText } from './TextUtil.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
-
-// Sentinel item types for pets (out-of-band from ChickType 0..4).
-const PET_MOUSE = 100;
-const PET_ELEPHANT = 101;
-const PET_PRICES = { [PET_MOUSE]: 600, [PET_ELEPHANT]: 800 };
-const PET_NAMES = { [PET_MOUSE]: 'Mouse', [PET_ELEPHANT]: 'Elephant' };
+import { foodCap } from './Chick.js';
 
 const TYPE_NAMES = ['Layer', 'Broody', 'Rooster', 'Magic', 'Holy'];
-const BUY_BASE  = [100, 200, 500, 1000, 1200];   // DAT_0050032c
-const BUY_MID   = [ 50, 100, 200,  300,  500];   // DAT_0050033c (juvenile differential)
-const SELL_BASE = [500, 800, 400, 3000, 6000];   // DAT_0050035c
 
-// FUN_00403bd6 (line 4245): sell price = base + (juvenile ? mid : 0)
-function sellPrice(chickType, isJuvenile) {
-    return SELL_BASE[chickType] + (isJuvenile ? BUY_MID[chickType] : 0);
+// FUN_00403bd6 (asm 0x403bd6-0x403c72; called at rwg_functions.c:5340 and in
+// the sell-row draw FUN_0041f5xx): price from SELL base DAT_0050035c × food
+// ratio FUN_00403c75 — ported as Chick.getSellPrice().
+function sellPrice(chick) {
+    return chick.getSellPrice();
+}
+
+// Sell-row AGE column — FUN_0041f65c (asm 0x41f721-0x41f785):
+//   ftol(FUN_00403c75(chick) * 10.0 (_DAT_004e90d8) + 0.5 (_DAT_004e90c8)),
+//   formatted "%i" (0x4dcda8). ftol (FUN_004bed40) truncates.
+function sellAge(chick) {
+    return Math.trunc(chick.getSellRatio() * 10.0 + 0.5);
+}
+// asm 0x41f73d-0x41f75c: if chick+0x34 (food) == FUN_004058af (food cap),
+// SetColor(Color(0,0,0xff)) (FUN_00450771: r=ECX=0, g=0, b=0xff, a=0xff);
+// otherwise the colour stays DAT_005012a0 (white) set at 0x41f70e.
+function sellAgeIsFull(chick) {
+    return chick.mFoodCounter === foodCap(chick.mLevel);
 }
 
 const SHOP_BOX = { x: 200, y: 25, w: 400, h: 550 };
@@ -91,7 +104,7 @@ export class ShopDialog {
                 next: () => { this.mPage = Math.min(this._maxPage() - 1, this.mPage + 1); this._renderHtml(); },
                 sell: ({ index }) => {
                     const c = this._visible && this._visible[index];
-                    if (c) this._sell(c, sellPrice(c.mType, !c.mIsAdult));
+                    if (c) this._sell(c, sellPrice(c));
                     this._renderHtml();
                 },
             },
@@ -111,12 +124,15 @@ export class ShopDialog {
         dialog.querySelector('[data-action="prev"]').disabled = this.mPage === 0;
         dialog.querySelector('[data-action="next"]').disabled = this.mPage === maxPage - 1;
         HtmlDialogs.fillList('shop-sell', 'rows', this._visible, (c, row) => {
-            const isJuv = !c.mIsAdult;
-            row.dataset.juvenile = String(isJuv);
             const t = row.querySelector('.cc-cell-type'); if (t) t.textContent = TYPE_NAMES[c.mType] || '?';
-            const p = row.querySelector('.cc-cell-price'); if (p) p.textContent = '$' + sellPrice(c.mType, isJuv);
-            const bar = row.querySelector('.cc-age-bar');
-            if (bar) bar.style.width = ((isJuv ? Math.max(0, Math.min(1, (c.mGrowTimer || 0) / 800)) : 1) * 100) + '%';
+            const p = row.querySelector('.cc-cell-price'); if (p) p.textContent = String(sellPrice(c)); // "%i" (0x4dcda8), asm 0x41f7a5-0x41f7b2
+            // AGE: "%i" of ftol(ratio*10+0.5), blue (0,0,255) at food cap
+            // (FUN_0041f65c asm 0x41f721-0x41f785); else inherited white.
+            const a = row.querySelector('.cc-cell-age');
+            if (a) {
+                a.textContent = String(sellAge(c));
+                a.style.color = sellAgeIsFull(c) ? 'rgb(0,0,255)' : '';
+            }
         });
     }
 
@@ -160,8 +176,7 @@ export class ShopDialog {
         const rowH = 32;
         for (let i = 0; i < visible.length; i++) {
             const c = visible[i];
-            const isJuvenile = !c.mIsAdult;
-            const price = sellPrice(c.mType, isJuvenile);
+            const price = sellPrice(c);
             const rowY = by + 138 + i * rowH;
             // Row background
             g.ctx.fillStyle = (i % 2 === 0) ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
@@ -171,18 +186,21 @@ export class ShopDialog {
             g.ctx.font = '13px "Arial Black", Arial, sans-serif';
             g.ctx.textAlign = 'left';
             g.ctx.fillText(TYPE_NAMES[c.mType] || '?', bx + 40, rowY + 20);
-            // Age bar (juveniles show mGrowTimer/800 growth; adults full).
-            const agePct = isJuvenile
-                ? Math.max(0, Math.min(1, (c.mGrowTimer || 0) / 800))
-                : 1;
-            g.ctx.fillStyle = '#5a3010';
-            g.ctx.fillRect(bx + 150, rowY + 8, 60, 12);
-            g.ctx.fillStyle = isJuvenile ? '#ffcc55' : '#5cb830';
-            g.ctx.fillRect(bx + 151, rowY + 9, Math.floor(58 * agePct), 10);
-            // Price (PRICE text Y = contentY+0x19, rwg:38933).
-            g.ctx.fillStyle = isJuvenile ? '#3a1a05' : '#1a661a';
+            // AGE number — FUN_0041f65c asm 0x41f66d-0x41f785: rowTop =
+            // i*0x20+0x8c, DrawString("%i", x=0x64, y=rowTop+0x19), font
+            // DAT_004fff28, colour blue (0,0,255) when food == cap else white
+            // DAT_005012a0.
+            const textY = by + i * 0x20 + 0x8c + 0x19;
             g.ctx.font = '13px "Arial Black", Arial, sans-serif';
-            g.ctx.fillText(`$${price}`, bx + 230, rowY + 20);
+            g.ctx.textAlign = 'left';
+            g.ctx.fillStyle = sellAgeIsFull(c) ? 'rgb(0,0,255)' : '#ffffff';
+            g.ctx.fillText(String(sellAge(c)), bx + 0x64, textY);
+            // Price — asm 0x41f799-0x41f7d8: white DAT_005012a0, "%i" of
+            // FUN_00403bd6, right-aligned: x = 0xe6 - font.StringWidth.
+            g.ctx.fillStyle = '#ffffff';
+            g.ctx.textAlign = 'right';
+            g.ctx.fillText(String(price), bx + 0xe6, textY);
+            g.ctx.textAlign = 'left';
             // SELL button (rwg:39017/39020).
             const btnX = bx + 276, btnY = by + 145 + i * rowH, btnW = 100, btnH = 30;
             this._drawDialogButton(g, IMAGES.IMAGE_DIALOG_BUTTON, 'SELL', btnX, btnY, btnW, btnH);
@@ -340,6 +358,9 @@ export class ShopDialog {
         if (chick._endBrooding) chick._endBrooding();
         chick.mIsAlive = false;
         if (fc.addMoney) fc.addMoney(price); else fc.mMoney += price;
+        // rwg:5348 (sell path after FUN_00424b5d money add): world+0x260 += 1
+        // (Field ctor sets mSoldCount = 0; this is the only increment.)
+        fc.mField.mSoldCount++;
         if (SOUNDS.SOUND_CHICK_SELL) SOUNDS.SOUND_CHICK_SELL.play();
     }
 
@@ -351,7 +372,7 @@ export class ShopDialog {
 
 export class SpecialShopDialog {
     // BUY UI. Title "SPECIAL SHOP", 3 rows per page.
-    // Each row shows a chick type with name, image, price; click "BUY" to purchase.
+    // Each row shows a special item (image, description, price); "BUY" purchases it.
     constructor(fieldController, onClose) {
         this.mFieldController = fieldController;
         this.mOnClose = onClose;
@@ -359,58 +380,23 @@ export class SpecialShopDialog {
         this.mPage = 0;
         this.mInfoText = null;
         this.mInfoTimer = 0;
-        // Per-type purchase counter for price doubling — lives on the
-        // FieldController so it persists across shop open/close cycles.
-        // Initialized lazily so existing FCs without it don't crash.
-        if (!fieldController._specialShopBoughtCount) {
-            fieldController._specialShopBoughtCount = [0, 0, 0, 0, 0];
-        }
-        this.mBoughtCount = fieldController._specialShopBoughtCount;
     }
 
     isShown() { return this.mIsActive; }
 
+    // Rows = FUN_0041eae5 list, rebuilt on every refresh by FUN_00420474
+    // (rwg_functions.c:39881) → FieldController.getSpecialShopItems(). Entries are item objects
+    // {id, name, desc, image}.
     _availableTypes() {
-        const cfg = this.mFieldController.mLevelConfig;
-        const list = [];
-        if (!cfg || !cfg.hasBuy) return list;
-        const bt = cfg.buyableTypes || { layer: true, broody: true, rooster: true };
-        if (bt.layer !== false)   list.push(ChickType.LAYER);
-        if (bt.broody !== false)  list.push(ChickType.BROODY);
-        if (bt.rooster !== false) list.push(ChickType.ROOSTER);
-        if (cfg.hasMagicHoly && bt.magic !== false) list.push(ChickType.MAGIC);
-        if (cfg.hasMagicHoly && bt.holy !== false)  list.push(ChickType.HOLY);
-        // Pets — Mouse from level 9+, Elephant from level 17+ per descriptions.
-        const lvl = this.mFieldController.mCurrentLevel || 1;
         const fc = this.mFieldController;
-        if (lvl >= 9 && !this._petAlive(0))  list.push(PET_MOUSE);
-        if (lvl >= 17 && !this._petAlive(1)) list.push(PET_ELEPHANT);
-        return list;
+        if (!fc || typeof fc.getSpecialShopItems !== 'function') return [];
+        return fc.getSpecialShopItems();
     }
 
-    _petAlive(petType) {
+    // Price shown on every row = store +0 (FUN_00420758:40144).
+    _priceFor() {
         const fc = this.mFieldController;
-        if (!fc || !fc.mField || !fc.mField.mPets) return false;
-        // Pets are never removed from mPets after spawn, so existence in the
-        // list is enough. (Previous version checked `p.mIsActive` but that
-        // field was removed as dead state; the check turned into `&& undefined`
-        // and always returned false, letting the player re-buy the same pet.)
-        return fc.mField.mPets.some(p => p.mType === petType);
-    }
-
-    _priceFor(type) {
-        // Pets have fixed prices (UNKNOWN exact — using estimates from research).
-        if (type === PET_MOUSE || type === PET_ELEPHANT) return PET_PRICES[type];
-        // Buy price doubles per purchase, floor 250 (rwg_functions.c:37992-37996)
-        const base = BUY_BASE[type];
-        let price = base;
-        for (let i = 0; i < this.mBoughtCount[type]; i++) {
-            price = Math.max(250, price * 2);
-        }
-        // Apply level multiplier (mChickenPriceMultiplier or 1)
-        const mult = (this.mFieldController.mLevelConfig
-            && this.mFieldController.mLevelConfig.chickenPriceMultiplier) || 1;
-        return Math.round(price * mult);
+        return (fc && typeof fc.getSpecialShopPrice === 'function') ? fc.getSpecialShopPrice() : 0;
     }
 
     // Open + drive the HTML 'shop-buy' dialog. Reuses _availableTypes / _priceFor
@@ -426,7 +412,7 @@ export class SpecialShopDialog {
                 },
                 buy: ({ index }) => {
                     const type = this._visible && this._visible[index];
-                    if (type !== undefined) this._buy(type, this._priceFor(type));
+                    if (type !== undefined) this._buy(type);
                     this._renderHtml();
                 },
             },
@@ -439,23 +425,18 @@ export class SpecialShopDialog {
         const maxPage = Math.max(1, Math.ceil(types.length / 3));
         if (this.mPage >= maxPage) this.mPage = Math.max(0, maxPage - 1);
         this._visible = types.slice(this.mPage * 3, this.mPage * 3 + 3);
-        const previewKeys = ['IMAGE_CHICK_PREVIEW_LAYER', 'IMAGE_CHICK_PREVIEW_BROODY',
-            'IMAGE_CHICK_PREVIEW_ROOSTER', 'IMAGE_CHICK_PREVIEW_MAGIC', 'IMAGE_CHICK_PREVIEW_HOLY'];
         HtmlDialogs.set('shop-buy', 'page', `${this.mPage + 1} / ${maxPage}`);
         HtmlDialogs.set('shop-buy', 'info', (this.mInfoText && this.mInfoTimer > 0) ? this.mInfoText : '');
         const dialog = document.querySelector('[data-dialog="shop-buy"]');
         dialog.querySelector('[data-action="prev"]').disabled = this.mPage === 0;
         dialog.querySelector('[data-action="next"]').disabled = this.mPage === maxPage - 1;
-        HtmlDialogs.fillList('shop-buy', 'rows', this._visible, (type, row) => {
-            const isPet = type === PET_MOUSE || type === PET_ELEPHANT;
-            let imgKey;
-            if (type === PET_MOUSE) imgKey = 'IMAGE_OFFENSIVE_MOUSE';
-            else if (type === PET_ELEPHANT) imgKey = 'IMAGE_OFFENSIVE_ELEPHANT';
-            else imgKey = previewKeys[type];
-            const img = IMAGES[imgKey];
+        HtmlDialogs.fillList('shop-buy', 'rows', this._visible, (item, row) => {
+            // Image DAT_005005d4[id] (rwg:40136), text DAT_005003a0[id] (rwg:40142).
+            const img = IMAGES[item.image];
             const ic = row.querySelector('.cc-buy-icon'); if (ic) ic.src = htmlIconSource(img);
-            const nm = row.querySelector('.cc-buy-name'); if (nm) nm.textContent = isPet ? PET_NAMES[type] : TYPE_NAMES[type];
-            const price = this._priceFor(type);
+            const nm = row.querySelector('.cc-buy-name');
+            if (nm) nm.textContent = item.desc; // DAT_005003a0 = descriptions (names are DAT_00500480, used by RiskCaseOffensive asm 0x41af7f)
+            const price = this._priceFor(item);
             const pr = row.querySelector('.cc-buy-price'); if (pr) pr.textContent = price < 1 ? 'FREE' : '$' + price;
         });
     }
@@ -476,15 +457,6 @@ export class SpecialShopDialog {
             'bold 18px "Arial Black", Arial, sans-serif');
         g.ctx.textBaseline = 'alphabetic';
 
-        // Price multiplier indicator
-        const mult = (this.mFieldController.mLevelConfig
-            && this.mFieldController.mLevelConfig.chickenPriceMultiplier) || 1;
-        if (mult > 1) {
-            g.ctx.fillStyle = '#bb2222';
-            g.ctx.font = 'bold 12px Arial, sans-serif';
-            g.ctx.fillText(`Prices x${mult}`, bx + bw / 2, by + 88);
-        }
-
         // 3 rows per page (rwg:39949). Row stride 0x74=116, rowBaseY = i*116+130
         // (abs) = by+105+i*116 (rwg:40114). Clamp page if types shrank.
         const types = this._availableTypes();
@@ -495,37 +467,23 @@ export class SpecialShopDialog {
         this._rowRects = [];
 
         const rowH = 116; // 0x74 (rwg:40114/40276)
-        const previewKeys = [
-            'IMAGE_CHICK_PREVIEW_LAYER',
-            'IMAGE_CHICK_PREVIEW_BROODY',
-            'IMAGE_CHICK_PREVIEW_ROOSTER',
-            'IMAGE_CHICK_PREVIEW_MAGIC',
-            'IMAGE_CHICK_PREVIEW_HOLY',
-        ];
         for (let i = 0; i < visible.length; i++) {
-            const type = visible[i];
-            const isPet = type === PET_MOUSE || type === PET_ELEPHANT;
+            const item = visible[i];
             const rowY = by + 105 + i * rowH; // rwg:40114
-            // Row background
             g.ctx.fillStyle = (i % 2 === 0) ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
             g.ctx.fillRect(bx + 30, rowY, bw - 60, rowH - 8);
-            // Preview image at NATIVE 56x56 (image-native; was 64x64).
-            let imgKey;
-            if (type === PET_MOUSE) imgKey = 'IMAGE_OFFENSIVE_MOUSE';
-            else if (type === PET_ELEPHANT) imgKey = 'IMAGE_OFFENSIVE_ELEPHANT';
-            else imgKey = previewKeys[type];
-            const img = IMAGES[imgKey];
+            // Item image DAT_005005d4[id] (rwg:40136).
+            const img = IMAGES[item.image];
             if (img && img.img && g._isReady && g._isReady(img.img)) {
                 g.ctx.drawImage(img.img, bx + 55, rowY + 26, 56, 56);
             }
-            // Name + price, left-aligned text column.
             g.ctx.fillStyle = '#3a1a05';
-            g.ctx.font = 'bold 16px "Arial Black", Arial, sans-serif';
+            g.ctx.font = 'bold 14px "Arial Black", Arial, sans-serif';
             g.ctx.textAlign = 'left';
-            const name = isPet ? PET_NAMES[type] : TYPE_NAMES[type];
-            g.ctx.fillText(name, bx + 135, rowY + 42);
-            // Price — 'FREE' when computed price < 1 (rwg:40145-40146).
-            const price = this._priceFor(type);
+            drawFitText(g.ctx, item.desc, bx + 135, rowY + 42, 220, 'bold 14px "Arial Black", Arial, sans-serif');
+            g.ctx.textAlign = 'left';
+            // Price — 'FREE' when price < 1 (rwg:40145-40146).
+            const price = this._priceFor(item);
             g.ctx.font = '14px "Arial Black", Arial, sans-serif';
             g.ctx.fillText(price < 1 ? 'FREE' : `$${price}`, bx + 135, rowY + 70);
             // BUY button — x=526 abs=bx+376, y=190+i*116 abs=by+165+i*116, 100x30
@@ -534,7 +492,7 @@ export class SpecialShopDialog {
             const btnX = bx + 376;
             const btnY = by + 165 + i * rowH;
             const r = this._drawDialogButton(g, IMAGES.IMAGE_DIALOG_BUTTON, 'BUY', btnX, btnY, btnW, btnH);
-            r.type = type; r.price = price;
+            r.type = item; r.price = price;
             this._rowRects.push(r);
         }
 
@@ -640,7 +598,7 @@ export class SpecialShopDialog {
         }
         for (const r of this._rowRects || []) {
             if (this._inside(x, y, r)) {
-                this._buy(r.type, r.price);
+                this._buy(r.type);
                 return true;
             }
         }
@@ -666,71 +624,20 @@ export class SpecialShopDialog {
 
     _inside(x, y, r) { return r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
 
-    _buy(type, price) {
+    // FUN_00420ae8 click handler (rwg:40360-40395): FUN_0041eb94 (price check,
+    // apply, spend, double) — FieldController.buySpecialItem.
+    _buy(item) {
         const fc = this.mFieldController;
-        // Bonus-level reward: next purchase from Special Shop is half price.
-        const finalPrice = fc.mNextUpgradeHalfPrice
-            ? Math.floor(price / 2)
-            : price;
-        if ((fc.mMoney || 0) < finalPrice) {
+        if (!item || !fc || typeof fc.buySpecialItem !== 'function') return;
+        if (!fc.buySpecialItem(item.id)) {
+            // rwg:40388 "You don't have enough money." (INFORMATION dialog
+            // FUN_004201bd; shown here as the info line).
             this.mInfoText = "You don't have enough money.";
             this.mInfoTimer = 200;
-            if (SOUNDS.SOUND_ERROR) SOUNDS.SOUND_ERROR.play();
             return;
         }
-        // Pet purchase
-        if (type === PET_MOUSE || type === PET_ELEPHANT) {
-            if (fc.mNextUpgradeHalfPrice) fc.mNextUpgradeHalfPrice = false;
-            fc.spendMoney(finalPrice);  // red flash on HUD money
-            const pet = type === PET_MOUSE ? new Mouse() : new Elephant();
-            pet.mX = 100 + Math.random() * 600;
-            pet.mY = 380 + Math.random() * 180;
-            // Face toward field center — same fix as the level-start pet
-            // spawn (FieldController.startLevel). Pet base default
-            // mDirection=1 (right) would have right-half spawns facing
-            // away from the action until first _updateWalk flip.
-            pet.mDirection = pet.mX < 400 ? 1 : 0;
-            fc.mField.addPet(pet);
-            if (type === PET_MOUSE) fc.mHasMouse = true;
-            else fc.mHasElephant = true;
-            if (SOUNDS.SOUND_CHICK_BUY) SOUNDS.SOUND_CHICK_BUY.play();
-            return;
-        }
-        // No alive-chicken cap — the original BuyChick path (FUN_0041eb94)
-        // only validates money. DAT_0050034c {5,9,12} is the hen-house
-        // auto-spawn count per upgrade tier (FUN_xxx:34313-34329), NOT a
-        // permanent buy cap. Mirrors the FieldController.buyChick fix.
-        // Per-type purchase cap (e.g. L48 description: "no more than 10 layer
-        // chickens"). Per-type limits come from the level config's
-        // maxBuyPerType map. Without this, the cap is unenforced and the
-        // player can spam-buy layers past the level's intended restriction.
-        const maxBuyByKey = (fc.mLevelConfig && fc.mLevelConfig.maxBuyPerType) || {};
-        const typeKeysArr = ['layer', 'broody', 'rooster', 'magic', 'holy'];
-        const maxBuy = maxBuyByKey[typeKeysArr[type]];
-        if (typeof maxBuy === 'number' && this.mBoughtCount[type] >= maxBuy) {
-            this.mInfoText = `Cap reached — only ${maxBuy} of this type per level.`;
-            this.mInfoTimer = 200;
-            if (SOUNDS.SOUND_ERROR) SOUNDS.SOUND_ERROR.play();
-            return;
-        }
-        if (fc.mNextUpgradeHalfPrice) fc.mNextUpgradeHalfPrice = false;
-        fc.spendMoney(finalPrice);  // red flash on HUD money
-        this.mBoughtCount[type]++;
-        const x = 100 + Math.random() * 600;
-        const y = 380 + Math.random() * 180;
-        const chick = createChick(type, x, y);
-        chick.mIsAdult = true;
-        chick.mScale = 1.0;
-        chick.mFoodCounter = 30;
-        chick.mHunger = 2000;
-        fc.mField.addChick(chick);
-        fc.mTotalRaisedChicks++;
-        // L26-style "grow or buy N magic/holy/rooster" tasks count purchases.
-        // Mirror the HUD buyChick path so dialog and slot buys behave the same.
-        if (type === 3 /* MAGIC */) fc.mHatchedMagic++;
-        else if (type === 4 /* HOLY */) fc.mHatchedHoly++;
-        else if (type === 2 /* ROOSTER */) fc.mHatchedRooster = (fc.mHatchedRooster || 0) + 1;
-        if (SOUNDS.SOUND_CHICK_BUY) SOUNDS.SOUND_CHICK_BUY.play();
+        // asm 0x420caa-0x420cb9: SOUND_CLICK (DAT_004fed84).
+        if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
     }
 
     _dismiss() {

@@ -232,18 +232,11 @@ export class MainMenuView extends Widget {
 
         switch (id) {
             case BTN_START:
-                // FUN_004088d0(-1, app) rwg:18089-18093 shows SelectLevelView;
-                // its AddedToManager FUN_0041d22e (rwg:35539) opens
-                // IntroductionDialog FUN_0040d936 when FUN_0041614b() == 1
-                // (no level completed yet, rwg:28638), else SelectLevelDialog
-                // FUN_0041c48a (param < 0x33). The JS IntroductionDialog is
-                // driven by GameView at level 1, hence startGame(1).
-                if (this.mGameApp.mCore && this.mGameApp.mCore.mMaxLevelReached > 1
-                    && this.mGameApp.showSelectLevel) {
-                    this.mGameApp.showSelectLevel();
-                } else {
-                    this.mGameApp.startGame(1);
-                }
+                // FUN_004088d0(-1, app) rwg:18089-18093 → SelectLevelView;
+                // its AddedToManager FUN_0041d22e (rwg:35539) opens the
+                // IntroductionDialog when FUN_0041614b() == 1, else the
+                // SelectLevelDialog (dispatch in GameApp.showSelectLevel).
+                this.mGameApp.showSelectLevel(-1);
                 break;
             case BTN_OPTIONS:
                 // new OptionsDialog (FUN_0040f57b), AddDialog id 6  rwg:18098-18112
@@ -278,8 +271,13 @@ export class SelectLevelView extends Widget {
         this.resize(0, 0, 800, 600);
     }
 
-    // Open + drive the HTML 'select-level' dialog over the main-menu background.
+    // Open + drive the HTML 'select-level' dialog over this view's field
+    // background. Every button plays SOUND_CLICK first (FUN_0041c98e
+    // rwg:35008): START (id 1000) → remove dialog, FUN_00408dae
+    // (rwg:35009-35013); next/prev step the level within 1..maxUnlocked
+    // (rwg:35015-35033).
     openHtml() {
+        const click = () => { if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play(); };
         HtmlDialogs.open('select-level', {
             onBind: { selectedlevel: value => {
                 // FUN_0041c907:34968-34979 clamps the slider to unlocked levels.
@@ -287,12 +285,13 @@ export class SelectLevelView extends Widget {
                 this._renderHtml();
             } },
             actions: {
-                prev: () => { if (this.mSelectedLevel > 1) { this.mSelectedLevel--; this._renderHtml(); } },
+                prev: () => { click(); if (this.mSelectedLevel > 1) { this.mSelectedLevel--; this._renderHtml(); } },
                 next: () => {
+                    click();
                     const max = Math.min(this.mMaxLevel, 50);
                     if (this.mSelectedLevel < max) { this.mSelectedLevel++; this._renderHtml(); }
                 },
-                start: () => { HtmlDialogs.close('select-level'); this.mGameApp.startGame(this.mSelectedLevel); },
+                start: () => { click(); HtmlDialogs.close('select-level'); this.mGameApp.startGame(this.mSelectedLevel); },
             },
         });
         this._renderHtml();
@@ -342,52 +341,21 @@ export class SelectLevelView extends Widget {
     // playerDecorations, -1): IMAGE_GAME_BACK + the player's decoration list
     // (FUN_00408234 copies it from the current player). screenshots/18.png
     // shows this field background behind SelectLevelDialog.
-    // NOTE: GameApp.showSelectLevel currently keeps mMainMenuView as the
-    // current view, so this draw only runs once GameApp routes to this view.
+    // GameApp.showSelectLevel makes this the current view.
     draw(g) {
         drawFieldBackground(g, this._playerDecorations());
     }
 
-    // UNKNOWN — not found in decompiled: how the JS profile's upgrade keys
-    // (Core.mUpgradesPurchased, e.g. 'house_1') map to the 17 decoration
-    // indices (0..16) that FUN_00408234 returns. Until that mapping is
-    // ported, only the bare IMAGE_GAME_BACK is drawn.
+    // FUN_00408234 (rwg:10397): the current player's upgrade set. Upgrade id
+    // i is decoration i (FUN_004248b4 draws DAT_00500564[id] =
+    // IMAGE_GAME_BACK_UPGRADE<id> for each id). See Core.getUpgradeIds.
     _playerDecorations() {
-        return [];
+        const core = this.mGameApp && this.mGameApp.mCore;
+        return core && core.getUpgradeIds ? core.getUpgradeIds() : [];
     }
 }
 
-export class IntroductionDialog extends Widget {
-    // Port of Sexy::IntroductionDialog - vtable at 004dd19c
-    constructor(gameApp) {
-        super();
-        this.mGameApp = gameApp;
-        this.resize(0, 0, 800, 600);
-    }
-
-    draw(g) {
-        const bg = IMAGES.IMAGE_INTRODUCTION;
-        if (bg && bg.img) {
-            g.drawImage(bg, 0, 0);
-        } else {
-            g.setColor(60, 40, 20, 255);
-            g.fillRect(50, 50, 700, 500);
-        }
-
-        const letter = IMAGES.IMAGE_INTRODUCTION_LETTER;
-        if (letter && letter.img) {
-            g.drawImage(letter, 100, 100);
-        }
-
-        g.ctx.fillStyle = '#fff';
-        g.ctx.font = '14px Arial, sans-serif';
-        g.ctx.textAlign = 'center';
-        g.ctx.fillText('Click anywhere to start', 400, 560);
-        g.ctx.textAlign = 'left';
-    }
-
-    mouseDown(x, y, btn) {
-        this.mGameApp.startGame(1);
-        return true;
-    }
-}
+// The IntroductionDialog (FUN_0040d936, vtable 0x4dd19c) is an HTML dialog
+// ('intro-letter' / 'intro-panel') opened by GameApp._openIntroduction. The
+// previous canvas stand-in here ("Click anywhere to start" text, letter at
+// 100,100) was not in the decompiled source and had no callers; removed.

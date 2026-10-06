@@ -236,13 +236,16 @@ export class Res {
             ['IMAGE_OFFENSIVE_SEEDS_CALORIES2', 'images/specials/seeds_calories2.png'],
             ['IMAGE_OFFENSIVE_GUN_POWER', 'images/specials/gun_power.png'],
             ['IMAGE_ICON_RISK', 'images/icon_risk.jpg'],
-            // Pets (non-square frames, explicit column counts)
-            ['IMAGE_PET_IDLE_MOUSE', 'images/pets/mouse/idle.png', 7],
-            ['IMAGE_PET_WALK_MOUSE', 'images/pets/mouse/walk.png', 14],
-            ['IMAGE_PET_IDLE_ELEPHANT', 'images/pets/elephant/idle.png', 10],
-            ['IMAGE_PET_WALK_ELEPHANT', 'images/pets/elephant/walk.png', 10],
-            // Native wolf cels are 135x110: walk 1350px = 10 frames,
-            // eat 1755px = 13 frames. The old 9-column split leaked adjacent cels.
+            // Pets: cel widths passed to FUN_0041a5b6 by the loader
+            // (asm 0x41973b-0x419749: mouse 0x46, elephant 0x64, wolf 0x87);
+            // cols = image width / cel width:
+            //   mouse idle 350/70 = 5, walk 700/70 = 10
+            //   elephant idle/walk 1200/100 = 12
+            //   wolf walk 1350/135 = 10, eat 1755/135 = 13
+            ['IMAGE_PET_IDLE_MOUSE', 'images/pets/mouse/idle.png', 5],
+            ['IMAGE_PET_WALK_MOUSE', 'images/pets/mouse/walk.png', 10],
+            ['IMAGE_PET_IDLE_ELEPHANT', 'images/pets/elephant/idle.png', 12],
+            ['IMAGE_PET_WALK_ELEPHANT', 'images/pets/elephant/walk.png', 12],
             ['IMAGE_PET_WALK_WOLF', 'images/pets/wolf/walk.jpg', 10],
             ['IMAGE_PET_SPECIAL_WOLF', 'images/pets/wolf/eat.jpg', 13],
             // Additional
@@ -300,10 +303,12 @@ export class Res {
             ['IMAGE_UPGRADE_PREVIEW14', 'images/upgrade icons/icon14.png'],
             ['IMAGE_UPGRADE_PREVIEW15', 'images/upgrade icons/icon15.png'],
             ['IMAGE_UPGRADE_PREVIEW16', 'images/upgrade icons/icon16.png'],
-            // Dog (non-square frames)
-            ['IMAGE_DOG', 'images/dog.png', 3],
-            ['IMAGE_DOG_IDLE0', 'images/dog_idle0.png', 12],
-            ['IMAGE_DOG_IDLE1', 'images/dog_idle1.png', 6],
+            // Dog: IMAGE_DOG is a single 111x80 image; IDLE0/IDLE1 get cel
+            // width 0x6f = 111 (FUN_0041a5b6, rwg_functions.c:31726/31739):
+            // 1776/111 = 16 and 888/111 = 8 cels.
+            ['IMAGE_DOG', 'images/dog.png', 1],
+            ['IMAGE_DOG_IDLE0', 'images/dog_idle0.png', 16],
+            ['IMAGE_DOG_IDLE1', 'images/dog_idle1.png', 8],
         ];
 
         const soundList = [
@@ -331,10 +336,8 @@ export class Res {
             ['SOUND_GAV_GAV', 'sounds/gav_gav.ogg'],
             ['SOUND_WOLF', 'sounds/wolf.ogg'],
             ['SOUND_FIELD_UPGRADE', 'sounds/field_upgrade.ogg'],
-            // NOT in resources.xml and never loaded by the original code
-            // (no "elephant" sound string in rwg_functions.c). Kept only
-            // because Pet.js references it — UNKNOWN — not found in decompiled.
-            ['SOUND_ELEPHANT', 'sounds/elephant.ogg'],
+            // SOUND_ELEPHANT removed: not in resources.xml, never loaded by
+            // the original and no longer referenced by the port.
         ];
 
         // Music is loaded AFTER the Game group finished, outside the progress

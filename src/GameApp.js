@@ -13,7 +13,7 @@
 //   FUN_004088d0 (rwg:10840) show SelectLevelView (+0x5e8) with a level arg
 //                            (-1 = max unlocked, 1000 = credits, >=51 = win)
 //   FUN_00408a1b (rwg:10921) show GameView (+0x5ec)
-//   FUN_00408c24 (rwg:11047) show UpgradesView (+0x5f0)
+//   FUN_00408c24 (rwg:11047) show UpgradesView (+0x5f0) → showUpgrades()
 //   FUN_00408dae (rwg:11129) start level: Core::StartLevel (FUN_00406069),
 //                            FUN_00408a1b, random game music
 //   FUN_00408e2f (rwg:11193) vtable[76] — pause level (focus lost)
@@ -23,12 +23,14 @@
 import { SexyAppBase, SoundManager } from './SexyApp.js';
 import { Res, SOUNDS } from './Res.js';
 import { GameView } from './GameView.js';
+import { HandMode } from './Hand.js';
 import { MainMenuView, SelectLevelView } from './MainMenuView.js';
 import { Core, DEFAULT_MUSIC_VOLUME, DEFAULT_SFX_VOLUME } from './Core.js';
 import { OptionsDialog } from './OptionsDialog.js';
 import { ChangePlayerDialog } from './PlayerDialogs.js';
 import { CreditsView } from './CreditsView.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
+import { UpgradesView, levelOffersUpgrade } from './UpgradesView.js';
 
 // Game states matching the decompiled flow
 const GameState = {
@@ -39,6 +41,7 @@ const GameState = {
     SELECT_LEVEL: 4,
     PLAYING: 5,
     OPTIONS: 6,
+    UPGRADES: 7,
 };
 
 export class GameApp extends SexyAppBase {
@@ -106,10 +109,9 @@ export class GameApp extends SexyAppBase {
     //              else app+0x5f4 = 0.
     //   GotFocus:  if a level exists and app+0x5f4: paused = 0, +0xd = 0.
     //              app+0x5f4 = 0.
-    // Port: Core+4 "paused" == FieldController.mIsPaused. The +0xd byte and
-    // the cursor reset FUN_004090b9 → FUN_0040cc01 (its EAX mode argument is
-    // not recoverable from the decompile) are NOT ported:
-    // UNKNOWN — not found in decompiled.
+    // Port: Core+4 "paused" == FieldController.mIsPaused, +0xd ==
+    // GameView.mPauseTextShown. FUN_004090b9 → FUN_0040cc01(Core+0x20 hand)
+    // always passes mode 0 (asm 0x4090c4 `xorl %eax,%eax`) = HandMode.SEEDS.
     _setupFocusPause() {
         if (typeof window === 'undefined' || this._focusPauseInstalled) return;
         this._focusPauseInstalled = true;
@@ -124,6 +126,8 @@ export class GameApp extends SexyAppBase {
         const levelExists = !!(fc && this.mState === GameState.PLAYING);
         if (levelExists && !fc.mIsPaused) {
             fc.mIsPaused = true;          // rwg:11207
+            this.mGameView.mPauseTextShown = false;            // rwg:11208 +0xd = 0
+            this.mGameView.mHand.setMode(HandMode.SEEDS);      // rwg:11209 FUN_004090b9(0)
             this.mPausedByFocus = true;   // rwg:11210
             return;
         }
@@ -135,6 +139,7 @@ export class GameApp extends SexyAppBase {
         const fc = this.mGameView && this.mGameView.mFieldController;
         if (fc && this.mPausedByFocus) {
             fc.mIsPaused = false;         // rwg:11234
+            this.mGameView.mPauseTextShown = false;   // rwg:11235 +0xd = 0
         }
         this.mPausedByFocus = false;      // rwg:11237
     }
@@ -224,39 +229,121 @@ export class GameApp extends SexyAppBase {
         if (track) SoundManager.playMusic(track);
     }
 
+    // FUN_0041614b (rwg:28638): maxUnlocked = min(50, completedCount + 1).
+    // completedCount + 1 == Core.mMaxLevelReached in this port.
+    getMaxUnlocked() {
+        return Math.min(50, (this.mCore && this.mCore.mMaxLevelReached) || 1);
+    }
+
     // FUN_004088d0 (rwg:10840) - show SelectLevelView with a level argument
-    // (stored at view+0x9c). FUN_004088d0 does NOT touch music.
-    // SelectLevelView::AddedToManager FUN_0041d22e (rwg:35539) dispatches:
-    //   level == 1000            → credits roll (FUN_0041d395)
-    //   maxUnlocked == 1         → IntroductionDialog (FUN_0041d346)
-    //   level < 0x33 (51)        → SelectLevelDialog (FUN_0041d2f4)
+    // (stored at view+0x9c). It hides the UpgradesView (+0x5f0, rwg:10858-10861)
+    // and the GameView (FUN_00408b04), then adds SelectLevelView (+0x5e8).
+    // FUN_004088d0 does NOT touch music.
+    // SelectLevelView::AddedToManager FUN_0041d22e (rwg:35539-35580,
+    // @0x41d252-0x41d2b3) dispatches, in this order:
+    //   +0x9c == 1000            → credits roll (FUN_0041d395)
+    //   FUN_0041614b() == 1      → IntroductionDialog (FUN_0041d346)
+    //   +0x9c <= 0x32 (50)       → SelectLevelDialog (FUN_0041d2f4)
     //   otherwise (>= 51)        → win sequence
-    // maxUnlocked = min(50, completed + 1) (FUN_0041614b:28638). Level -1
-    // means "max unlocked" (FUN_0041c48a rwg:34745-34749). Callers: main-menu
-    // START with -1 (FUN_0040ea92 rwg:18089-18093), CREDITS with 1000
-    // (rwg:18128-18129), LevelCompleted CONTINUE with level+1 (FUN_0040dd6a
-    // rwg:17101-17104), UpgradesView done (FUN_00424a1c rwg:44923).
-    // Port: the IntroductionDialog lives in GameView.showLevelIntro, so the
-    // "maxUnlocked == 1" branch starts level 1 through startGame.
+    // Callers: main-menu START with -1 (FUN_0040ea92 rwg:18089-18093), CREDITS
+    // with 1000 (rwg:18128-18129), LevelCompleted CONTINUE with level+1
+    // (FUN_0040dd6a rwg:17101-17104), UpgradesView CONTINUE (FUN_00424a1c
+    // rwg:44923).
+    // Port: credits/win use the separate CreditsView class (same widget in
+    // the original); the select-level and intro dialogs are HTML over the
+    // SelectLevelView field background (screenshot 18).
     showSelectLevel(level = -1) {
         if (level === 1000) { this.showCredits(); return; }
-        const maxUnlocked = Math.min(50, (this.mCore && this.mCore.mMaxLevelReached) || 1);
-        if (maxUnlocked === 1) { this.startGame(1); return; }
-        if (level >= 0x33) { this.showWin(); return; }
         if (!this.mSelectLevelView) {
             this.mSelectLevelView = new SelectLevelView(this);
         }
-        this.mSelectLevelView.mMaxLevel = maxUnlocked;
-        this.mSelectLevelView.mSelectedLevel = (level === -1) ? maxUnlocked
-            : Math.max(1, Math.min(level, maxUnlocked));
+        this.mSelectLevelView.mLevelParam = level;   // view+0x9c
         this.mState = GameState.SELECT_LEVEL;
-        // Port: the dialog is HTML overlaid on the main-menu background; the
-        // original swaps to a separate SelectLevelView widget.
-        this.mCurrentView = this.mMainMenuView;
-        this.mSelectLevelView.openHtml();
+        this.mCurrentView = this.mSelectLevelView;
+        this.mCanvas.style.cursor = 'default';
+        if (this.getMaxUnlocked() === 1) { this._openIntroduction(level); return; }
+        if (level < 0x33) { this._openSelectLevelDialog(level); return; }
+        this.showWin();
     }
 
-    // FUN_00408c24 - showOptions. Opens the OptionsDialog (HTML) from the menu.
+    // FUN_0041d2f4 (rwg:35617, @0x41d317-0x41d338): AddDialog(3,
+    // new SelectLevelDialog(view+0x9c)). FUN_0041c48a (rwg:34742-34752):
+    // level -1 → FUN_0041614b(); then clamp to <= 0x32.
+    _openSelectLevelDialog(level) {
+        const v = this.mSelectLevelView;
+        const maxUnlocked = this.getMaxUnlocked();
+        v.mMaxLevel = maxUnlocked;
+        let sel = (level === -1) ? maxUnlocked : level;
+        if (sel > 0x32) sel = 0x32;
+        v.mSelectedLevel = sel;
+        v.openHtml();
+    }
+
+    // FUN_0041d346 (rwg:35656): AddDialog(0, new IntroductionDialog(view))
+    // (FUN_0040d936 rwg:16828). Its ButtonDepress FUN_0040daeb (rwg:16915-16940):
+    //   1st OK: page flag +0x15c cleared → letter page becomes the
+    //           introduction picture (FUN_0040d9ef), no sound;
+    //   2nd OK: SOUND_CLICK (DAT_004fed84), remove dialog, FUN_0041d2f4 →
+    //           SelectLevelDialog. The level only starts from its START.
+    // The two pages are the HTML dialogs 'intro-letter' and 'intro-panel'.
+    _openIntroduction(level) {
+        // JS guard: GameView.startLevel also opens the intro on level 1
+        // (to be removed by the GameView owner) — mark it as already shown so
+        // it does not appear a second time after START.
+        if (this.mGameView) this.mGameView._introShown = true;
+        HtmlDialogs.open('intro-letter', {
+            actions: {
+                next: () => {
+                    HtmlDialogs.close('intro-letter');
+                    HtmlDialogs.open('intro-panel', {
+                        actions: {
+                            ok: () => {
+                                if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
+                                HtmlDialogs.close('intro-panel');
+                                this._openSelectLevelDialog(level);
+                            },
+                        },
+                    });
+                },
+            },
+        });
+    }
+
+    // FUN_00408c24 (rwg:11047; argument = next level, @0x408cb2/0x408d5f;
+    // caller FUN_0040dd6a @0x40ddca passes completed level + 1).
+    // Hides the GameView (FUN_00408b04), creates/adds UpgradesView (+0x5f0,
+    // FUN_0042474a), then FUN_00424a7f(view, nextLevel, player decorations
+    // (FUN_00408234), available upgrades (FUN_00416162)). No music change.
+    showUpgrades(nextLevel) {
+        if (!this.mUpgradesView) {
+            this.mUpgradesView = new UpgradesView(this);
+        }
+        this.mState = GameState.UPGRADES;
+        this.mCurrentView = this.mUpgradesView;
+        this.mCanvas.style.cursor = 'default';
+        const core = this.mCore;
+        const available = core ? core.getAvailableUpgrades() : [];
+        const decorations = core ? core.getUpgradeIds() : [];
+        this.mUpgradesView.setup(nextLevel, decorations, available);
+    }
+
+    // LevelCompletedDialog "upgrade" flag (FUN_00421948 @0x421987-0x4219b4).
+    // Must be evaluated BEFORE the completion time is recorded. See
+    // UpgradesView.levelOffersUpgrade.
+    levelOffersUpgrade(level, maxUnlockedBefore = this.getMaxUnlocked()) {
+        return levelOffersUpgrade(level, maxUnlockedBefore,
+            !!(this.mCore && this.mCore.hasCurrentPlayer && this.mCore.hasCurrentPlayer()));
+    }
+
+    // LevelCompletedDialog CONTINUE — FUN_0040dd6a (rwg:17086-17107):
+    //   flag == 0 → FUN_004088d0(level + 1); else FUN_00408c24(level + 1).
+    continueAfterLevel(level, offersUpgrade) {
+        if (offersUpgrade) this.showUpgrades(level + 1);
+        else this.showSelectLevel(level + 1);
+    }
+
+    // Main-menu OPTIONS (FUN_0040ea92 rwg:18098-18112): OptionsDialog
+    // FUN_0040f57b (HTML) as dialog id 6.
     showOptions() {
         this.openOptions({ inGame: false });
     }

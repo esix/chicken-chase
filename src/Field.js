@@ -40,7 +40,8 @@
 // Previous header notes claiming the raven update was "UNKNOWN in decompiled"
 // were wrong: the raven is a plain (non-virtual) 0x54-byte struct.
 
-import { ChickType, EggType, createChick } from './Chick.js';
+import { ChickType, EggType, EGG_TO_CHICK, createChick, drawWithParams, foodUnit } from './Chick.js';
+import { drawFieldBackground } from './CreditsView.js';
 import { CoinSilver, CoinGold, DiamondBlue, DiamondRed, Egg, GemType } from './Gem.js';
 import { IMAGES, SOUNDS } from './Res.js';
 
@@ -93,8 +94,16 @@ function maxNorm2(x, y) {
 // JS: dead = !mIsAlive; state 0 is the "held by raven" state the raven puts
 // the chick into (FUN_00416ed4, asm 0x416fe0) = JS mIsCarried; JS chicks are
 // always on the ground unless carried.
+// Field (x, y) of a chick or pet.
+function chickXY(c) {
+    if (c.mPos) return { x: c.mPos[0], y: c.mPos[1] };
+    return screenToField(c.mX, c.mY);
+}
+
 function isCatchable(c) {
-    return !!c && c.mIsAlive && !c.mIsCarried;
+    if (!c) return false;
+    if (typeof c.isActive === 'function') return c.isActive();
+    return c.mIsAlive && !c.mIsCarried;
 }
 
 // FUN_0040591e (rwg_functions.c:6846): level (**(fc+4)) < 10 -> 0.45
@@ -159,8 +168,8 @@ export class Raven {
         this.mFlash = 0;                        // +0x48 hit-flash ticks
         this.mSpeedMult = speedMult;            // +0x4c
         this.mFlee = false;                     // +0x50
-        // Field position of the carried chick (chick +0x20..+0x28). JS chicks
-        // have no z, so while carried the raven keeps it here.
+        // Field position of the carried chick (chick +0x20..+0x28); chicks
+        // without a field position (none in the port now) fall back to it.
         this.mChickPos = null;
         this.mIsAlive = true;                   // JS: list membership
 
@@ -176,7 +185,7 @@ export class Raven {
     //   spawn(+0x24) = exit(+0x18) = low(+0x38) = P; exit.x -= 2*off
     _initPoints(chick) {
         const off = (mtRand() & 1) ? 40.0 : -40.0;
-        const c = chick ? screenToField(chick.mX, chick.mY) : { x: 0, y: 0 };
+        const c = chick ? chickXY(chick) : { x: 0, y: 0 };
         const p = [c.x + off, c.y, 80.0];
         this.mSpawn = p.slice();
         this.mExit = p.slice();
@@ -196,7 +205,7 @@ export class Raven {
         const chick = this.mChick;
         const field = this.mField;
         if (!chick || !field) return false;
-        const cp = screenToField(chick.mX, chick.mY);
+        const cp = chickXY(chick);
         const elephant = (field.mPets || []).find(p => p.mType === 1);
         if (elephant) {
             const ep = screenToField(elephant.mX, elephant.mY);
@@ -206,7 +215,7 @@ export class Raven {
         }
         for (const r of field.mChickens) {
             if (r.mType !== ChickType.ROOSTER) continue;
-            const rp = screenToField(r.mX, r.mY);
+            const rp = chickXY(r);
             const d = maxNorm3([rp.x - cp.x, rp.y - cp.y, 0]);
             if (d < 10.0) return true;                     // _DAT_004dc7ec
             if (d < 15.0 && (crtRand() & 1) !== 0) return true;
@@ -217,6 +226,7 @@ export class Raven {
 
     // Current field position of the target chick (chick +0x20..+0x28).
     _chickFieldPos(c) {
+        if (c.mPos) return c.mPos.slice();
         if (this.mCaught && this.mChickPos) return this.mChickPos.slice();
         const p = screenToField(c.mX, c.mY);
         return [p.x, p.y, 0];
@@ -301,16 +311,19 @@ export class Raven {
             if (!this._moveTo(this.mExit)) {
                 // FUN_0040481d -> FUN_0040466e: chick removed from the field
                 // (FUN_0040342b sets it dead). JS: Chick.ravenAttack().
-                c.mIsCarried = false;
                 if (c.mIsAlive && c.ravenAttack) c.ravenAttack();
                 this.mChick = null;
                 return false;
             }
             // chick +0x20..+0x28 = raven position
             this.mChickPos = this.mPos.slice();
-            const s = fieldToScreen(this.mPos[0], this.mPos[1], this.mPos[2]);
-            c.mX = s.x;
-            c.mY = s.y;
+            if (c.mPos) {
+                c.mPos = this.mPos.slice();
+            } else {
+                const s = fieldToScreen(this.mPos[0], this.mPos[1], this.mPos[2]);
+                c.mX = s.x;
+                c.mY = s.y;
+            }
         } else {
             const cp = this._chickFieldPos(c);
             // FUN_0041705b: move toward (chick.x, chick.y, 0)
@@ -330,16 +343,20 @@ export class Raven {
 
     // FUN_0040497d (rwg_functions.c:5479): drop a held chick: restore it and
     // set its position to the clamped current position (FUN_00408149).
-    // JS chicks have no height, so the chick is placed on the ground under
-    // that position (the original keeps z and lets the chick fall).
+    // Order: vt[7] + vt[8] (Chick mIsCarried = false), then pos = clamped
+    // position with z kept — the chick then falls (FUN_004035c8).
     _releaseChick() {
         const c = this.mChick;
         if (!c || !c.mIsAlive || !c.mIsCarried) return;
         const p = clampField(this._chickFieldPos(c));
-        const s = fieldToScreen(p[0], p[1], 0);
-        c.mX = s.x;
-        c.mY = s.y;
         c.mIsCarried = false;
+        if (c.mPos) {
+            c.mPos = p;
+        } else {
+            const s = fieldToScreen(p[0], p[1], 0);
+            c.mX = s.x;
+            c.mY = s.y;
+        }
     }
 
     // FUN_00416d35 (asm 0x416d35-0x416db5) damage, with the caller guard from
@@ -447,39 +464,49 @@ export class Raven {
 // Seeds. Original: each seed is its own 0x30-byte object in the seed list
 // (fc+0x1c), created by FUN_0041bfe2 / FUN_0041c0a8 / FUN_0041bdcb
 // (rwg_functions.c:34292/34339/34089) and updated by FUN_0041be18
-// (rwg_functions.c:34129). The JS port groups one drop into a SeedCluster
-// (Chick.js eats through getNearestSeeds/eatOne/hasFood); each grain below
-// follows the original per-seed behavior.
+// (rwg_functions.c:34129). Seed struct (FUN_0041bdcb, asm 0x41bdcb):
+//   +0x00 claim countdown, +0x04 claiming chick id, +0x08..+0x10 pos,
+//   +0x14..+0x1c velocity, +0x20 calorie level (image), +0x24 calories =
+//   FUN_00405899() (500 / 700, asm 0x41c0cc-0x41c0d0), +0x28 life =
+//   (mt % 300)*2 + 0x4b0, +0x2c multiplier DAT_0050031c[level] =
+//   {1.0, 1.3 (_DAT_004e9304), 1.6 (_DAT_004e9300)} (FUN_00405540 asm
+//   0x405570-0x4055b2).
+// The JS port groups one drop into a SeedCluster for drawing; every grain
+// is a separate seed with the fields above, and chicks target single grains.
+const SEED_MULT = [1.0, 1.2999999523162842, 1.600000023841858];
+
 export class SeedCluster {
     // FUN_0041bfe2 (asm 0x41bfe2-0x41c0a2) for each of `count` seeds:
     //   pos = (fieldX, fieldY, 10.0 (_DAT_004dc7ec))
     //   vel = (mt*2^-31 - 0.5, mt*2^-31 - 0.5, 0)  (_DAT_004e9248, _DAT_004e90c8)
-    // FUN_0041bdcb: +0x28 lifetime = (rand % 300) * 2 + 0x4b0.
-    // The seed count/cost (DAT_0050034c = 5/9/12 seeds, cost round(n*0.4))
-    // is decided by the caller.
-    constructor(x, y, count, calories) {
+    // `calLevel` is the seed calorie upgrade level 0..2 (+0x20).
+    constructor(x, y, count, calLevel, calories) {
         const f = screenToField(x, y);
         const p = clampField([f.x, f.y, 0]);
         const s = fieldToScreen(p[0], p[1], 0);
-        this.mX = s.x;                // drop point (cluster anchor for Chick.js)
+        this.mX = s.x;                // drop point (JS cluster anchor)
         this.mY = s.y;
-        this.mCount = count;
-        this.mCalories = calories;    // JS food value passed to Chick.feed
+        this.mCalLevel = calLevel;
         this.mSeeds = [];
-        this.mConsumed = 0;
         this.mIsAlive = true;
+        const mult = SEED_MULT[calLevel] || 1.0;
         for (let i = 0; i < count; i++) {
-            this.mSeeds.push({
-                pos: [f.x, f.y, 10.0],
+            const g = {
+                claim: 0,                   // +0x00
+                claimId: 0,                 // +0x04
+                pos: [f.x, f.y, 10.0],      // +0x08
                 vel: [mtRand() * 4.656612873077393e-10 - 0.5,
                       mtRand() * 4.656612873077393e-10 - 0.5, 0],
-                life: (mtRand() % 300) * 2 + 0x4b0,
-                eaten: false,
+                calLevel,                   // +0x20
+                calories,                   // +0x24
+                life: (mtRand() % 300) * 2 + 0x4b0,  // +0x28
+                mult,                       // +0x2c
                 x: s.x,
                 y: s.y,
-            });
+            };
+            this._syncGrain(g);
+            this.mSeeds.push(g);
         }
-        for (const g of this.mSeeds) this._syncGrain(g);
     }
 
     _syncGrain(g) {
@@ -488,16 +515,15 @@ export class SeedCluster {
         g.y = s.y;
     }
 
-    _grainGone(g) { return g.eaten || g.life <= 0; }
-
     // FUN_0041be18 (rwg_functions.c:34129) per seed:
-    //   if (z == 0) { claim countdown; life--; alive = life > 0 }
+    //   if (z == 0) { if (claim > 0 && --claim == 0) id = 0; life--;
+    //                 alive = life > 0 }
     //   else { vz -= 0.05 (_DAT_004e9228); pos += vel; FUN_00408149 clamp }
     update() {
         if (!this.mIsAlive) return;
         for (const g of this.mSeeds) {
-            if (this._grainGone(g)) continue;
             if (g.pos[2] === 0) {
+                if (g.claim > 0 && --g.claim === 0) { g.claim = 0; g.claimId = 0; }
                 g.life--;
             } else {
                 g.vel[2] = g.vel[2] - 0.05;
@@ -508,56 +534,37 @@ export class SeedCluster {
                 this._syncGrain(g);
             }
         }
-        if (!this.hasFood()) this.mIsAlive = false;
+        // FUN_0041bec7: seeds whose update returned false are removed.
+        this.mSeeds = this.mSeeds.filter(g => g.pos[2] !== 0 || g.life > 0);
+        if (this.mSeeds.length === 0) this.mIsAlive = false;
     }
 
-    // JS: a chicken eats one grain, returns calories gained
-    eatOne() {
-        for (const s of this.mSeeds) {
-            if (!this._grainGone(s)) {
-                s.eaten = true;
-                this.mConsumed++;
-                return this.mCalories;
-            }
-        }
-        return 0;
-    }
-
-    hasFood() {
-        if (!this.mIsAlive) return false;
-        for (const s of this.mSeeds) if (!this._grainGone(s)) return true;
-        return false;
-    }
+    hasFood() { return this.mIsAlive && this.mSeeds.length > 0; }
 
     // FUN_0040a0ed (asm 0x40a0ed-0x40a11f): image by seed +0x20 calorie
     // level: 1 -> IMAGE_SEED_CALORIES1, 2 -> IMAGE_SEED_CALORIES2, else
-    // IMAGE_SEED. The JS port passes calories 30/50/80 (GameView seeds_1 /
-    // seeds_2 upgrades) instead of the level index 0/1/2.
+    // IMAGE_SEED.
     _getImage() {
-        const lvl = this.mCalories >= 80 ? 2 : this.mCalories >= 50 ? 1 : 0;
-        if (lvl === 1) return IMAGES.IMAGE_SEED_CALORIES1;
-        if (lvl === 2) return IMAGES.IMAGE_SEED_CALORIES2;
+        if (this.mCalLevel === 1) return IMAGES.IMAGE_SEED_CALORIES1;
+        if (this.mCalLevel === 2) return IMAGES.IMAGE_SEED_CALORIES2;
         return IMAGES.IMAGE_SEED;
     }
 
     // FUN_0040a3d6 seed loop (rwg_functions.c:13328-13366): position =
     // projection - (image.w/2, image.h/2); grounded seeds (z == 0) are drawn
     // immediately (FUN_004665cf), airborne ones go to the depth-sorted list.
-    // drawGrains(g, airborne) draws one of the two groups.
     drawGrains(g, airborne) {
         if (!this.mIsAlive) return;
         const img = this._getImage();
         if (!img || !img.img) return;
         const hw = Math.trunc((img.mWidth || 0) / 2), hh = Math.trunc((img.mHeight || 0) / 2);
         for (const s of this.mSeeds) {
-            if (this._grainGone(s)) continue;
             if ((s.pos[2] !== 0) !== airborne) continue;
             g.drawImage(img, s.x - hw, s.y - hh);
         }
     }
 
-    // Airborne grains as render-list entries: key = seed field y (+0x0c,
-    // FUN_004090ec 4th argument), expressed as its z = 0 screen y.
+    // Airborne grains as render-list entries: key = seed field y (+0x0c).
     getAirborneDrawables() {
         const out = [];
         if (!this.mIsAlive) return out;
@@ -565,11 +572,8 @@ export class SeedCluster {
         if (!img || !img.img) return out;
         const hw = Math.trunc((img.mWidth || 0) / 2), hh = Math.trunc((img.mHeight || 0) / 2);
         for (const s of this.mSeeds) {
-            if (this._grainGone(s) || s.pos[2] === 0) continue;
-            out.push({
-                mY: fieldToScreen(s.pos[0], s.pos[1], 0).y,
-                draw: (g) => g.drawImage(img, s.x - hw, s.y - hh),
-            });
+            if (s.pos[2] === 0) continue;
+            out.push({ key: s.pos[1], draw: (g) => g.drawImage(img, s.x - hw, s.y - hh) });
         }
         return out;
     }
@@ -580,8 +584,53 @@ export class SeedCluster {
     }
 }
 
+// Dog idle animation — GameView +0x88 struct {state, ?, progress, timer}
+// (ctor FUN_004091f9 asm: +0x88 = 0, +0x8c = 3, +0x90 = 0, +0x94 = 0),
+// updated by FUN_004091b8 (rwg_functions.c:11653, asm 0x4091b8-0x4091f8)
+// from GameView::Update FUN_00409372 (asm 0x40939f) and drawn right after
+// the background by FUN_0041742b(image[state], frame, 0x166, 0xe2)
+// (rwg_functions.c:13318-13330). Images DAT_00500654 = {IMAGE_DOG,
+// IMAGE_DOG_IDLE0, IMAGE_DOG_IDLE1} with cel width 0x6f (FUN_0041a5b6,
+// rwg_functions.c:31716-31739). Durations DAT_004dcd88 = {2000, 200, 150}
+// (read from .rdata).
+const DOG_DURATION = [2000, 200, 150];
+
+export class Dog {
+    constructor() {
+        this.mState = 0;        // +0x88
+        this.mProgress = 0;     // +0x90 (float)
+        this.mTimer = 0;        // +0x94
+    }
+
+    // FUN_004091b8: timer--; if timer < 1: state = (state == 0) ? rand() % 3
+    // : 0; timer = DAT_004dcd88[state]. progress = 1 - timer/DAT_004dcd88[state].
+    update() {
+        this.mTimer--;
+        if (this.mTimer < 1) {
+            this.mState = (this.mState === 0) ? crtRand() % 3 : 0;
+            this.mTimer = DOG_DURATION[this.mState];
+        }
+        this.mProgress = Math.fround(1.0 - this.mTimer / DOG_DURATION[this.mState]);
+    }
+
+    // rwg_functions.c:13318-13330: image DAT_00500654[state], cel =
+    // ftol(progress * numCols) (FUN_004bed40 of +0x90, clamped by
+    // FUN_0041746a's frame path), drawn at (0x166, 0xe2) = (358, 226).
+    draw(g) {
+        const imgs = [IMAGES.IMAGE_DOG, IMAGES.IMAGE_DOG_IDLE0, IMAGES.IMAGE_DOG_IDLE1];
+        const img = imgs[this.mState];
+        if (!img || !img.img) return;
+        const cols = img.mNumCols || 1;
+        let frame = Math.trunc(this.mProgress * cols);
+        if (frame >= cols) frame = cols - 1;
+        drawWithParams(g, img, 0x166, 0xe2, { frame });
+    }
+}
+
 export class Field {
-    // Port of Sexy::Field — vtable 004dca8c (destructor FUN_004080ea only).
+    // Port of Sexy::Field — vtable 004dca8c (destructor FUN_004080ea only)
+    // plus the chick-list "world" object (FUN_00404022 ctor,
+    // rwg_functions.c:4762) whose update is FUN_004043fd.
     // List offsets on the controller (FUN_0040a3d6): chicks +0x14, seeds
     // +0x1c, eggs +0x24, gems +0x28, pets/wolves +0x44, raven controller +0x10.
     constructor() {
@@ -593,6 +642,31 @@ export class Field {
         this.mSeeds = [];
         this.mFieldController = null;
         this.mUpgradeLevel = 0;
+        this.mDecorations = [];         // set by GameView (core.getUpgradeIds)
+        this.mDog = new Dog();
+        // World fields (FUN_00404022 asm, rwg_functions.c:4787-4797):
+        this.mSoldCount = 0;            // +0x260 (++ per sold chick, rwg:5348)
+        this.mSicknessEnabled = true;   // +0x264 = 1 (L1 writes 0, rwg:42997)
+        this.mFastSickness = false;     // +0x26c = 0 (L31 writes 1, rwg:43326)
+        this.mBroodyCap = -1;           // +0x270 = -1 (L32 writes 4)
+        this.mBroodyAllowed = true;     // +0x274 = 1
+        // +0x268 = ((mt % 40) + 30) * 100
+        this.mSickTimer = ((mtRand() % 0x28) + 0x1e) * 100;
+        this.mHatchSlowdown = 1.0;      // _DAT_004fc3b4
+        this._configApplied = false;
+    }
+
+    // Level flags written by the level setup FUN_00422d10 (LevelData).
+    _applyLevelConfig() {
+        if (this._configApplied) return;
+        const fc = this.mFieldController;
+        const cfg = fc && fc.mLevelConfig;
+        if (!cfg) return;
+        this._configApplied = true;
+        if (cfg.field264 === 0) this.mSicknessEnabled = false;
+        this.mFastSickness = !!cfg.fastSickness;
+        if (typeof cfg.broodyEggCap === 'number') this.mBroodyCap = cfg.broodyEggCap;
+        if (typeof cfg.hatchSlowdown === 'number') this.mHatchSlowdown = cfg.hatchSlowdown;
     }
 
     addChick(chick) {
@@ -604,8 +678,7 @@ export class Field {
     // tracked but NOT used — the result uses the last sampled cell:
     //   x = cx*8 + mt%8, y = cy*8 + mt%8; x clamped to [0,128] (_DAT_004e9140);
     //   y < 0 -> 0; y > 57.0 (_DAT_004e9138) -> 57.0 (_DAT_004e9130).
-    // Returned in screen pixels (FUN_00409567 projection, z = 0).
-    pickRandomTarget(fromX, fromY) {
+    pickRandomFieldPoint() {
         let cx = 0, cy = 0;
         for (let i = 0; i < 0x30; i++) {
             cx = mtRand() % 16;
@@ -617,7 +690,13 @@ export class Field {
         if (y < 0) y = 0;
         if (128.0 < x) x = 128.0;
         if (y > 57.0) y = 57.0;
-        return fieldToScreen(x, y, 0);
+        return [x, y];
+    }
+
+    // Same point in screen pixels (FUN_00409567 projection, z = 0).
+    pickRandomTarget() {
+        const p = this.pickRandomFieldPoint();
+        return fieldToScreen(p[0], p[1], 0);
     }
 
     // FUN_0040c4d9 (rwg_functions.c:15132) gem factory:
@@ -626,8 +705,6 @@ export class Field {
     // Position = the spawning chick's position. JS callers (Chick.js) pass
     // (chick.mX, chick.mY - 20); `groundY` defaults to y + 20, i.e. the chick
     // position. The original has no toss/bounce animation.
-    // UNKNOWN — not found in decompiled: meaning of the guard byte
-    // *(field + 0x1c) that skips spawning (rwg_functions.c:15152); not ported.
     spawnGem(type, x, y, groundY, value) {
         const gy = (typeof groundY === 'number') ? groundY : y + 20;
         let g = null;
@@ -639,32 +716,61 @@ export class Field {
         return g;
     }
 
-    // FUN_00407038 (rwg_functions.c:8721): egg at the laying chick's position
-    // (+0x08/+0x0c = chick pos), type from chick vt[0xe]. The lay sound
-    // (DAT_00500624 random SOUND_EGG_LAYERED1/2) is played by Chick.js.
+    // FUN_00407038 (rwg_functions.c:8721): egg at the laying chick's position,
+    // type from chick vt[0xe]. The lay sound is played by Chick.js.
     spawnEgg(x, y, eggType) {
         const egg = new Egg(eggType, x, y);
+        egg.mHatchSlowdown = this.mHatchSlowdown;
         this.mGems.push(egg);
         return egg;
     }
 
-    // Hatch: FUN_00406c85 (rwg_functions.c:8434) removes the egg and calls
-    // FUN_00404865(type, eggPos) (rwg_functions.c:5400) which creates the chick
-    // at the egg position (random position via FUN_00408107 only when x < 0).
-    // The hatch sound (DAT_004fedb4 SOUND_EGG_BROODED, asm 0x406d6a) is
-    // played by Chick.js. Task counters below are JS bookkeeping.
-    hatchEgg(egg, x, y) {
-        let chickType;
-        switch (egg.mEggType) {
-            case EggType.WHITE: chickType = ChickType.LAYER; break;
-            case EggType.BLUE: chickType = ChickType.MAGIC; break;
-            case EggType.RED: chickType = ChickType.HOLY; break;
-            case EggType.BLACK: chickType = ChickType.ROOSTER; break;
-            case EggType.GOLDEN: chickType = ChickType.BROODY; break;
-            default: chickType = ChickType.LAYER;
+    _eggs() {
+        return this.mGems.filter(g => g.mType === GemType.EGG && g.mIsAlive && !g.mCollected);
+    }
+
+    // FUN_004077fa (rwg_functions.c:9252): eggs whose +0x20 flag is clear.
+    getFreeEggCount() {
+        return this._eggs().filter(e => !e.mBroodStarted).length;
+    }
+
+    // FUN_004071b2 (rwg_functions.c:8826): nearest egg by Chebyshev distance
+    // (FUN_00403c97) below 1e6 (_DAT_004e9280), +0x20 clear, not reserved by
+    // another chick; eggs of chick type 3/4 (Magic/Holy) only when no other
+    // egg was found. The chosen egg is claimed by `chick`.
+    claimNearestEgg(chick) {
+        let best = null;
+        let bestD = 1000000;
+        for (const e of this._eggs()) {
+            if (e.mBroodStarted) continue;
+            const o = e._magicClaim;
+            if (o && o !== chick && o.mIsAlive && o.mFoodTarget === e) continue;
+            const d = maxNorm2(chick.mPos[0] - e.mFieldX, chick.mPos[1] - e.mFieldY);
+            if (d >= bestD) continue;
+            const special = e.mEggType === EggType.BLUE || e.mEggType === EggType.RED;
+            if (!special) { bestD = d; best = e; }
+            else if (!best) best = e;   // bestD unchanged (rwg_functions.c:8866-8869)
         }
+        if (best) best._magicClaim = chick;
+        return best;
+    }
+
+    // FUN_004077ae (asm 0x4077ae): remove an egg (sound played by the caller).
+    removeEgg(egg) {
+        egg.mIsAlive = false;
+        egg.mCollected = true;
+    }
+
+    // Hatch: FUN_00406c85 (asm 0x406d39-0x406d74) removes the egg, calls
+    // FUN_00404865(type, eggPos) (rwg_functions.c:5400) which creates the
+    // chick at the egg position, and plays DAT_004fedb4 SOUND_EGG_BROODED.
+    // Task counters below are JS bookkeeping.
+    hatchEgg(egg, x, y) {
+        const chickType = EGG_TO_CHICK[egg.mEggType] !== undefined
+            ? EGG_TO_CHICK[egg.mEggType] : ChickType.LAYER;
         const chick = createChick(chickType, x, y);
         this.addChick(chick);
+        if (SOUNDS.SOUND_EGG_BROODED) SOUNDS.SOUND_EGG_BROODED.play();
         const fc = this.mFieldController;
         if (fc) {
             fc.mTotalRaisedChicks++;
@@ -677,29 +783,48 @@ export class Field {
         return chick;
     }
 
-    // Seed drop — FUN_0041bfe2 (see SeedCluster).
+    // Seed drop — FUN_0041bfe2. `calories` is the JS seed-calorie value of
+    // FieldController (30 / 50 / 80 for upgrade level 0 / 1 / 2, the same
+    // mapping FieldController uses for the seed image level).
     dropSeeds(x, y, count, calories) {
-        const cluster = new SeedCluster(x, y, count, calories);
-        cluster.mFieldController = this.mFieldController;
+        const lvl = calories >= 80 ? 2 : calories >= 50 ? 1 : 0;
+        const fc = this.mFieldController;
+        const unit = foodUnit((fc && fc.mCurrentLevel) || 1);
+        const cluster = new SeedCluster(x, y, count, lvl, unit);
         this.mSeeds.push(cluster);
         return cluster;
     }
 
-    // JS helper for Chick.js: nearest seed cluster with food remaining.
-    getNearestSeeds(x, y) {
+    // Seed list size (fc+0x1c +8).
+    getSeedCount() {
+        let n = 0;
+        for (const c of this.mSeeds) n += c.mSeeds.length;
+        return n;
+    }
+
+    // FUN_0041c11f (rwg_functions.c:34388): nearest seed (3D max-norm,
+    // FUN_004050cf, below 1e6) that is unclaimed (claim < 1) or claimed by
+    // `id`; it is claimed: claim = id ? 50 : 0, claimId = id.
+    claimNearestSeed(pos, id) {
         let best = null;
-        let bestDist = Infinity;
-        for (const s of this.mSeeds) {
-            if (!s.hasFood()) continue;
-            const dx = s.mX - x;
-            const dy = s.mY - y;
-            const dist = dx * dx + dy * dy;
-            if (dist < bestDist) {
-                bestDist = dist;
-                best = s;
+        let bestD = 1000000;
+        for (const c of this.mSeeds) {
+            for (const s of c.mSeeds) {
+                if (!(s.claim < 1 || s.claimId === id)) continue;
+                const d = maxNorm3([pos[0] - s.pos[0], pos[1] - s.pos[1], pos[2] - s.pos[2]]);
+                if (d < bestD) { bestD = d; best = s; }
             }
         }
+        if (best) { best.claim = id ? 0x32 : 0; best.claimId = id; }
         return best;
+    }
+
+    // FUN_0041c220 (rwg_functions.c:34446): re-claim when free or ours.
+    reclaimSeed(s, id) {
+        if (!s || (s.claimId !== 0 && s.claimId !== id)) return false;
+        s.claim = id ? 0x32 : 0;
+        s.claimId = id;
+        return true;
     }
 
     // FUN_0040123f (rwg_functions.c:313, asm 0x40123f-0x401307):
@@ -707,7 +832,8 @@ export class Field {
     //   if found: new Raven(hp = controller+0x18, speed = controller+0x40, target),
     //             push to the raven list, play DAT_004fedb8 SOUND_KAR_KAR
     //             (app vtable +0x168), return true.
-    // Defaults when the caller does not pass them:
+    // FieldController passes +0x18 / +0x40 from LevelData; defaults when the
+    // caller does not pass them:
     //   hp    — FUN_00422c01 (asm 0x422c73-0x422cf5): 1, or 2 when level > 0x28
     //   speed — FUN_00401202 (rwg_functions.c:301): +0x40 = 1.0
     spawnRaven(hp, speedMult) {
@@ -751,74 +877,207 @@ export class Field {
         return this.mChickens.filter(c => c.mIsAlive && c.mType === type).length;
     }
 
-    // Field rendering — FUN_0040a3d6 (rwg_functions.c:13092):
-    //   1. background FUN_004248b4 (IMAGE_GAME_BACK) and decorations
-    //   2. seeds (+0x1c): grounded drawn immediately, airborne queued
-    //   3. chicks (+0x14), eggs (+0x24), gems (+0x28), pets (+0x44) queued in
-    //      the render list with key = field y; egg/diamond shadows are drawn
-    //      immediately while queuing
-    //   4. render list sorted by key (FUN_0041763c = std::list::sort, stable)
-    //      and drawn
-    //   5. ravens (raven controller list) drawn immediately on top
-    // Field y is monotonic with screen y at z = 0, so sorting on mY matches.
-    // UNKNOWN — not found in decompiled: depth key used for pets/wolves in the
-    // port (their struct offset +0xc is read at asm 0x40ac0b; JS uses mY).
+    // ------------------------------------------------------------------
+    // Sickness — world +0x264/+0x268/+0x26c
+    // ------------------------------------------------------------------
+
+    // FUN_00404caf (asm 0x404caf-0x404cff): random period by list size
+    // (+0x08): <=10 → [6000,9000), >10 → [4000,7000), >15 → [3000,5000),
+    // >20 → [1500,3000), >40 → [1000,2000) via FUN_00403d6c(max, min) =
+    // ftol(rand()/32767.0 * (max-min) + 0.5) + min; halved when +0x26c.
+    _sickPeriod() {
+        const n = this.mChickens.length;
+        let lo = 0x3c, hi = 0x5a;
+        if (n > 10) { lo = 0x28; hi = 0x46; }
+        if (n > 0xf) { lo = 0x1e; hi = 0x32; }
+        if (n > 0x14) { lo = 0xf; hi = 0x1e; }
+        if (n > 0x28) { lo = 10; hi = 0x14; }
+        lo *= 100; hi *= 100;
+        let v = Math.trunc((crtRand() / 32767.0) * (hi - lo) + 0.5) + lo;
+        if (this.mFastSickness) v = Math.trunc(v / 2);
+        return v;
+    }
+
+    // FUN_004040ec + FUN_00404d00 (asm 0x4040ec, 0x404d00): if sickness is
+    // enabled (+0x264) and the chick passes vt[3]: play SOUND_SICK
+    // (DAT_004fed9c); if state != 0 → state 1 + vt[8]. Returns true then.
+    _makeSick(c) {
+        if (!this.mSicknessEnabled || !c.canBeSickTarget()) return false;
+        if (SOUNDS.SOUND_SICK) SOUNDS.SOUND_SICK.play();
+        c.infect();
+        return true;
+    }
+
+    // FUN_00404d6d (rwg_functions.c:5870): timer = FUN_00404caf(); the first
+    // chick (list order) accepted by FUN_00404d00 becomes sick. Called by the
+    // level-2 tutorial (FUN_00422228, rwg_functions.c:42152) and the flu risk.
+    startSickEvent() {
+        this.mSickTimer = this._sickPeriod();
+        for (const c of this.mChickens) {
+            if (!c.mIsAlive) continue;
+            if (this._makeSick(c)) break;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Brooding — FUN_0040412c (rwg_functions.c:4850)
+    // ------------------------------------------------------------------
+    // Broodies that are free (not hungry, not sick, fed, state != 0x14, no
+    // egg) are given, in list order, the brood-requested eggs (egg list
+    // +0xc; JS egg.mBrooding) whose brood progress FUN_00406ac9 <= 0
+    // (_DAT_004e90b0 = 0.0) and which no broody targets yet.
+    _assignBroodEggs() {
+        const eggs = this._eggs().filter(e => e.mBrooding);
+        if (eggs.length === 0) return;
+        const free = this.mChickens.filter(c => c.mType === ChickType.BROODY
+            && c.isFreeForEgg && c.isFreeForEgg());
+        for (const e of eggs) {
+            if (free.length === 0) break;
+            if (e.mBroodProgress > 0.0) continue;
+            const owner = this.mChickens.find(c => c.mIsAlive && c.mBroodingEgg === e);
+            if (owner) continue;
+            const b = free.shift();
+            b.startBrooding(e);
+        }
+    }
+
+    // FUN_00404ad0(1) + FUN_0040785f (asm 0x40440c-0x404438): broody eggs are
+    // laid only while broody chicks + broody eggs < cap (+0x270, when >= 0).
+    _updateBroodyAllowed() {
+        if (!(this.mBroodyCap >= 0)) return;
+        const chicks = this.mChickens.filter(c => c.mType === ChickType.BROODY).length;
+        const eggs = this._eggs().filter(e => e.mEggType === EggType.GOLDEN).length;
+        this.mBroodyAllowed = chicks + eggs < this.mBroodyCap;
+    }
+
+    // ------------------------------------------------------------------
+    // Drawing — FUN_0040a3d6 (rwg_functions.c:13092)
+    // ------------------------------------------------------------------
+    //   1. background FUN_004248b4 (IMAGE_GAME_BACK + decorations, rwg:13310)
+    //   2. dog (rwg:13318-13330)
+    //   3. seeds (+0x1c): grounded drawn immediately, airborne queued
+    //   4. chicks (+0x14): held chicks (state 0) drawn immediately, others
+    //      queued (key = field y) followed by their hungry icon (at most 5
+    //      per frame, piStack_118 < 5; other chicks get +0x64 = 0, asm
+    //      0x40a7a0-0x40a83f); shadow drawn immediately when z == 0 and
+    //      state != 6
+    //   5. eggs (+0x24), gems (+0x28), pets (+0x44) queued; egg/diamond
+    //      shadows drawn immediately
+    //   6. render list sorted by key (FUN_0041763c = std::list::sort, stable)
+    //   7. holy spell effects (+0x38, rwg:13570-13602)
+    //   8. ravens drawn immediately on top
+    // UNKNOWN — not found in decompiled: depth key used for pets/wolves
+    // (their struct offset +0xc is read at asm 0x40ac0b; JS uses mY).
     draw(g) {
-        const bg = IMAGES.IMAGE_GAME_BACK;
-        if (bg) g.drawImage(bg, 0, 0);
+        drawFieldBackground(g, this.mDecorations || []);
+        this.mDog.draw(g);
 
         for (const seed of this.mSeeds) seed.drawGrains(g, false);
 
+        const list = [];
+        for (const seed of this.mSeeds) {
+            for (const d of seed.getAirborneDrawables()) list.push(d);
+        }
+        let hungryShown = 0;
+        for (const c of this.mChickens) {
+            if (c.mRemoved) continue;
+            if (c.mIsCarried) {
+                c.drawSprite(g);
+            } else {
+                const key = c.mPos[1];
+                list.push({ key, draw: (gg) => c.drawSprite(gg) });
+                if (hungryShown < 5 && c.showsHungryIcon(this)) {
+                    hungryShown++;
+                    list.push({ key, draw: (gg) => c.drawHungryIcon(gg) });
+                } else {
+                    c.mHungryAnim = 0;
+                }
+            }
+            c.drawShadow(g);
+        }
         const eggs = [];
         const gems = [];
         for (const gem of this.mGems) {
             if (!gem.mIsAlive) continue;
             if (gem.mType === GemType.EGG) eggs.push(gem); else gems.push(gem);
         }
-        for (const e of eggs) if (e.drawShadow) e.drawShadow(g);
-        for (const gm of gems) if (gm.drawShadow) gm.drawShadow(g);
-
-        // Insertion order of the render list: chicks, eggs, gems, pets.
-        const ground = [];
-        for (const seed of this.mSeeds) {
-            for (const d of seed.getAirborneDrawables()) ground.push(d);
+        for (const e of eggs) {
+            list.push({ key: e.mFieldY, draw: (gg) => e.draw(gg) });
+            if (e.drawShadow) e.drawShadow(g);
         }
-        for (const chick of this.mChickens) ground.push(chick);
-        for (const e of eggs) ground.push(e);
-        for (const gm of gems) ground.push(gm);
-        for (const pet of this.mPets) ground.push(pet);
-        for (const wolf of this.mWolves) ground.push(wolf);
-        ground.sort((a, b) => a.mY - b.mY);
-        for (const e of ground) {
-            if (e.draw) e.draw(g);
+        for (const gm of gems) {
+            list.push({ key: gm.mFieldY, draw: (gg) => gm.draw(gg) });
+            if (gm.drawShadow) gm.drawShadow(g);
         }
+        for (const pet of this.mPets) list.push({ key: screenToField(0, pet.mY).y, draw: (gg) => pet.draw(gg) });
+        for (const wolf of this.mWolves) list.push({ key: screenToField(0, wolf.mY).y, draw: (gg) => wolf.draw(gg) });
+        list.sort((a, b) => a.key - b.key);
+        for (const e of list) e.draw(g);
 
+        for (const c of this.mChickens) {
+            if (c.drawSpellFx) c.drawSpellFx(g);
+        }
         for (const raven of this.mRavens) {
             raven.draw(g);
         }
     }
 
+    // FUN_004043fd (rwg_functions.c:5052) world update + the other lists.
     update() {
-        for (const c of this.mChickens) {
-            c.update(this);
-        }
+        this._applyLevelConfig();
+        // Dog — FUN_004091b8 from GameView::Update FUN_00409372.
+        this.mDog.update();
 
-        // Seed list update FUN_0041bec7 (rwg_functions.c:34202): FUN_0041be18
-        // per seed, dead seeds removed.
-        for (const seed of this.mSeeds) {
-            seed.update();
+        // +0x274 broody-egg allowance (asm 0x40440c-0x404438).
+        this._updateBroodyAllowed();
+        // FUN_0040412c: give brood-requested eggs to free broodies.
+        this._assignBroodEggs();
+
+        // +0x268 sick timer (rwg_functions.c:5096-5132): when it drops below
+        // 0 it is reset to FUN_00404caf() and a random index among the chicks
+        // passing vt[3] is chosen (rand() % count).
+        let pick = -1;
+        this.mSickTimer--;
+        if (this.mSickTimer < 0) {
+            this.mSickTimer = this._sickPeriod();
+            const n = this.mChickens.filter(c => !c.mRemoved && c.canBeSickTarget()).length;
+            if (n !== 0) pick = crtRand() % n;
         }
+        // Chick updates; removed when vt[1] returns false. After its update a
+        // chick passing vt[3] is counted; the picked one gets FUN_00404d00.
+        let counter = 0;
+        const keep = [];
+        for (const c of this.mChickens) {
+            if (c.mRemoved || !c.update(this)) continue;
+            keep.push(c);
+            if (pick !== -1 && c.canBeSickTarget()) {
+                if (pick === counter) {
+                    this._makeSick(c);
+                    pick = -1;
+                } else {
+                    counter++;
+                }
+            }
+        }
+        this.mChickens = keep;
+
+        // Seed list update FUN_0041bec7 (rwg_functions.c:34202).
+        for (const seed of this.mSeeds) seed.update();
         this.mSeeds = this.mSeeds.filter(s => s.mIsAlive);
 
-        // Gem list update FUN_0040c36e (rwg_functions.c:14990): vt[1] Update
-        // per gem; gems returning false are removed.
-        for (const gem of this.mGems) {
+        // Gem list update FUN_0040c36e (rwg_functions.c:14990) and egg
+        // controller update FUN_00406c85 (rwg_functions.c:8427): eggs whose
+        // hatch progress reached 1.0 hatch.
+        const gemsBefore = this.mGems.slice();
+        for (const gem of gemsBefore) {
             gem.update();
+            if (gem.mType === GemType.EGG && gem.mHatchNow) {
+                gem.mHatchNow = false;
+                gem.mIsAlive = false;
+                this.hatchEgg(gem, gem.mX, gem.mY);
+            }
         }
         this.mGems = this.mGems.filter(g => g.mIsAlive);
-
-        // JS: drop dead chickens after their death animation.
-        this.mChickens = this.mChickens.filter(c => c.mIsAlive || c.mDeathTimer < 90);
 
         // Raven list part of FUN_004015f8 (rwg_functions.c:707-730).
         for (const raven of this.mRavens) {

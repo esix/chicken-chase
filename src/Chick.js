@@ -3,6 +3,9 @@
 //   Chick 004dc894, SimpleChick 004dc8dc, BroodyChick 004dc924,
 //   LayerChick 004dc96c, RoosterChick 004dc9b4,
 //   MagicChick 004dd62c, HolyChick 004dd11c
+// Class tree (ctor calls, asm 0x403ec2-0x403fef): Layer/Broody/Rooster/Holy
+// are built through the SimpleChick ctor FUN_0041ff68(type, layFlag) —
+// layFlag = 1 only for Layer; Magic calls FUN_004032ca(pos, 0) directly.
 //
 // Vtable slot meaning (derived from call offsets in FUN_0040344c /
 // FUN_00403602 / FUN_0040a3d6):
@@ -22,24 +25,48 @@
 //   [14] +0x38 eggType           FUN_00465f98 returns own type (Layer FUN_0040dba2)
 //   [15] +0x3c coinType          FUN_004201a0 (Magic FUN_0040e372 → 2)
 //
-// Original action ids (+0x0c) and nominal durations (PTR_004d01f0 table,
-// read from the binary: [0,150,120,50,100,50,70,400,70,100,30,60,100,200]):
+// Struct (ctor FUN_004032ca rwg_functions.c:3426, asm 0x4032ca):
+//   +0x04 type, +0x08 state, +0x0c action, +0x10 action length,
+//   +0x14 action elapsed, +0x18 anim/walk speed multiplier,
+//   +0x1c age (satiety; -1 per tick, + calories when eating),
+//   +0x20..+0x28 field pos x,y,z, +0x2c/+0x30 facing (unit vector),
+//   +0x34 food, +0x38 sick counter, +0x3c id, +0x40 lay cooldown,
+//   +0x44 hungry flag, +0x48 dig cooldown, +0x4c speed re-roll timer,
+//   +0x50 fall speed, +0x54/+0x58 walk target, +0x5c/+0x60 wander target,
+//   +0x64 hungry-icon anim, +0x68/+0x6c target (seed / egg).
+// State +0x08 (FUN_004037e8 / FUN_0040386a): 0 held by a raven, 1 sick,
+//   2 hungry (seek food), 3 go lay, 4 normal, 6 dead, 0x14 broody brooding.
+//
+// Action ids (+0x0c) and nominal lengths (PTR_004d01f0, read from the binary:
+// [0,150,120,50,100,50,70,400,70,100,30,60,100,200]):
 //   1 idle(150)  2 dig(120)  3 sick-start(50)  4 sick-idle(100)
 //   5 cured(50)  6/7/8 broody sit/on-nest/get-up (70/400/70)
 //   9 lay egg(100)  10 peck/eat(30)  11 walk(60)  12 holy spell(100)
 //   13 death(200)
-// Action → image (FUN_0040a166:12962 + loader loop rwg_functions.c:31025-31157,
-// load order matches app/properties/resources.xml):
-//   default → IDLE0, 2 → IDLE1 (dig.jpg), 3/5 → SICK_START (LAYER only),
-//   4 → SICK_IDLE (LAYER only), 9 → LAYER_LAYER, 10 → PECK, 11 → WALK,
-//   12 → CHICK_HOLY_SPELL, 13 → DEATH.
+// Animation: elapsed += speedMult (x1.3 _DAT_004e9304 while walking in a
+// hurry) per tick, clamped to the length (FUN_00403602); the cel is
+// ftol(elapsed/length * numCols), clamped to numCols-1 (FUN_00409d5c asm
+// 0x409e40-0x409e63) — the whole strip plays once per action.
 //
-// Float constants read from app/chicken_chase.RWG .rdata (the PE the
-// decompilation was produced from): _DAT_004e9398=100.0, _DAT_004e92ac=50.0,
-// _DAT_004e9240=120.0, _DAT_004e9360=60.0, _DAT_004e9410=30.0,
-// _DAT_004e9244=200.0, _DAT_004e9150=0.01 (double), _DAT_004e9408=0.999
-// (double), _DAT_004e9388=0.35 (double), _DAT_004e9380=0.24, _DAT_004e9378=0.14,
-// _DAT_004e9370=0.15, _DAT_004e9368=2147483647.0, _DAT_004dc7e0=1.0.
+// Sizes: the sprite is drawn at scale FUN_00409d5c (asm 0x409e15-0x409e43):
+//   r = FUN_00403a65 (food ratio 0..2); scale = r >= 1.99 ? 1.0 : r*0.25+0.5
+// so a new chick (food 0) is drawn at half size (39 px cel) and grows to
+// the full 78 px cel as it eats.
+//
+// Coordinates: the chick lives in FIELD units (x 0..128, y 0..72, z height)
+// like the original; mX/mY are screen accessors through FUN_00409567
+// (screen = (6x+10, 2.8y-6z+367)) so the rest of the port keeps working.
+//
+// Constants read from app/chicken_chase.RWG .rdata: _DAT_004e9228=0.05 (d),
+// _DAT_004e90c8=0.5 (d), _DAT_004e9350=1.5 (d), _DAT_004e9260=1.1 (d),
+// _DAT_004e9304=1.3 (f), _DAT_004e92a8=1.2 (f), _DAT_004dc858=0.5 (f),
+// _DAT_004e9148=0.03 (d), _DAT_004e9168=61.0 (d), _DAT_004e9238=0.11 (d),
+// _DAT_004e9230=-1.0 (f), _DAT_004e93e0=2.0 (f), _DAT_004e93e8=1.99 (d),
+// _DAT_004e92c0=0.25 (d), _DAT_004e92a0=0.8 (d), _DAT_004e93f8=0.7 (d),
+// _DAT_004e93f0=510.0 (d), _DAT_004e90d8=10.0 (d), _DAT_004e9150=0.01 (d),
+// _DAT_004e9408=0.999 (d), _DAT_004e9400=0.999 (f), _DAT_004e9250=70.0 (f),
+// _DAT_004e939c=400.0 (f), _DAT_004e9234=0.001 (f), _DAT_004e9158=1000.0 (d),
+// DAT_004fc72c=1 (initial chick id).
 
 import { IMAGES, SOUNDS } from './Res.js';
 
@@ -54,22 +81,22 @@ export const ChickType = {
     HOLY: 4,     // HolyChick
 };
 
-// Chick states. NOTE: original keeps state (+0x08) and action (+0x0c)
-// separately; the JS port folds them into one mState value.
+// JS view of the current state/action for other files (mState getter).
+// The original keeps state (+0x08) and action (+0x0c) separately.
 export const ChickState = {
-    NEWBORN: 0,    // state +0x08 = 0 (held by hand / not active)
-    ADULT: 4,      // state +0x08 = 4 (FUN_004032ca:3480)
-    DEATH: 6,      // state +0x08 = 6 (FUN_0040342b:3541)
-    BROODING: 0x14, // state +0x08 = 0x14 (FUN_00402369:2127)
-    // JS action states (map to original action ids, see header):
-    IDLE: 0x100,       // action 1
-    WALK: 0x101,       // action 11
-    PECK: 0x102,       // action 10
-    SICK_START: 0x103, // action 3/5
-    SICK_IDLE: 0x104,  // action 4
-    LAYING: 0x105,     // action 9
-    DIG: 0x106,        // action 2
+    NEWBORN: 0,       // state 0 (held by a raven)
+    ADULT: 4,
+    DEATH: 6,         // state 6
+    BROODING: 0x14,   // broody sit / get-up (actions 6, 8)
+    IDLE: 0x100,      // action 1 (and 0)
+    WALK: 0x101,      // action 11
+    PECK: 0x102,      // action 10
+    SICK_START: 0x103, // action 3
+    SICK_IDLE: 0x104, // action 4
+    LAYING: 0x105,    // action 9
+    DIG: 0x106,       // action 2
     BROOD_IDLE: 0x107, // action 7
+    CURED: 0x108,     // action 5 (not "sick": FUN_00402342 is 3/4 only)
     HOLY_SPELL: 0x10c, // action 12
 };
 
@@ -81,1133 +108,1072 @@ export const EggType = {
     BLUE: 1,      // magic eggs
     RED: 2,       // holy eggs
     BLACK: 3,     // rooster eggs
-    GOLDEN: 4,    // broody eggs
+    GOLDEN: 4,    // broody eggs (drawn blue-violet, FUN_00409fca colour 1)
 };
 
-const CHICK_TO_EGG = [EggType.WHITE, EggType.GOLDEN, EggType.BLACK, EggType.BLUE, EggType.RED];
+export const CHICK_TO_EGG = [EggType.WHITE, EggType.GOLDEN, EggType.BLACK, EggType.BLUE, EggType.RED];
+export const EGG_TO_CHICK = [ChickType.LAYER, ChickType.MAGIC, ChickType.HOLY, ChickType.ROOSTER, ChickType.BROODY];
 
-// Action durations from PTR_004d01f0 (see header).
-const DUR_IDLE = 150;   // action 1
-const DUR_DIG = 120;    // action 2 (_DAT_004e9240 = 120.0, FUN_004039f5:4031)
-const DUR_LAY = 100;    // action 9 (_DAT_004e9398 = 100.0, FUN_00403602:3711)
-const DUR_PECK = 30;    // action 10 (_DAT_004e9410 = 30.0, FUN_00420069:39654)
-const DUR_SPELL = 100;  // action 12 (_DAT_004e9398 = 100.0, FUN_0040d8b1:16775)
+// PTR_004d01f0 action length table (read from the binary).
+const ACTION_LEN = [0, 150, 120, 50, 100, 50, 70, 400, 70, 100, 30, 60, 100, 200];
+const A_IDLE = 1, A_DIG = 2, A_SICK_START = 3, A_SICK_IDLE = 4, A_CURED = 5,
+    A_SIT = 6, A_NEST = 7, A_GETUP = 8, A_LAY = 9, A_PECK = 10, A_WALK = 11,
+    A_SPELL = 12, A_DEATH = 13;
+const S_HELD = 0, S_SICK = 1, S_HUNGRY = 2, S_LAY = 3, S_NORMAL = 4, S_DEAD = 6, S_BROOD = 0x14;
 
+// _DAT_004e9230 = -1.0f "no target".
+const NO_TARGET = -1.0;
+
+// Sell base table DAT_0050035c (same values as ShopDialogs.js SELL_BASE).
+const SELL_BASE = [500, 800, 400, 3000, 6000];
+
+// DAT_004fc72c chick id counter, initial value 1 (read from .data).
+let gNextChickId = 1;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// FUN_00409567 projection (see Field.js fieldToScreen).
+function projX(fx) { return Math.trunc(fx * 6.0 + 0.5) + 10; }
+function projY(fy, fz) { return Math.trunc(fy * 2.8 + (fz || 0) * -6.0 + 0.5) + 367; }
+
+// thunk_FUN_00429891: Mersenne twister & 0x7fffffff.
+function mtRand() { return Math.floor(Math.random() * 0x80000000); }
+// _rand (FUN_004a082c): 0..0x7fff.
+function crtRand() { return Math.floor(Math.random() * 0x8000); }
+
+// FUN_00403207 (rwg_functions.c:3308): (base - spread) + 2*mt*2^-31*spread.
+function randAround(base, spread) {
+    const f = mtRand() * 4.656612873077393e-10 * spread;
+    return (base - spread) + f + f;
+}
+
+// FUN_00403c97: max(|x|,|y|);  FUN_004050cf: max(|x|,|y|,|z|).
+function maxNorm2(x, y) { return Math.max(Math.abs(x), Math.abs(y)); }
+
+function fcOf(field) { return field && field.mFieldController; }
 function levelOf(field) {
-    return (field && field.mFieldController) ? field.mFieldController.mCurrentLevel : 1;
+    const fc = fcOf(field);
+    return (fc && fc.mCurrentLevel) || 1;
+}
+// FUN_00405886 (asm 0x405886): level <= 6.
+export function isEarlyLevel(level) { return level <= 6; }
+// FUN_00405899 (asm 0x405899): food/calorie unit = level <= 6 ? 500 : 700.
+export function foodUnit(level) { return isEarlyLevel(level) ? 500 : 700; }
+// FUN_004058af (rwg_functions.c:6789): food cap = unit*33 (level < 10),
+// unit*99/2 (level < 20), unit*66.
+export function foodCap(level) {
+    const u = foodUnit(level);
+    if (level < 10) return u * 0x21;
+    if (level < 0x14) return Math.trunc((u * 99) / 2);
+    return u * 0x42;
+}
+
+// Sexy colorized draw multiplies every pixel by the colour (alpha included).
+function colorizedCel(img, sx, sy, w, h, color) {
+    const off = document.createElement('canvas');
+    off.width = Math.max(1, Math.ceil(w));
+    off.height = Math.max(1, Math.ceil(h));
+    const o = off.getContext('2d');
+    o.drawImage(img.img, sx, sy, w, h, 0, 0, w, h);
+    o.globalCompositeOperation = 'multiply';
+    o.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+    o.fillRect(0, 0, w, h);
+    o.globalCompositeOperation = 'destination-in';
+    o.drawImage(img.img, sx, sy, w, h, 0, 0, w, h);
+    return off;
+}
+
+// Render-list entry executor FUN_0041746a (asm 0x41746a-0x41761b) for an
+// image with draw params (FUN_004090cd defaults: colorize off, scale 1.0,
+// frame -1, mirror off, reverse off):
+//   frame >= 0 && numCols > 1: cel = reverse ? numCols-frame-1 : frame,
+//     dest = (x, y, ftol(celW*scale+0.5), ftol(h*scale+0.5)), mirrored when
+//     params.mirror (FUN_00466e30) else FUN_00466ddc;
+//   otherwise scale == 1: plain draw at (x, y); else stretched to
+//     (ftol(w*scale+0.5), ftol(h*scale+0.5)).
+// params.color = [r,g,b,a] when colorize is on (FUN_004662cd/FUN_004662b1).
+export function drawWithParams(g, img, x, y, params) {
+    if (!img || !img.img) return;
+    if (g._isReady && !g._isReady(img.img)) return;
+    const p = params || {};
+    const scale = (p.scale === undefined) ? 1.0 : p.scale;
+    const cols = img.mNumCols || 1;
+    let sx = 0, sw = img.mWidth, sh = img.mHeight, dw, dh;
+    if (p.frame !== undefined && p.frame >= 0 && cols > 1) {
+        const celW = Math.trunc(img.mWidth / cols);
+        const cel = p.reverse ? cols - p.frame - 1 : p.frame;
+        sx = cel * celW;
+        sw = celW;
+        dw = Math.trunc(celW * scale + 0.5);
+        dh = Math.trunc(img.mHeight * scale + 0.5);
+    } else if (scale === 1.0) {
+        dw = img.mWidth;
+        dh = img.mHeight;
+    } else {
+        dw = Math.trunc(img.mWidth * scale + 0.5);
+        dh = Math.trunc(img.mHeight * scale + 0.5);
+    }
+    const ctx = g.ctx;
+    const tx = (g.mTransX || 0) + x, ty = (g.mTransY || 0) + y;
+    let src = img.img, srcX = sx, srcY = 0;
+    ctx.save();
+    if (p.color) {
+        src = colorizedCel(img, sx, 0, sw, sh, p.color);
+        srcX = 0;
+        ctx.globalAlpha = (p.color[3] === undefined ? 255 : p.color[3]) / 255;
+    }
+    if (p.mirror) {
+        ctx.translate(tx + dw, ty);
+        ctx.scale(-1, 1);
+        ctx.drawImage(src, srcX, srcY, sw, sh, 0, 0, dw, dh);
+    } else {
+        ctx.drawImage(src, srcX, srcY, sw, sh, tx, ty, dw, dh);
+    }
+    ctx.restore();
 }
 
 export class Chick {
     // Port of Sexy::Chick - vtable at 004dc894
-    // Constructor: FUN_004032ca (rwg_functions.c:3426)
-    constructor(type, x, y) {
-        // Layout: +0=vtable, +4=type, +8=state, +0xC=action, +0x10=actionDur,
-        // +0x14=actionElapsed, +0x18=speed mult, +0x1C=age, +0x20=posX, +0x24=posY,
-        // +0x28=height(z), +0x34=food, +0x38=hunger, +0x3c=id, +0x40=layCooldown,
-        // +0x44=sick flag, +0x48=digCooldown, +0x4c=speed reroll timer,
-        // +0x54/+0x58=walk target, +0x5c/+0x60=wander target, +0x64=hungry anim.
-        this.mType = type;
-        this.mX = x;                        // +0x20
-        this.mY = y;                        // +0x24
-        // FUN_004032ca:3479: age = (rand%200)*2 + 0xCE4 → [3300, 3698]
-        this.mAge = (Math.floor(Math.random() * 200)) * 2 + 0xCE4;
-        // FUN_004032ca:3446: hunger (+0x38) = 2000
-        this.mHunger = 2000;
-        // +0x44 sick flag, recomputed by FUN_00403a9a (rwg_functions.c:4103)
-        this.mIsSick = false;
-        // +0x40 egg-lay cooldown. FUN_004032ca:3447-3455 sets it to -1 or
-        // 1500/2000 depending on a ctor argument whose value at the
-        // FUN_0041ff68 call sites is UNKNOWN — not found in decompiled.
-        // JS keeps 0.
-        this.mLayCooldown = 0;
-        // +0x34 food counter
-        this.mFoodCounter = 0;
-        // +0x54/+0x58 walk target
-        this.mTargetX = x;
-        this.mTargetY = y;
-        // +0x5c/+0x60 wander target (init -1 = none, FUN_004032ca:3466-3469)
-        this._wanderTarget = null;
-        // +0x64 hungry-icon animation timer (0..0.999)
-        this.mHungryAnim = 0;
-        // Show-hungry-icon flag cached from update (vt[2]) for draw().
-        this._hungryIcon = false;
-        // JS-only bookkeeping
-        this.mIsAdult = false;
-        this.mIsAlive = true;
-        this.mAnimTimer = 0;
-        this.mStateTimer = 0;
-        this.mActionDur = 0;
-        // Walking speed in screen px/tick. Original step is
-        // (fedRatio*0.05*0.5+0.05)*speedMult logical units (FUN_00403af3:4189)
-        // in a 128x57 logical field; the logical→screen scale is UNKNOWN —
-        // not found in decompiled. JS keeps its 0.5 px/tick.
-        this.mSpeed = 0.5;
-        this.mDirection = Math.random() < 0.5 ? 0 : 1;
-        this.mScale = 0.5;
-        // +0x48 coin-dig cooldown
-        this.mPeckCooldown = 0;
-        this.mBroodingEgg = null;
-        this.mDeathTimer = 0;
-        this._targetSeeds = null;
-        this.mGrowTimer = 0;
-        // Set true when a raven captures this chick mid-flight (Field.js).
-        this.mIsCarried = false;
-        this.mState = ChickState.IDLE;
+    // Constructor: FUN_004032ca (rwg_functions.c:3426). `layFlag` is the
+    // char argument (1 only for LayerChick, asm 0x403fda).
+    // x, y are SCREEN coordinates (JS callers); they are converted to field
+    // units with FUN_00409533.
+    constructor(type, x, y, layFlag = false, level = 1) {
+        this.mType = type;                              // +0x04
+        this.mSpeedMult = 1.0;                          // +0x18 = 0x3f800000
+        this.mAction = A_IDLE;                          // +0x0c = 1
+        this.mActionElapsed = 0;                        // +0x14
+        this.mActionLen = 150.0;                        // +0x10 = _DAT_004e9174
+        this.mPos = [(x - 10) / 6.0, (y - 367) / 2.8, 0];   // +0x20..+0x28
+        this.mFacing = [1.0, 0];                        // +0x2c = 1.0, +0x30 = 0
+        this.mHunger = 2000;                            // +0x38
+        // +0x40 = layFlag ? (FUN_00405886 ? 1500 : 2000) : -1
+        this.mLayCooldown = layFlag ? (isEarlyLevel(level) ? 1500 : 2000) : -1;
+        this.mVz = 0;                                   // +0x50
+        this.mId = gNextChickId++;                      // +0x3c = DAT_004fc72c++
+        this.mHungry = false;                           // +0x44
+        this.mDigCooldown = 0;                          // +0x48
+        this.mSpeedTimer = 0;                           // +0x4c
+        this.mTarget = [0, 0];                          // +0x54/+0x58
+        this.mWander = [NO_TARGET, NO_TARGET];          // +0x5c/+0x60
+        this.mHungryAnim = 0;                           // +0x64
+        this.mFoodTarget = null;                        // +0x68/+0x6c
+        this.mFoodCounter = 0;                          // +0x34
+        this.mAge = (mtRand() % 200) * 2 + 0xce4;       // +0x1c
+        this.mLevel = level;
+        this.mStateO = S_NORMAL;                        // +0x08 = 4
+        this.mRemoved = false;                          // JS: removed from the list
+        // FUN_004032ca tail: wander target = FUN_004046aa (random field
+        // point); x < 0 → FUN_004039f5, else walk to it (action 11, 60).
+        // The world is not reachable from the JS ctor, so this runs on the
+        // first update().
+        this._ctorPending = true;
     }
 
-    // FUN_00403a3e (rwg_functions.c:4054) food tier >= 1:
-    //   food >= FUN_00405899()*5 (base 500 lvl<7 / 700).
-    // JS food units are not the original's (JS cap 200*scale vs original
-    // base*33); the JS-scale equivalent threshold used throughout this port
-    // is 100*scale. Exact JS↔original scale: UNKNOWN — not found in decompiled.
-    _isFed() {
-        return this.mFoodCounter >= 100 * this.mScale;
+    // --- screen accessors (FUN_00409567 / FUN_00409533) -------------------
+    get mX() { return projX(this.mPos[0]); }
+    set mX(px) { this.mPos[0] = (px - 10) / 6.0; }
+    get mY() { return projY(this.mPos[1], 0); }
+    set mY(py) { this.mPos[1] = (py - 367) / 2.8; }
+    // Facing used by the draw mirror flag (+0x2c > 0, FUN_00409d5c).
+    get mDirection() { return this.mFacing[0] > 0 ? 0 : 1; }
+    set mDirection(d) { this.mFacing = [d ? -1.0 : 1.0, 0]; }
+
+    // --- JS compatibility views -------------------------------------------
+    get mIsAlive() { return this.mStateO !== S_DEAD && !this.mRemoved; }
+    // Selling (ShopDialogs) writes false: the original removes the chick
+    // from the list (FUN_0040466e) without a death animation.
+    set mIsAlive(v) { if (!v) { this.mRemoved = true; this.mStateO = S_DEAD; } }
+    // State 0 = held by a raven (set at asm 0x416fe0).
+    get mIsCarried() { return this.mStateO === S_HELD; }
+    set mIsCarried(v) {
+        if (v) {
+            // FUN_00416ed4 asm 0x416fd7-0x416ff1: if state != 6: state = 0 and
+            // restart the current action (FUN_004032b8) when it is < 14.
+            if (this.mStateO === S_DEAD) return;
+            this.mStateO = S_HELD;
+            if (this.mAction < 14) this._setAction(this.mAction);
+        } else if (this.mStateO === S_HELD) {
+            // FUN_0040497d (rwg_functions.c:5479): vt[7] + vt[8]; the raven
+            // then writes the clamped position (z kept → the chick falls).
+            this._decide(this._field);
+            this._start(this._field);
+        }
+    }
+    // FUN_00402342 (rwg_functions.c:2063): action 3 or 4 = sick.
+    get mIsSick() { return this.mAction === A_SICK_START || this.mAction === A_SICK_IDLE; }
+    // Writing true infects like FUN_00404d00 without its sound/flag checks
+    // (the caller — e.g. RiskController flu — plays SOUND_SICK itself).
+    set mIsSick(v) { if (v) this.infect(); }
+    // No juvenile phase exists in the original; other files use mIsAdult as
+    // "state != 0" (Pet.js/RiskController mapping).
+    get mIsAdult() { return this.mStateO !== S_HELD; }
+    set mIsAdult(v) {}
+    // Draw scale FUN_00409d5c (see header). Writes are ignored.
+    get mScale() {
+        const r = this.getFoodRatio();
+        return (r >= 1.99) ? 1.0 : r * 0.25 + 0.5;
+    }
+    set mScale(v) {}
+    get mGrowTimer() { return 0; }
+    set mGrowTimer(v) {}
+    get mState() {
+        if (this.mStateO === S_DEAD) return ChickState.DEATH;
+        switch (this.mAction) {
+            case A_DIG: return ChickState.DIG;
+            case A_SICK_START: return ChickState.SICK_START;
+            case A_SICK_IDLE: return ChickState.SICK_IDLE;
+            case A_CURED: return ChickState.CURED;
+            case A_SIT: case A_GETUP: return ChickState.BROODING;
+            case A_NEST: return ChickState.BROOD_IDLE;
+            case A_LAY: return ChickState.LAYING;
+            case A_PECK: return ChickState.PECK;
+            case A_WALK: return ChickState.WALK;
+            case A_SPELL: return ChickState.HOLY_SPELL;
+            case A_DEATH: return ChickState.DEATH;
+            default: return ChickState.IDLE;
+        }
     }
 
-    // vt[2] FUN_00403ac8 (rwg_functions.c:4133): sick (+0x44) AND the seed
-    // list (world+0x1c) is empty. MagicChick overrides with FUN_0040e36f → 0.
-    showsHungryIcon(field) {
-        if (!this.mIsSick) return false;
-        if (!field || !field.mSeeds) return false;
-        return !field.mSeeds.some(s => s.hasFood && s.hasFood());
+    // --- action helpers -----------------------------------------------------
+    // FUN_004032b8 (rwg_functions.c:3402): action = a, elapsed = 0,
+    // length = PTR_004d01f0[a].
+    _setAction(a) {
+        this.mAction = a;
+        this.mActionElapsed = 0;
+        this.mActionLen = ACTION_LEN[a] || 0;
+    }
+    _setActionLen(a, len) {
+        this.mAction = a;
+        this.mActionElapsed = 0;
+        this.mActionLen = len;
+    }
+    // FUN_00403231 (asm 0x403231): length > 0 && elapsed == length.
+    _actionFinished() {
+        return this.mActionLen > 0 && this.mActionElapsed === this.mActionLen;
+    }
+    // FUN_0040918d (rwg_functions.c:11638): elapsed/length (0 if length <= 0).
+    getActionProgress() {
+        return this.mActionLen <= 0 ? 0 : this.mActionElapsed / this.mActionLen;
+    }
+    _endAction() { this.mActionElapsed = this.mActionLen; }
+
+    // --- food ---------------------------------------------------------------
+    // FUN_00403a3e (asm 0x403a3e): 2 if food >= unit*11, 1 if >= unit*5, else 0.
+    getFoodTier() {
+        const u = foodUnit(this.mLevel);
+        if (this.mFoodCounter >= u * 0xb) return 2;
+        return this.mFoodCounter >= u * 5 ? 1 : 0;
+    }
+    _isFed() { return this.getFoodTier() !== 0; }
+    // FUN_00403a65 (asm 0x403a65): food >= unit*11 → 2.0 (_DAT_004e93e0),
+    // else 2*food/(unit*11).
+    getFoodRatio() {
+        const u = foodUnit(this.mLevel);
+        if (this.mFoodCounter >= u * 0xb) return 2.0;
+        return (this.mFoodCounter + this.mFoodCounter) / (u * 0xb);
+    }
+    // FUN_00403c75 (asm 0x403c75): food / (unit*33).
+    getSellRatio() { return this.mFoodCounter / (foodUnit(this.mLevel) * 0x21); }
+    // FUN_00403bd6 (asm 0x403bd6-0x403c72): sell price
+    //   r = FUN_00403c75; p = ftol(SELL[type] * r);
+    //   if (r > 1) p += ftol(SELL[type] * (r - 1) / 10.0 (_DAT_004e90d8)).
+    getSellPrice() {
+        const base = SELL_BASE[this.mType] || 0;
+        const r = this.getSellRatio();
+        let p = Math.trunc(base * r);
+        if (r > 1.0) p += Math.trunc(base * (r - 1.0) / 10.0);
+        return p;
     }
 
-    // FUN_0040344c (rwg_functions.c:3560) Chick::Update
-    update(field) {
-        if (!this.mIsAlive) {
-            this.mDeathTimer++;
-            this.mAnimTimer++;
-            return;
-        }
-        // Carried by a raven — position/state is owned by the Raven.
-        if (this.mIsCarried) {
-            this.mAnimTimer++;
-            return;
-        }
-
-        // Juvenile growth. UNKNOWN — not found in decompiled (the 0x70-byte
-        // Chick struct has no growth field), but level texts 43/44 mention
-        // chickens "growing", so the JS growth phase is left as is.
-        if (!this.mIsAdult) {
-            const inc = this.mIsSick ? (this.mAnimTimer % 2 === 0 ? 1 : 0) : 1;
-            this.mGrowTimer = (this.mGrowTimer || 0) + inc;
-            this.mScale = 0.5 + Math.max(0, Math.min(1, this.mGrowTimer / 800)) * 0.5;
-            if (this.mGrowTimer >= 800) {
-                this.mIsAdult = true;
-                this.mScale = 1.0;
-            }
-        }
-
-        // FUN_0040344c:3586-3596 — hungry-icon timer +0x64: while vt[2] is
-        // true it grows by 0.01/tick (_DAT_004e9150) and saturates at 0.999
-        // (_DAT_004e9408/_DAT_004e9400); otherwise it is reset to 0.
-        this._hungryIcon = this.showsHungryIcon(field);
-        if (this._hungryIcon) {
-            this.mHungryAnim += 0.01;
-            if (!(this.mHungryAnim < 0.999)) this.mHungryAnim = 0.999;
+    // FUN_00403a9a (asm 0x403a9a): recompute and return the hungry flag +0x44:
+    //   hungry: age < (FUN_00405886 ? 4500 : 5000); not hungry: age < 3000.
+    _updateHungry() {
+        if (this.mHungry) {
+            this.mHungry = this.mAge < (isEarlyLevel(this.mLevel) ? 0x1194 : 0x1388);
         } else {
-            this.mHungryAnim = 0;
+            this.mHungry = this.mAge < 0xbb8;
         }
+        return this.mHungry;
+    }
 
-        // FUN_0040344c:3601-3603 — dig cooldown (+0x48) decrements every tick.
-        if (this.mPeckCooldown > 0) this.mPeckCooldown--;
-        // FUN_0040344c:3604-3607 — lay cooldown (+0x40) decrements only while
-        // the chick is fed (FUN_00403a3e != 0).
-        if (this.mLayCooldown > 0 && this._isFed()) this.mLayCooldown--;
+    // FUN_00403bbf (asm 0x403bbf): y > 61.0 (_DAT_004e9168) = off the field.
+    _offField() { return 61.0 < this.mPos[1]; }
 
-        // FUN_0040344c:3626-3640 — if vt[5] isActive: age (+0x1c)--, and if
-        // in action 3/4 (FUN_00402342, = SICK_START/SICK_IDLE here) hunger
-        // (+0x38)--. Death when age < 1 or hunger < 1 → FUN_0040342b + death
-        // sound DAT_004fed94.
-        // BroodyChick vt[5] = FUN_00403dec returns 0 while state == 0x14
-        // (brooding), so a brooding broody does not age (rwg_functions.c:4493).
-        const isActive = this.mState !== ChickState.DEATH;
-        const inHungerAction = this.mState === ChickState.SICK_START
-            || this.mState === ChickState.SICK_IDLE;
-        const isBrooding = this.mBroodActive === true;
-        if (isActive && this.mIsAdult && !isBrooding) {
-            this.mAge--;
-            if (inHungerAction) this.mHunger--;
-            if (this.mAge < 1 || this.mHunger < 1) {
-                this.die(true);
+    // --- vtable slots ---------------------------------------------------------
+    // vt[2] FUN_00403ac8: hungry flag (recomputed) && seed list empty.
+    showsHungryIcon(field) {
+        if (!this._updateHungry()) return false;
+        return !field || !field.getSeedCount || field.getSeedCount() === 0;
+    }
+    // vt[3] default FUN_0040e36f → 0 (LayerChick overrides).
+    canBeSickTarget() { return false; }
+    // vt[5] FUN_0040327c (asm 0x40327c): state != 6 && state != 0 && z == 0.
+    isActive() {
+        return this.mStateO !== S_DEAD && this.mStateO !== S_HELD && this.mPos[2] === 0;
+    }
+    // vt[6] FUN_00403ae9: hungry flag.
+    inHurry() { return this._updateHungry(); }
+    // Only LayerChick lays (lay cooldown != -1).
+    canLayEggs() { return false; }
+
+    // vt[7] FUN_004037e8 (rwg_functions.c:3813)
+    _decide(field) {
+        if (this.mIsSick) { this.mStateO = S_SICK; return; }
+        if (this._updateHungry()) { this.mStateO = S_HUNGRY; return; }
+        // Lay: cooldown 0 and a lay spot reserved by FUN_004075da(id) →
+        // state 3. The lay-spot list of FUN_004075da (rwg_functions.c:9135)
+        // is not ported: UNKNOWN — the JS spot is the chick's own position,
+        // always available.
+        this.mStateO = (this.mLayCooldown === 0) ? S_LAY : S_NORMAL;
+    }
+
+    // vt[8] FUN_0040386a (rwg_functions.c:3867)
+    _start(field) {
+        switch (this.mStateO) {
+            case S_SICK:
+                // action 3 (50) the first time, then action 4 (100) repeating.
+                if (this.mAction === A_SICK_START || this.mAction === A_SICK_IDLE) {
+                    this._setActionLen(A_SICK_IDLE, 100.0);   // _DAT_004e9398
+                } else {
+                    this._setActionLen(A_SICK_START, 50.0);   // _DAT_004e92ac
+                }
+                return;
+            case S_HUNGRY: this._seekFood(field); return;
+            case S_LAY:
+                // FUN_004038d1: target = lay spot, action 11 (60). JS spot =
+                // own position (see _decide).
+                this.mTarget = [this.mPos[0], this.mPos[1]];
+                this._setActionLen(A_WALK, 60.0);
+                return;
+            case S_NORMAL: this._wander(field); return;
+            default:
+                this.mAction = 0;
+                this.mActionElapsed = 0;
+                this.mActionLen = 0;
+        }
+    }
+
+    // vt[9] FUN_004037e1: elapsed = length.
+    _onArrive(field) { this._endAction(); }
+    // vt[10] FUN_0044a036: no-op.
+    _onActionEnd(field) {}
+
+    // FUN_0040392e (rwg_functions.c:3930): state-4 wander.
+    _wander(field) {
+        const d = maxNorm2(this.mWander[0] - this.mPos[0], this.mWander[1] - this.mPos[1]);
+        if (0.11 <= d) {
+            if (this.mWander[0] < 0.0 && (mtRand() & 1) !== 0 && field && field.pickRandomFieldPoint) {
+                this.mWander = field.pickRandomFieldPoint();
+            }
+            if (this.mWander[0] > 0.0) {
+                this.mTarget = [this.mWander[0], this.mWander[1]];
+                this._setActionLen(A_WALK, 60.0);   // _DAT_004e9360
                 return;
             }
-        }
-
-        // FUN_00403a9a (rwg_functions.c:4103): sick flag (+0x44) =
-        //   not sick: age < 3000; sick: age < (lvl<7 ? 4500 : 5000).
-        // JS keeps its sick pose (SICK_START → SICK_IDLE) for chicks that
-        // enterSickPose(); see report — the original's sick pose belongs to a
-        // separate world-driven event (FUN_004043fd → FUN_00404d00).
-        const justSickened = this.mIsSick
-            && this.mState !== ChickState.SICK_START
-            && this.mState !== ChickState.SICK_IDLE;
-        if ((!this.mIsSick && this.mAge < 3000) || (justSickened && this.entersSickPose())) {
-            this.mIsSick = true;
-            if (this.entersSickPose()) this.setState(ChickState.SICK_START);
-        }
-        const lvl = (field && field.mFieldController) ? field.mFieldController.mCurrentLevel : 7;
-        const recoverThreshold = lvl < 7 ? 4500 : 5000;
-        if (this.mIsSick && this.mAge >= recoverThreshold) {
-            this.mIsSick = false;
-            if (this.mState === ChickState.SICK_START || this.mState === ChickState.SICK_IDLE) {
-                const nextState = this.mBroodActive
-                    ? ChickState.BROOD_IDLE
-                    : ChickState.IDLE;
-                this.setState(nextState);
-            }
-        }
-
-        this.mStateTimer++;
-        this.mAnimTimer++;
-
-        switch (this.mState) {
-            case ChickState.IDLE:
-                this._updateIdle(field);
-                break;
-            case ChickState.WALK:
-                this._updateWalk(field);
-                break;
-            case ChickState.PECK:
-                this._updatePeck(field);
-                break;
-            case ChickState.DIG:
-                this._updateDig(field);
-                break;
-            case ChickState.SICK_START:
-                // Action 3 → action 4 (FUN_0040386a:3876-3884): 50-tick
-                // start, then SICK_IDLE (100-tick loop).
-                if (this.mStateTimer >= 50) {
-                    this.setState(ChickState.SICK_IDLE);
-                }
-                break;
-            case ChickState.SICK_IDLE:
-                // Action 4 loops until cured or hunger runs out.
-                break;
-            case ChickState.LAYING:
-                this._updateLaying(field);
-                break;
-            case ChickState.BROODING:
-                this._updateBrooding(field);
-                break;
-            case ChickState.BROOD_IDLE:
-                this._updateBroodIdle(field);
-                break;
-            case ChickState.DEATH:
-                break;
-            case ChickState.HOLY_SPELL:
-                // Action 12 lasts 100 (_DAT_004e9398); at its end vt[10]
-                // (HolyChick FUN_0040d922) performs the spell.
-                if (this.mStateTimer >= DUR_SPELL) {
-                    this._onSpellEnd(field);
-                    if (this.mIsAlive) this._chooseNextAction(field);
-                }
-                break;
-        }
-    }
-
-    // Whether this chick shows the SICK_START/SICK_IDLE pose when its sick
-    // flag is set. The pose images (actions 3/4/5) exist only for LAYER
-    // (loader rwg_functions.c:31072-31125 loads them for type 0 only) and
-    // only LayerChick passes vt[3] FUN_00403e3c, the filter used by the
-    // sick-event picker FUN_004043fd:5118/5172. Other types handle +0x44 by
-    // seeking food (vt[13]).
-    entersSickPose() {
-        return this.mType === ChickType.LAYER;
-    }
-
-    // Subclasses override — only LayerChick lays (vt[3] FUN_00403e3c).
-    canLayEggs() {
-        return false;
-    }
-
-    // vt[7] FUN_004037e8 (rwg_functions.c:3813) + vt[8] FUN_0040386a
-    // (rwg_functions.c:3867): decide the next action at the end of the
-    // current one.
-    //   sick (+0x44)                    → state 2 → vt[13] seekFood
-    //   lay cooldown 0 and lay spot     → state 3 → walk/lay (action 9)
-    //   otherwise                       → state 4 → FUN_0040392e wander/dig
-    _chooseNextAction(field) {
-        if (this.mIsSick) {
-            this._wanderTarget = null;   // state != 4 clears it (3591-3594)
-            this._seekFood(field);
-            return;
-        }
-        // State 3: the original also requires a lay spot reserved for this
-        // chick (FUN_004075da:3843); that reservation system is UNKNOWN in
-        // JS, so the lay starts in place.
-        if (this.canLayEggs() && this.mIsAdult && this.mLayCooldown === 0 && this._isFed()) {
-            this._wanderTarget = null;
-            this.setState(ChickState.LAYING);
-            return;
-        }
-        this._wander(field);
-    }
-
-    // FUN_0040392e (rwg_functions.c:3930): state-4 wander. If no wander
-    // target, with 50% (rand & 1) pick one via FUN_004046aa; if a target
-    // exists walk to it (action 11), else FUN_004039f5.
-    _wander(field) {
-        if (!this._wanderTarget && (Math.floor(Math.random() * 0x7fffffff) & 1)) {
-            if (field && field.pickRandomTarget) {
-                this._wanderTarget = field.pickRandomTarget(this.mX, this.mY);
-            }
-        }
-        if (this._wanderTarget) {
-            this.mTargetX = this._wanderTarget.x;
-            this.mTargetY = this._wanderTarget.y;
-            this._targetSeeds = null;
-            this.setState(ChickState.WALK);
-            return;
+        } else {
+            this.mWander = [NO_TARGET, NO_TARGET];
         }
         this._digOrIdle();
     }
 
-    // FUN_004039f5 (rwg_functions.c:4019): if dig cooldown (+0x48) is 0 and
-    // the chick is on the field → dig (action 2, 120). Otherwise action
-    // rand%2+1 (1 = idle 150, 2 = dig 120).
+    // FUN_004039f5 (rwg_functions.c:4019): dig when the dig cooldown is 0 and
+    // the chick is on the field; else action (mt % 2) + 1 (idle / dig).
     _digOrIdle() {
-        if (this.mPeckCooldown === 0 && !this.mIsCarried) {
-            this.setState(ChickState.DIG);
-            this.mActionDur = DUR_DIG;
+        if (this.mDigCooldown === 0 && !this._offField()) {
+            this._setActionLen(A_DIG, 120.0);       // _DAT_004e9240
             return;
         }
-        if (Math.floor(Math.random() * 0x7fffffff) % 2 === 0) {
-            this.setState(ChickState.IDLE);
-            this.mActionDur = DUR_IDLE;
-        } else {
-            this.setState(ChickState.DIG);
-            this.mActionDur = DUR_DIG;
-        }
+        this._setAction((mtRand() % 2) + 1);
     }
 
-    // vt[13] SimpleChick FUN_0042013e (rwg_functions.c:39664): if the seed
-    // list is empty → FUN_004039f5; else walk (action 11) to the nearest seed
-    // cluster (FUN_0041c11f).
+    // vt[13] SimpleChick FUN_0042013e (asm 0x42013e): no seeds →
+    // FUN_004039f5; else action 11 (60) toward the nearest seed claimable
+    // by this chick (FUN_0041c11f, which claims it).
     _seekFood(field) {
-        const seeds = field ? field.getNearestSeeds(this.mX, this.mY) : null;
-        if (!seeds) {
+        if (!field || !field.getSeedCount || field.getSeedCount() === 0) {
             this._digOrIdle();
             return;
         }
-        this.mTargetX = seeds.mX;
-        this.mTargetY = seeds.mY;
-        this._targetSeeds = seeds;
-        this.setState(ChickState.WALK);
+        this._setActionLen(A_WALK, 60.0);
+        this.mFoodTarget = field.claimNearestSeed(this.mPos, this.mId);
     }
 
-    // Action 1 (idle). The JS seed-seeking trigger below (hungry/near
-    // seeds while healthy) is UNKNOWN — not found in decompiled: the
-    // original only seeks seeds when sick (state 2 → vt[13]).
-    _updateIdle(field) {
-        const urgent = this.mFoodCounter < (this.mScale || 1) * 50;
-        if (field && this.mFoodSeeker !== false) {
-            const seeds = field.getNearestSeeds(this.mX, this.mY);
-            if (seeds) {
-                const dx = seeds.mX - this.mX;
-                const dy = seeds.mY - this.mY;
-                const near = (dx * dx + dy * dy) < 80 * 80;
-                if (this.mIsSick || urgent || near) {
-                    this.mTargetX = seeds.mX + (Math.random() - 0.5) * 20;
-                    this.mTargetY = seeds.mY + (Math.random() - 0.5) * 10;
-                    this._targetSeeds = seeds;
-                    this._wanderTarget = null;
-                    this.setState(ChickState.WALK);
-                    return;
+    // vt[12] SimpleChick FUN_00420069 (asm 0x420069): drop the target if
+    // its life (+0x28) <= 0; no target → end the walk; else re-claim it
+    // (FUN_0041c220) and walk to it; on arrival action 10 (30).
+    _walkToFood(field) {
+        const s = this.mFoodTarget;
+        if (s && !(s.life > 0)) this.mFoodTarget = null;
+        if (!this.mFoodTarget) { this._endAction(); return; }
+        if (field && field.reclaimSeed) field.reclaimSeed(this.mFoodTarget, this.mId);
+        if (!this._step([this.mFoodTarget.pos[0], this.mFoodTarget.pos[1]])) {
+            this._setActionLen(A_PECK, 30.0);       // _DAT_004e9410
+        }
+    }
+
+    // vt[11] SimpleChick FUN_0041ff9a (asm 0x41ff9a): if the seed is alive:
+    // age += seed calories (+0x24); food += ftol(cal * mult (+0x2c) + 0.5),
+    // capped at FUN_004058af; seed life = 0 (FUN_0041bfbe). Target cleared.
+    _eatEnd(field) {
+        const s = this.mFoodTarget;
+        if (s && s.life > 0) {
+            this.mAge += s.calories;
+            this.mFoodCounter += Math.trunc(s.calories * s.mult + 0.5);
+            const cap = foodCap(this.mLevel);
+            if (this.mFoodCounter >= cap) this.mFoodCounter = cap;
+            s.life = 0;
+        }
+        this.mFoodTarget = null;
+    }
+
+    // vt[14] FUN_00465f98: own type → JS egg type.
+    getEggType(field) { return CHICK_TO_EGG[this.mType]; }
+    // vt[15] FUN_004201a0 (rwg_functions.c:39698): FUN_00403a65 > 1.0 →
+    // 0 (gold) else 1 (silver).
+    getCoinType() { return this.getFoodRatio() > 1.0 ? 0 : 1; }
+
+    // FUN_00403af3 (asm 0x403af3-0x403bbe): one walk step toward t (field).
+    //   step = (ratio*0.05*0.5 + 0.05) * speedMult; hurry → *1.5
+    //   moving while step*1.1 <= maxNorm(t - pos): facing = normalised d,
+    //   pos += facing*step; else pos = t, z = 0. Returns `moving`.
+    _step(t) {
+        let step = (this.getFoodRatio() * 0.05 * 0.5 + 0.05) * this.mSpeedMult;
+        if (this.inHurry()) step = step * 1.5;
+        let dx = t[0] - this.mPos[0];
+        let dy = t[1] - this.mPos[1];
+        const moving = step * 1.100000023841858 <= maxNorm2(dx, dy);
+        if (moving) {
+            // FUN_00403cdf: normalise (dx, dy) to length 1.0
+            const len = Math.sqrt(dx * dx + dy * dy);
+            dx = dx * (1.0 / len);
+            dy = (1.0 / len) * dy;
+            this.mFacing = [dx, dy];
+            this.mPos[0] = dx * step + this.mPos[0];
+            this.mPos[1] = dy * step + this.mPos[1];
+        } else {
+            this.mPos = [t[0], t[1], 0];
+        }
+        return moving;
+    }
+
+    // FUN_00403602 (rwg_functions.c:3652): advance/run the current action.
+    _tickAction(field) {
+        let mult = 1.0;
+        if (this.mAction === A_WALK && !this._actionFinished() && this.inHurry()) {
+            mult = 1.2999999523162842;               // _DAT_004e9304
+        }
+        if (this.mActionLen > 0 && !this._actionFinished()) {
+            this.mActionElapsed = this.mSpeedMult * mult + this.mActionElapsed;
+        }
+        if (this.mActionLen <= this.mActionElapsed) this.mActionElapsed = this.mActionLen;
+
+        if (!this._actionFinished()) {
+            if (this.mAction !== A_WALK) return;
+            if (!this._updateHungry()) {
+                if (this.mLayCooldown === 0 && this.mStateO === S_LAY) {
+                    if (!this._step(this.mTarget)) {
+                        this._setActionLen(A_LAY, 100.0);   // _DAT_004e9398
+                    }
+                } else if (!this._step(this.mTarget)) {
+                    this._onArrive(field);
                 }
+            } else {
+                this._walkToFood(field);
             }
-        }
-        if (this.mStateTimer >= this.mActionDur) {
-            this._chooseNextAction(field);
-        }
-    }
-
-    // Action 11 (walk). FUN_00403602:3667-3700 moves toward +0x54 via
-    // FUN_00403af3 until arrival, then vt[9]/next decision.
-    _updateWalk(field) {
-        if (this._targetSeeds && (!this._targetSeeds.mIsAlive || !this._targetSeeds.hasFood())) {
-            this._targetSeeds = null;
-            this._chooseNextAction(field);
             return;
         }
-        const dx = this.mTargetX - this.mX;
-        const dy = this.mTargetY - this.mY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        switch (this.mAction) {
+            case A_PECK:
+                this._eatEnd(field);
+                break;
+            case A_LAY:
+                // +0x40 = FUN_00405886 ? 1500 : 2000; egg type vt[14];
+                // FUN_00407038 spawns the egg at the chick position and plays
+                // a random DAT_00500624 sound (SOUND_EGG_LAYERED1/2,
+                // rand()%2 — rwg_functions.c:8748-8760).
+                this.mLayCooldown = isEarlyLevel(this.mLevel) ? 1500 : 2000;
+                if (field && field.spawnEgg) {
+                    field.spawnEgg(this.mX, this.mY, this.getEggType(field));
+                    const snd = (crtRand() % 2) === 0
+                        ? SOUNDS.SOUND_EGG_LAYERED1 : SOUNDS.SOUND_EGG_LAYERED2;
+                    if (snd) snd.play();
+                }
+                break;
+            case A_DIG:
+                // dig cooldown 0 and on the field → gem vt[15] via FUN_0040c4d9
+                // at the chick position; cooldown = FUN_00405886 ? 800 : 1000.
+                if (this.mDigCooldown === 0 && !this._offField()) {
+                    const fc = fcOf(field);
+                    const cfg = fc && fc.mLevelConfig;
+                    // FUN_0040c4d9:15152 skips the spawn when *(field+0x1c)
+                    // is set (LevelData noPeckCoins; exact semantic UNKNOWN).
+                    if (field && field.spawnGem && !(cfg && cfg.noPeckCoins)) {
+                        field.spawnGem(this.getCoinType(), this.mX, this.mY - 20);
+                    }
+                    this.mDigCooldown = isEarlyLevel(this.mLevel) ? 800 : 1000;
+                }
+                break;
+            default:
+                this._onActionEnd(field);
+        }
+    }
 
-        if (dist < 5) {
-            // Arrived at seeds → action 10 (peck, FUN_00420069:39651-39655).
-            if (this._targetSeeds && this._targetSeeds.hasFood()) {
-                this.setState(ChickState.PECK);
-                return;
+    // FUN_004035c8 (rwg_functions.c:3626): fall: vz += 0.03; z -= vz; z >= 0.
+    _fall() {
+        this.mVz = this.mVz + 0.029999999329447746;
+        this.mPos[2] = this.mPos[2] - this.mVz;
+        if (this.mPos[2] <= 0.0) this.mPos[2] = 0;
+    }
+
+    _runCtor(field) {
+        if (!this._ctorPending) return;
+        this._ctorPending = false;
+        if (field) this.mLevel = levelOf(field);
+        if (this.mLayCooldown !== -1) {
+            this.mLayCooldown = isEarlyLevel(this.mLevel) ? 1500 : 2000;
+        }
+        // FUN_004032ca:3481-3497
+        if (field && field.pickRandomFieldPoint) this.mWander = field.pickRandomFieldPoint();
+        if (!(this.mWander[0] >= 0)) {
+            this._digOrIdle();
+        } else {
+            this.mTarget = [this.mWander[0], this.mWander[1]];
+            this._setActionLen(A_WALK, 60.0);
+        }
+    }
+
+    // vt[1] FUN_0040344c (rwg_functions.c:3560) Chick::Update. Returns false
+    // when the chick must be removed from the list.
+    update(field) {
+        this._field = field;
+        this._runCtor(field);
+        if (this.mRemoved) return false;
+        if (this.mStateO === S_DEAD) {
+            this._tickAction(field);
+            if (this._actionFinished()) this.mRemoved = true;
+            return !this.mRemoved;
+        }
+        if (this.mStateO === S_HELD) return true;
+        if (0.0 < this.mPos[2]) {
+            this._fall();
+            if (0.0 < this.mPos[2]) return true;
+        }
+        this.mVz = 0;
+        // +0x64 hungry-icon timer: +0.01 per tick while vt[2], saturating at
+        // 0.999; otherwise 0.
+        if (this.showsHungryIcon(field)) {
+            const v = this.mHungryAnim + 0.009999999776482582;
+            this.mHungryAnim = (v < 0.9990000128746033) ? v : 0.9990000128746033;
+        } else {
+            this.mHungryAnim = 0;
+        }
+        if (this.mStateO !== S_NORMAL) this.mWander = [NO_TARGET, NO_TARGET];
+        if (this.mDigCooldown > 0) this.mDigCooldown--;
+        if (this.mLayCooldown > 0 && this.getFoodTier() !== 0) this.mLayCooldown--;
+        if (this.mSpeedTimer > 0) this.mSpeedTimer--;
+        if (this._actionFinished()) {
+            this._decide(field);
+            this._start(field);
+            if (this.mSpeedTimer < 1) {
+                this.mSpeedTimer = 1000;
+                // FUN_00403207(_DAT_004e92a8 = 1.2, _DAT_004dc858 = 0.5)
+                this.mSpeedMult = Math.fround(randAround(1.2000000476837158, 0.5));
             }
-            // Arrived at wander target → FUN_0040392e:3966-3972 clears it
-            // and calls FUN_004039f5.
-            if (this._wanderTarget) {
-                this._wanderTarget = null;
-                this._digOrIdle();
-                return;
+        }
+        this._tickAction(field);
+        if (this.isActive()) {
+            this.mAge--;
+            if (this.mIsSick) this.mHunger--;
+            if (this.mAge < 1 || this.mHunger < 1) {
+                this.die(true);
             }
-            this._chooseNextAction(field);
-            return;
         }
-        // JS-only safety timeout (target clipped by the field clamp).
-        if (this.mStateTimer > 600) {
-            this._targetSeeds = null;
-            this._wanderTarget = null;
-            this._chooseNextAction(field);
-            return;
-        }
-
-        this.mDirection = dx > 0 ? 0 : 1; // 0=right(flip needed), 1=left(natural)
-        this.mX += (dx / dist) * this.mSpeed;
-        this.mY += (dy / dist) * this.mSpeed;
-        // JS field clamp (screen coords). Original clamps the logical field
-        // to 0..128 x 0..57 (FUN_004046aa:5300-5311).
-        this.mX = Math.max(80, Math.min(720, this.mX));
-        this.mY = Math.max(370, Math.min(580, this.mY));
+        return true;
     }
 
-    // Action 10 (peck, 30 ticks). At its end vt[11] SimpleChick
-    // FUN_0041ff9a (rwg_functions.c:39547) eats one grain of the target
-    // cluster. No coin is produced here — coins come only from action 2.
-    _updatePeck(field) {
-        if (this.mStateTimer >= DUR_PECK) {
-            if (this._targetSeeds && this._targetSeeds.hasFood()) {
-                const cal = this._targetSeeds.eatOne();
-                if (cal > 0) this.feed(cal);
-            }
-            this._targetSeeds = null;
-            this._chooseNextAction(field);
-        }
+    // FUN_00404d00 (asm 0x404d00) chick part: if state != 0 → state 1 and
+    // vt[8] (action 3, 50).
+    infect() {
+        if (this.mStateO === S_HELD || this.mStateO === S_DEAD) return;
+        this.mStateO = S_SICK;
+        this._start(this._field);
     }
 
-    // Action 2 (dig, 120 ticks). FUN_00403602:3714-3727 at its end: if dig
-    // cooldown (+0x48) == 0 and the chick is on the field (FUN_00403bbf),
-    // spawn gem vt[15] via FUN_0040c4d9 and set the cooldown to
-    // (lvl<7 ? 800 : 1000). FUN_0040c4d9:15152 skips the spawn when the
-    // level's no-coins flag is set (L37 — JS mLevelConfig.noPeckCoins).
-    _updateDig(field) {
-        if (this.mStateTimer < this.mActionDur) return;
-        if (this.mPeckCooldown === 0 && !this.mIsCarried && field) {
-            const fcCfg = field.mFieldController && field.mFieldController.mLevelConfig;
-            const noCoins = fcCfg && fcCfg.noPeckCoins;
-            // mIsAdult gate: JS growth phase (UNKNOWN in decompiled).
-            if (this.mIsAdult && !noCoins) {
-                field.spawnGem(this.getCoinType(), this.mX, this.mY - 20);
-            }
-            this.mPeckCooldown = levelOf(field) < 7 ? 800 : 1000;
-        }
-        this._chooseNextAction(field);
+    // FUN_0040342b (rwg_functions.c:3530): state 6, action 13 (death, 200).
+    // The death sound DAT_004fed94 is played by FUN_0040344c:3637-3638
+    // (age/sick death); FUN_00420e2e (holy spell) kills without it.
+    die(playSound = true) {
+        if (this.mStateO === S_DEAD) return;
+        this.mStateO = S_DEAD;
+        this.mActionElapsed = 0;
+        this.mAction = A_DEATH;
+        this.mActionLen = 200.0;                    // _DAT_004e9244
+        if (playSound && SOUNDS.SOUND_CHICK_DEATH) SOUNDS.SOUND_CHICK_DEATH.play();
     }
 
-    // vt[15] FUN_004201a0 (rwg_functions.c:39698): 0 (gold) when
-    // FUN_00403a65 > 1.0 (_DAT_004dc7e0), else 1 (silver). FUN_00403a65 =
-    // 2*food/(base*11) → gold iff food > base*5.5. JS food scale differs
-    // (see _isFed); the JS ratio test below is kept. Exact JS threshold:
-    // UNKNOWN — not found in decompiled.
-    getCoinType() {
-        const cap = Math.max(1, Math.floor(200 * (this.mScale || 1)));
-        const ratio = this.mFoodCounter / cap;
-        return ratio > 0.5 ? 0 : 1;
-    }
-
-    // Kept for API compatibility: start laying (action 9).
-    layEgg(field) {
-        this.setState(ChickState.LAYING);
-    }
-
-    // Action 9 (lay egg, 100 ticks). FUN_00403602:3729-3739 at its end:
-    // lay cooldown (+0x40) = (lvl<7 ? 1500 : 2000); egg type = vt[14];
-    // FUN_00407038 spawns the egg at the chick position and plays a random
-    // DAT_00500624 sound (SOUND_EGG_LAYERED1/2, rand()%2 — rwg_functions.c:8748-8760).
-    // The food counter is not touched by laying.
-    _updateLaying(field) {
-        if (this.mStateTimer < DUR_LAY) return;
-        if (field) {
-            this.mLayCooldown = levelOf(field) < 7 ? 1500 : 2000;
-            const type = this.getEggType(field);
-            field.spawnEgg(this.mX, this.mY, type);
-            const snd = Math.floor(Math.random() * 2) === 0
-                ? SOUNDS.SOUND_EGG_LAYERED1 : SOUNDS.SOUND_EGG_LAYERED2;
-            if (snd) snd.play();
-        }
-        this._chooseNextAction(field);
-    }
-
-    _updateBrooding(field) {
-        // Broody-specific - only BroodyChick
-    }
-
-    _updateBroodIdle(field) {
-        // Broody sitting on egg
-    }
-
-    // vt[10] default FUN_0044a036 is a no-op; HolyChick overrides.
-    _onSpellEnd(field) {
-    }
-
-    // vt[14] FUN_00465f98 (rwg_functions.c:107231): returns own type
-    // (+0x04) → the egg type this chick produces.
-    getEggType() {
-        return CHICK_TO_EGG[this.mType] !== undefined ? CHICK_TO_EGG[this.mType] : EggType.WHITE;
-    }
-
-    setState(state) {
-        this.mState = state;
-        this.mStateTimer = 0;
-        this.mActionDur = 0;
-        if (state === ChickState.SICK_START
-            || state === ChickState.LAYING
-            || state === ChickState.HOLY_SPELL
-            || state === ChickState.DEATH
-            || state === ChickState.BROODING
-            || state === ChickState.BROOD_IDLE
-            || state === ChickState.DIG) {
-            this.mAnimTimer = 0;
-        }
-    }
-
-    // ravenAttack — fired when a raven escapes off-screen carrying this chick.
+    // Raven escape (FUN_0040481d → FUN_0040466e): removed from the field.
     ravenAttack() {
         this.die();
         return true;
     }
 
-    // FUN_0040342b (rwg_functions.c:3530): state 6, action 13 (death, 200).
-    // The death sound DAT_004fed94 is played by the caller in
-    // FUN_0040344c:3637-3638 (age/hunger death), not by FUN_0040342b itself;
-    // FUN_00420e2e (holy spell) kills without it. playSound defaults to true
-    // for external callers (raven/wolf/risk — their sound behaviour is
-    // outside this file's scope).
-    die(playSound = true) {
-        if (!this.mIsAlive) return;
-        this.mIsAlive = false;
-        this.setState(ChickState.DEATH);
-        this.mDeathTimer = 0;
-        if (playSound && SOUNDS.SOUND_CHICK_DEATH) SOUNDS.SOUND_CHICK_DEATH.play();
-    }
-
-    // vt[11] SimpleChick FUN_0041ff9a (rwg_functions.c:39547): eating one
-    // grain: age (+0x1c) += cluster calories (+0x24); food (+0x34) += an
-    // amount computed by FUN_004bed40 (UNKNOWN — not found in decompiled;
-    // JS keeps calories*1.5); food capped at FUN_004058af (JS cap 200*scale).
-    // Hunger (+0x38) is NOT touched by eating (only FUN_00403403, via cure).
-    feed(calories) {
-        if (!(calories > 0)) return;
-        this.mFoodCounter += Math.floor(calories * 1.5);
-        const cap = Math.floor(200 * this.mScale);
-        if (this.mFoodCounter > cap) this.mFoodCounter = cap;
-        this.mAge += calories;
-    }
-
-    // Cure — FUN_0040490a (rwg_functions.c:5440, $50, SOUND_CURED
-    // DAT_004fed6c) → FUN_00403403 (rwg_functions.c:3510): if in action 3/4
-    // → action 5 (50) and hunger (+0x38) = 2000. The original does not touch
-    // age; JS additionally lifts age to 5200 and clears the sick flag
-    // because JS conflates the age-based +0x44 flag with the sick event.
+    // Cure — FUN_0040490a (rwg_functions.c:5432; $50 handled by the caller,
+    // SOUND_CURED DAT_004fed6c) → FUN_00403403 (rwg_functions.c:3510): if in
+    // action 3/4 → action 5 (50), elapsed 0, sick counter (+0x38) = 2000.
     cure() {
-        if (this.mIsSick) {
-            this.mIsSick = false;
-            this.mAge = Math.max(this.mAge, 5200);
-            this.mHunger = 2000;
-            const nextState = this.mBroodActive
-                ? ChickState.BROOD_IDLE
-                : ChickState.IDLE;
-            this.setState(nextState);
-            if (SOUNDS.SOUND_CURED) SOUNDS.SOUND_CURED.play();
-        }
+        if (!this.mIsSick) return;
+        this._setActionLen(A_CURED, 50.0);          // _DAT_004e92ac
+        this.mHunger = 2000;
+        if (SOUNDS.SOUND_CURED) SOUNDS.SOUND_CURED.play();
     }
 
-    // Sell pricing lives in ShopDialogs.sellPrice (FUN_00403bd6:4245).
+    // Kept for API compatibility.
+    _endBrooding() {}
 
+    // --- drawing ------------------------------------------------------------
     getImagePrefix() {
-        const prefixes = {
-            [ChickType.LAYER]: 'LAYER',
-            [ChickType.BROODY]: 'BROODY',
-            [ChickType.ROOSTER]: 'ROOSTER',
-            [ChickType.MAGIC]: 'MAGIC',
-            [ChickType.HOLY]: 'HOLY',
-        };
-        return prefixes[this.mType] || 'LAYER';
+        return ['LAYER', 'BROODY', 'ROOSTER', 'MAGIC', 'HOLY'][this.mType] || 'LAYER';
     }
 
-    // Chick drawing — FUN_0040a3d6 chick loop (rwg_functions.c:13385-13440)
-    // with image choice FUN_0040a166 (rwg_functions.c:12962). Exact sprite
-    // anchor/shadow offsets use FUN_00409779/FUN_004bed40 results that are
-    // UNKNOWN in decompiled; JS anchors the cel's bottom-centre at (mX, mY).
-    draw(g) {
-        const prefix = this.getImagePrefix();
+    // FUN_0040a166 (rwg_functions.c:12962): image by action.
+    _getActionImage() {
+        const p = this.getImagePrefix();
         let img = null;
-
-        switch (this.mState) {
-            case ChickState.IDLE:
-                img = IMAGES[`IMAGE_CHICK_IDLE0_${prefix}`];
-                break;
-            case ChickState.DIG:
-                // action 2 → IDLE1 (dig.jpg)
-                img = IMAGES[`IMAGE_CHICK_IDLE1_${prefix}`];
-                break;
-            case ChickState.WALK:
-                img = IMAGES[`IMAGE_CHICK_WALK_${prefix}`];
-                break;
-            case ChickState.PECK:
-                img = IMAGES[`IMAGE_CHICK_PECK_${prefix}`];
-                break;
-            case ChickState.SICK_START:
-                img = IMAGES[`IMAGE_CHICK_SICK_START_${prefix}`]
-                    || IMAGES.IMAGE_CHICK_SICK_START_LAYER;
-                break;
-            case ChickState.SICK_IDLE:
-                img = IMAGES[`IMAGE_CHICK_SICK_IDLE_${prefix}`]
-                    || IMAGES.IMAGE_CHICK_SICK_IDLE_LAYER;
-                break;
-            case ChickState.LAYING:
-                img = IMAGES[`IMAGE_CHICK_LAYER_LAYER`];
-                break;
-            case ChickState.BROODING:
-                img = IMAGES[`IMAGE_CHICK_BROOD_START_BROODY`]
-                    || IMAGES[`IMAGE_CHICK_BROOD_IDLE_BROODY`];
-                break;
-            case ChickState.BROOD_IDLE:
-                img = IMAGES[`IMAGE_CHICK_BROOD_IDLE_BROODY`];
-                break;
-            case ChickState.DEATH:
-                img = IMAGES[`IMAGE_CHICK_DEATH_${prefix}`]
-                    || IMAGES.IMAGE_CHICK_DEATH_LAYER;
-                break;
-            case ChickState.HOLY_SPELL:
-                img = IMAGES[`IMAGE_CHICK_HOLY_SPELL`];
-                break;
+        switch (this.mAction) {
+            case A_DIG: img = IMAGES[`IMAGE_CHICK_IDLE1_${p}`]; break;
+            case A_SICK_START: case A_CURED: img = IMAGES[`IMAGE_CHICK_SICK_START_${p}`]; break;
+            case A_SICK_IDLE: img = IMAGES[`IMAGE_CHICK_SICK_IDLE_${p}`]; break;
+            case A_SIT: case A_GETUP: img = IMAGES[`IMAGE_CHICK_BROOD_START_${p}`]; break;
+            case A_NEST: img = IMAGES[`IMAGE_CHICK_BROOD_IDLE_${p}`]; break;
+            case A_LAY: img = IMAGES[`IMAGE_CHICK_LAYER_${p}`]; break;
+            case A_PECK: img = IMAGES[`IMAGE_CHICK_PECK_${p}`]; break;
+            case A_WALK: img = IMAGES[`IMAGE_CHICK_WALK_${p}`]; break;
+            case A_SPELL: img = IMAGES.IMAGE_CHICK_HOLY_SPELL; break;
+            case A_DEATH: img = IMAGES[`IMAGE_CHICK_DEATH_${p}`]; break;
+            default: img = IMAGES[`IMAGE_CHICK_IDLE0_${p}`];
         }
-        if (!img) img = IMAGES[`IMAGE_CHICK_IDLE0_${prefix}`] || IMAGES.IMAGE_CHICK_IDLE0_LAYER;
-
-        if (img && img.img) {
-            const celW = img.getCelWidth();
-            const celH = img.getCelHeight();
-            const numFrames = img.mNumCols * img.mNumRows;
-            // Frame timing: UNKNOWN — not found in decompiled (JS 6 ticks/frame).
-            // One-shot actions hold their last frame instead of wrapping
-            // (their table durations — 70 sit, 100 spell, 200 death — can
-            // exceed the JS 6-ticks/frame cycle).
-            let frame;
-            const oneShot = this.mState === ChickState.DEATH
-                || this.mState === ChickState.BROODING
-                || this.mState === ChickState.HOLY_SPELL;
-            if (oneShot && numFrames > 1) {
-                frame = Math.min(numFrames - 1, Math.floor(this.mAnimTimer / 6));
-            } else {
-                frame = numFrames > 1 ? Math.floor(this.mAnimTimer / 6) % numFrames : 0;
-            }
-
-            // Shadow (DAT_00500010 IMAGE_SHADOW) — FUN_0040a3d6:13431-13438
-            // draws it when height (+0x28) == 0 and state != 6.
-            const shadowImg = IMAGES.IMAGE_SHADOW;
-            if (this.mIsAlive && !this.mIsCarried
-                && this.mState !== ChickState.DEATH
-                && shadowImg && shadowImg.img) {
-                const baseW = shadowImg.mWidth || 64;
-                const baseH = shadowImg.mHeight || 34;
-                const sw = baseW * this.mScale;
-                const sh = baseH * this.mScale;
-                g.ctx.drawImage(shadowImg.img, this.mX - sw / 2, this.mY - sh / 2, sw, sh);
-            }
-
-            const ctx = g.ctx;
-            ctx.save();
-            const sx = this.mDirection === 0 ? -this.mScale : this.mScale;
-            ctx.translate(this.mX, this.mY);
-            ctx.scale(sx, this.mScale);
-            const cols = img.mNumCols || 1;
-            const srcX = (frame % cols) * celW;
-            const srcY = Math.floor(frame / cols) * celH;
-            ctx.drawImage(img.img, srcX, srcY, celW, celH,
-                -celW / 2, -celH, celW, celH);
-            ctx.restore();
-
-            // Hungry icon (DAT_00500020 IMAGE_CHICK_HUNGRY) —
-            // FUN_0040a3d6:13414-13430: drawn when vt[2] is true, frame =
-            // ftol(+0x64 * numFrames), x = spriteLeft + (spriteW - celW)/2
-            // + 0x14, y = spriteTop - image height. The original also caps
-            // the icon at 5 chicks per frame (piStack_118 < 5) — not
-            // enforced here (needs Field's draw loop).
-            if (this._hungryIcon && this.mIsAlive) {
-                const hungryImg = IMAGES.IMAGE_CHICK_HUNGRY;
-                if (hungryImg && hungryImg.img) {
-                    const hFrames = (hungryImg.mNumCols || 1) * (hungryImg.mNumRows || 1);
-                    const hFrame = Math.min(hFrames - 1, Math.floor(this.mHungryAnim * hFrames));
-                    const spriteW = celW * this.mScale;
-                    const spriteLeft = this.mX - spriteW / 2;
-                    const spriteTop = this.mY - celH * this.mScale;
-                    g.drawImageCell(hungryImg,
-                        spriteLeft + (spriteW - hungryImg.getCelWidth()) / 2 + 0x14,
-                        spriteTop - hungryImg.getCelHeight(), hFrame);
-                }
-            }
-        }
+        return img || IMAGES[`IMAGE_CHICK_IDLE0_${p}`];
     }
+
+    // FUN_00409d5c (asm 0x409d5c-0x409e8f) draw params for image `img`.
+    _getDrawParams(img) {
+        const p = { scale: 1.0, frame: -1, mirror: false, reverse: false, color: null };
+        p.mirror = 0.0 < this.mFacing[0];                // +0x14 = 0 < +0x2c
+        const old = this.mAge < 0x5dc;
+        if (this.mStateO === S_DEAD && this.getActionProgress() > 0.5) {
+            // fade out: alpha = ftol((1 - progress) * 510); colour
+            // (0xb4,0xfa,0xb4) when age < 1500 else white.
+            const a = Math.trunc((1 - this.getActionProgress()) * 510.0);
+            p.color = old ? [0xb4, 0xfa, 0xb4, a] : [0xff, 0xff, 0xff, a];
+        } else if (old) {
+            p.color = [0xb4, 0xfa, 0xb4, 0xff];             // FUN_00450771
+        }
+        p.scale = this.mScale;                              // +0x18
+        const cols = (img && img.mNumCols) || 1;
+        let f = Math.trunc(this.getActionProgress() * cols); // +0x1c
+        if (f >= cols) f = cols - 1;
+        p.frame = f;
+        p.reverse = this.mAction === A_CURED || this.mAction === A_GETUP; // +0x20
+        return p;
+    }
+
+    // Base size = IDLE0 image height (FUN_0040bf80(0) image vector [0]).
+    _baseSize() {
+        const img = IMAGES[`IMAGE_CHICK_IDLE0_${this.getImagePrefix()}`];
+        return Math.trunc(((img && img.mHeight) || 0) * this.mScale + 0.5);
+    }
+
+    // Chick rect: size = ftol(idle0.height * scale + 0.5);
+    //   x = sx - ftol(size*0.5 + 0.5), y = sy - ftol(size*k + 0.5), w = h = size
+    // with k = 0.8 (_DAT_004e92a0) in the draw rect FUN_00409779 and
+    // k = 0.7 (_DAT_004e93f8) in FUN_00409956 (used by hit tests / hints).
+    _rect(k) {
+        const size = this._baseSize();
+        const sx = projX(this.mPos[0]);
+        const sy = projY(this.mPos[1], this.mPos[2]);
+        return {
+            x: sx - Math.trunc(size * 0.5 + 0.5),
+            y: sy - Math.trunc(size * k + 0.5),
+            w: size, h: size,
+        };
+    }
+    getDrawRect() { return this._rect(0.800000011920929); }
+    getRect() { return this._rect(0.699999988079071); }
+
+    // Sprite (render-list entry; FUN_004090ec with key = field y).
+    drawSprite(g) {
+        const img = this._getActionImage();
+        if (!img || !img.img) return;
+        const r = this.getDrawRect();
+        drawWithParams(g, img, r.x, r.y, this._getDrawParams(img));
+    }
+
+    // Shadow (immediate, asm 0x40a84b-0x40a8c4) when z == 0 and state != 6:
+    //   h = ftol(shadow.h*scale), w = ftol(shadow.w*scale),
+    //   x = rect.x, y = rect.y + rect.h - shadow.h/2 - ftol(scale*10).
+    drawShadow(g) {
+        if (this.mPos[2] !== 0.0 || this.mStateO === S_DEAD) return;
+        const sh = IMAGES.IMAGE_SHADOW;
+        if (!sh || !sh.img) return;
+        const scale = this.mScale;
+        const r = this.getDrawRect();
+        const h = Math.trunc(sh.mHeight * scale);
+        const w = Math.trunc(sh.mWidth * scale);
+        const y = r.y + r.h - Math.trunc(sh.mHeight / 2) - Math.trunc(scale * 10.0);
+        g.ctx.drawImage(sh.img, (g.mTransX || 0) + r.x, (g.mTransY || 0) + y, w, h);
+    }
+
+    // Hungry icon (asm 0x40a7ca-0x40a833): IMAGE_CHICK_HUNGRY cel
+    // ftol(+0x64 * numCols) at x = rect.x + (rect.w - celW)/2 + 0x14,
+    // y = rect.y - image height.
+    drawHungryIcon(g) {
+        const img = IMAGES.IMAGE_CHICK_HUNGRY;
+        if (!img || !img.img) return;
+        const r = this.getDrawRect();
+        const cols = img.mNumCols || 1;
+        const celW = Math.trunc(img.mWidth / cols);
+        const frame = Math.trunc(cols * this.mHungryAnim);
+        drawWithParams(g, img, r.x + Math.trunc((r.w - celW) / 2) + 0x14,
+            r.y - img.mHeight, { frame });
+    }
+
+    // Plain draw (sprite only) kept for callers outside Field.draw.
+    draw(g) { this.drawSprite(g); }
 }
 
 // SimpleChick — vtable 004dc8dc, ctor FUN_0041ff68 (rwg_functions.c:39518).
 export class SimpleChick extends Chick {
-    constructor(x, y) {
-        super(ChickType.LAYER, x, y);
+    constructor(type, x, y, layFlag = false) {
+        super(type === undefined ? ChickType.LAYER : type, x, y, layFlag);
     }
 }
 
-// LayerChick — vtable 004dc96c, built by FUN_00403ec2:4645-4659.
+// LayerChick — vtable 004dc96c, FUN_00403ec2 asm 0x403fc3-0x403fe3:
+// FUN_0041ff68(type 0, layFlag 1).
 export class LayerChick extends SimpleChick {
-    // vt[3] FUN_00403e3c (rwg_functions.c:4550): can be picked for the sick
-    // event / laying when fed, active and on the field.
+    constructor(x, y) { super(ChickType.LAYER, x, y, true); }
+
     canLayEggs() { return true; }
 
-    // vt[14] FUN_0040dba2 (rwg_functions.c:16958) — egg type. Up to 31
-    // tries: r = rand()/2147483647.0 (_DAT_004e9368); subtract the weights
-    // {0.35, 0.24, 0.14, 0.15, 1.0} (_DAT_004e9388/80/78/70) and take the
-    // first index where r <= 0 → chick type 0..4 (Layer 35%, Broody 24%,
-    // Rooster 14%, Magic 15%, Holy 12%). Accept if the level allows that
-    // type (FUN_00404a71); Broody additionally needs world+0x274 (broody
-    // count below the level's broody cap, FUN_004043fd:5084-5088). After 31
-    // failed tries return 0 (Layer).
-    // The level allow-mask (FUN_00404a71 / FUN_00423c04) and the broody cap
-    // are not modelled in JS: the gate below (BLUE/RED need hasMagicHoly,
-    // BLACK needs hasRavens) is the earlier JS approximation — UNKNOWN.
+    // vt[3] FUN_00403e3c (rwg_functions.c:4550): not in action 3/4, z == 0,
+    // fed (FUN_00403a3e != 0), vt[5] active and on the field.
+    canBeSickTarget() {
+        return !this.mIsSick && this.mPos[2] === 0.0 && this.getFoodTier() !== 0
+            && this.isActive() && !this._offField();
+    }
+
+    // vt[14] FUN_0040dba2 (rwg_functions.c:16958): up to 31 tries:
+    // r = mt/2147483647.0; subtract {0.35, 0.24, 0.14, 0.15, 1.0}; first index
+    // with r <= 0 → chick type. Accept when the level enables that type
+    // (FUN_00404a71 = LevelData chickTypeEnabled); Broody (1) additionally
+    // needs world+0x274 (Field.mBroodyAllowed). After 31 tries → 0.
     getEggType(field) {
-        const weights = [0.35, 0.24, 0.14, 0.15, 1.0];
-        const cfg = field && field.mFieldController && field.mFieldController.mLevelConfig;
-        const blocked = (t) => {
-            if (!cfg) return false;
-            if ((t === EggType.BLUE || t === EggType.RED) && !cfg.hasMagicHoly) return true;
-            if (t === EggType.BLACK && !cfg.hasRavens) return true;
-            return false;
-        };
+        const weights = [0.35, 0.23999999463558197, 0.14000000059604645, 0.15000000596046448, 1.0];
+        const fc = fcOf(field);
+        const enabled = fc && fc.mLevelConfig && fc.mLevelConfig.chickTypeEnabled;
         for (let tries = 0; tries <= 0x1e; tries++) {
-            let r = Math.floor(Math.random() * 0x7fffffff) / 2147483647.0;
-            let chickType = 0;
+            let r = mtRand() / 2147483647.0;
+            let t = 0;
             for (let i = 0; i < 5; i++) {
                 r -= weights[i];
-                if (r <= 0) { chickType = i; break; }
+                if (r <= 0) { t = i; break; }
             }
-            const eggType = CHICK_TO_EGG[chickType];
-            if (!blocked(eggType)) return eggType;
+            if (enabled && !enabled[t]) continue;
+            if (t !== ChickType.BROODY) return CHICK_TO_EGG[t];
+            if (!field || field.mBroodyAllowed !== false) return CHICK_TO_EGG[t];
         }
-        return EggType.WHITE;
+        return CHICK_TO_EGG[0];
     }
 }
 
-export class BroodyChick extends Chick {
-    // Sexy::BroodyChick vtable 0x004dc924. Alloc 0x80 (FUN_00403ec2:4661-4677).
-    //   +0x70 smart-ptr to target egg, +0x74 brooding flag,
-    //   +0x78 brood start tick, +0x7C tick counter (FUN_00403de4:4474).
-    // Original brood sequence (FUN_00402369/FUN_0040241b/FUN_004024b1/
-    // FUN_0040258b, rwg_functions.c:2102-2340): walk to egg (action 11,
-    // target y + 0.5), sit (action 6, 70), on nest (action 7, 400, repeated
-    // while +0x74 set and the egg is still waiting), get up (action 8, 70).
-    // Hatch timing lives on the egg (egg+0x1c, set to 0.001 at get-up);
-    // the JS 3000-tick brood duration below is UNKNOWN — not found in decompiled.
+// BroodyChick — vtable 004dc924, alloc 0x80 (FUN_00403ec2:4661-4677):
+//   +0x70/+0x74 smart pointer to the target egg, +0x78 tick counter
+//   (++ every update, FUN_00403de4), +0x7c tick at which it sat down.
+// The egg is assigned by the world (Field._assignBroodEggs = FUN_0040412c).
+export class BroodyChick extends SimpleChick {
     constructor(x, y) {
-        super(ChickType.BROODY, x, y);
-        this.mBroodingEgg = null;       // +0x70
-        this.mBroodActive = false;      // +0x74
-        this.mBroodProgress = 0;
-        this.mBroodDuration = 3000;     // UNKNOWN — not found in decompiled
-        this.mWalkingToEgg = false;
-        this._broodTicks = 0;           // +0x7c - +0x78
+        super(ChickType.BROODY, x, y, false);
+        this.mBroodingEgg = null;   // +0x74
+        this.mTick = 0;             // +0x78
+        this.mSitTick = 0;          // +0x7c
     }
 
-    canLayEggs() { return false; }
+    isBroody() { return !!this.mBroodingEgg; }
+    get mBroodActive() { return this.mStateO === S_BROOD; }
 
-    isBroody() { return this.mBroodActive && !!this.mBroodingEgg; }
-
-    // vt[1] FUN_00403de4 (rwg_functions.c:4471): +0x7c++ then FUN_0040344c.
+    // vt[1] FUN_00403de4: +0x78++ then FUN_0040344c.
     update(field) {
-        super.update(field);
-        if (!field || !this.mIsAlive || this.mIsCarried) return;
+        this.mTick++;
+        return super.update(field);
+    }
 
-        if (this.mBroodActive && this.mBroodingEgg) {
-            if (!this.mBroodingEgg.mIsAlive || this.mBroodingEgg.mCollected) {
-                this._endBrooding();
-                return;
-            }
-            this._broodTicks++;
-            // Sit (action 6, 70 ticks — PTR_004d01f0[6]) → on nest (action 7).
-            if (this.mState === ChickState.BROODING && this.mBroodProgress >= 70) {
-                this.setState(ChickState.BROOD_IDLE);
-            }
-            this.mX = this.mBroodingEgg.mX;
-            this.mY = this.mBroodingEgg.mY;
-            // Sick slow-down: UNKNOWN — not found in decompiled (L31 text).
-            if (this.mIsSick) {
-                if (this.mAnimTimer % 2 === 0) this.mBroodProgress++;
+    // vt[5] FUN_00403dec: base && state != 0x14.
+    isActive() { return super.isActive() && this.mStateO !== S_BROOD; }
+    // vt[6] FUN_00402700: hungry || state == 0x14.
+    inHurry() { return this._updateHungry() || this.mStateO === S_BROOD; }
+
+    // FUN_004023c6 (asm 0x4023c6): drop the egg target when the egg is busy
+    // (FUN_00406ab6: hatch progress >= 1.0) — JS also when it left the field.
+    _validateEgg() {
+        const e = this.mBroodingEgg;
+        if (e && (!e.mIsAlive || e.mCollected || e.mHatchProgress >= 1.0)) {
+            if (e._claimedBy === this) e._claimedBy = null;
+            this.mBroodingEgg = null;
+        }
+    }
+
+    // Free for a new egg (FUN_0040412c:4924-4935): not hungry, not sick,
+    // fed (tier >= 1), state != 0x14 and no egg target.
+    isFreeForEgg() {
+        if (this._updateHungry() || this.mIsSick) return false;
+        if (this.getFoodTier() < 1 || this.mStateO === S_BROOD) return false;
+        this._validateEgg();
+        return !this.mBroodingEgg && this.mIsAlive && !this.mIsCarried;
+    }
+
+    // vt[7] FUN_00402369
+    _decide(field) {
+        super._decide(field);
+        this._validateEgg();
+        if (this.mStateO === S_NORMAL && this.mBroodingEgg) this.mStateO = S_BROOD;
+    }
+
+    // vt[8] FUN_0040241b
+    _start(field) {
+        if (this.mStateO !== S_BROOD) { super._start(field); return; }
+        this._validateEgg();
+        const e = this.mBroodingEgg;
+        if (!e) { this._endAction(); return; }
+        // target = egg pos, y + 0.5 (_DAT_004e90c8); action 11 (60).
+        this.mTarget = [e.mFieldX, e.mFieldY + 0.5];
+        this._setActionLen(A_WALK, 60.0);
+    }
+
+    // vt[9] FUN_004024b1: on arrival sit down (action 6, 70 _DAT_004e9250);
+    // the first sit starts the egg: +0x20 = 1, +0x18 =
+    // ftol(_DAT_004fc3b4 * 1000.0 + 0.5).
+    _onArrive(field) {
+        if (this.mStateO !== S_BROOD) { this._endAction(); return; }
+        this._validateEgg();
+        const e = this.mBroodingEgg;
+        if (!e) { this._endAction(); return; }
+        this._setActionLen(A_SIT, 70.0);
+        if (!e.mBroodStarted) {
+            e.mBroodStarted = true;
+            e.mBroodCountdown = Math.trunc((e.mHatchSlowdown || 1.0) * 1000.0 + 0.5);
+        }
+    }
+
+    // vt[10] FUN_0040258b (rwg_functions.c:2257)
+    _onActionEnd(field) {
+        const e = this.mBroodingEgg;
+        if (this.mAction === A_SIT) {
+            this.mSitTick = this.mTick;
+            this._setActionLen(A_NEST, 400.0);      // _DAT_004e939c
+        } else if (this.mAction === A_NEST) {
+            if (e && !(e.mHatchProgress >= 1.0) && e.mBroodCountdown !== 0) {
+                this._setActionLen(A_NEST, 400.0);
             } else {
-                this.mBroodProgress++;
+                this._setActionLen(A_GETUP, 70.0);  // _DAT_004e9250
             }
-            if (this.mBroodingEgg.mBroodProgress !== undefined) {
-                this.mBroodingEgg.mBroodProgress = this.mBroodProgress / this.mBroodDuration;
-            }
-            if (this.mBroodProgress >= this.mBroodDuration) {
-                const ex = this.mBroodingEgg.mX;
-                const ey = this.mBroodingEgg.mY;
-                const eggType = this.mBroodingEgg.mEggType;
-                this.mBroodingEgg.mIsAlive = false;
-                this.mBroodingEgg.mCollected = true;
-                if (field.hatchEgg) field.hatchEgg(this.mBroodingEgg, ex, ey);
-                else {
-                    let chickType;
-                    switch (eggType) {
-                        case EggType.WHITE: chickType = ChickType.LAYER; break;
-                        case EggType.BLUE: chickType = ChickType.MAGIC; break;
-                        case EggType.RED: chickType = ChickType.HOLY; break;
-                        case EggType.BLACK: chickType = ChickType.ROOSTER; break;
-                        case EggType.GOLDEN: chickType = ChickType.BROODY; break;
-                        default: chickType = ChickType.LAYER;
+        } else if (this.mAction === A_GETUP) {
+            // target cleared (asm 0x4025d3-0x4025f9)
+            this.mBroodingEgg = null;
+            if (e) {
+                if (e._claimedBy === this) e._claimedBy = null;
+                if (!(e.mHatchProgress >= 1.0)) {
+                    if (e.mBroodStarted && e.mHatchProgress === 0.0) {
+                        e.mHatchProgress = 0.0010000000474974513;   // _DAT_004e9234
                     }
-                    field.addChick(createChick(chickType, ex, ey));
+                    // age += (+0x7c - +0x78), at least 0x5db
+                    this.mAge = this.mAge + (this.mSitTick - this.mTick);
+                    if (this.mAge < 0x5db) this.mAge = 0x5db;
                 }
-                // SOUND_EGG_BROODED (DAT_004fedb4) trigger site: UNKNOWN in
-                // decompiled; kept at hatch.
-                if (SOUNDS.SOUND_EGG_BROODED) SOUNDS.SOUND_EGG_BROODED.play();
-                // FUN_0040258b:2318-2323 — at get-up the broody's age gets
-                // the brooding time back: age += (+0x7c - +0x78), min 0x5db.
-                this.mAge += this._broodTicks;
-                if (this.mAge < 0x5db) this.mAge = 0x5db;
-                this._endBrooding();
             }
-            return;
-        }
-
-        if (this.mWalkingToEgg && this.mBroodingEgg) {
-            if (!this.mBroodingEgg.mIsAlive) {
-                this.mBroodingEgg._claimedBy = null;
-                this.mBroodingEgg = null;
-                this.mWalkingToEgg = false;
-                this._chooseNextAction(field);
-                return;
-            }
-            this.mTargetX = this.mBroodingEgg.mX;
-            this.mTargetY = this.mBroodingEgg.mY;
-            const dx = this.mBroodingEgg.mX - this.mX;
-            const dy = this.mBroodingEgg.mY - this.mY;
-            const d2 = dx * dx + dy * dy;
-            if (d2 < 144) {
-                // vt[9] FUN_004024b1 (rwg_functions.c:2216): on arrival
-                // action 6 (sit, 70).
-                this.mBroodActive = true;
-                this.mBroodProgress = 0;
-                this._broodTicks = 0;
-                this.mWalkingToEgg = false;
-                this.setState(ChickState.BROODING);
-                if (this.mBroodingEgg.mBrooding !== undefined) {
-                    this.mBroodingEgg.mBrooding = true;
-                }
-            } else if (this.mState !== ChickState.WALK) {
-                this.setState(ChickState.WALK);
-            }
-            return;
-        }
-
-        // Claiming an egg: the original target is set by the egg-box
-        // (smart-ptr +0x70); auto-claim of the nearest waiting egg is a JS
-        // approximation — UNKNOWN.
-        if (!this.mIsAdult) return;
-        if (this.mIsSick) return;
-        let nearest = null;
-        let nearestD2 = Infinity;
-        for (const g of field.mGems) {
-            if (g.mType !== 4 /* EGG */ || !g.mIsAlive || !g.mBrooding || g._claimedBy) continue;
-            const dx = g.mX - this.mX;
-            const dy = g.mY - this.mY;
-            const d2 = dx * dx + dy * dy;
-            if (d2 < nearestD2) {
-                nearestD2 = d2;
-                nearest = g;
-            }
-        }
-        if (nearest) {
-            this.mBroodingEgg = nearest;
-            this.mWalkingToEgg = true;
-            nearest._claimedBy = this;
-            this.mTargetX = nearest.mX;
-            this.mTargetY = nearest.mY;
-            this._targetSeeds = null;
-            this._wanderTarget = null;
-            this.setState(ChickState.WALK);
         }
     }
 
-    // Called by FieldController.startEggBrooding when the player clicks an egg box
-    startBrooding(egg) {
-        if (this.mBroodingEgg && this.mBroodingEgg !== egg) return;
-        this.mBroodingEgg = egg;
-        this.mWalkingToEgg = true;
-        this.mBroodProgress = 0;
-        this.mBroodActive = false;
-        this._wanderTarget = null;
-        this.setState(ChickState.WALK);
-        if (egg) {
-            egg._claimedBy = this;
-            this.mTargetX = egg.mX;
-            this.mTargetY = egg.mY;
-        }
-        this._targetSeeds = null;
-    }
-
+    // FUN_00404b3b (rwg_functions.c:5653): the player cancelled this egg:
+    // clear the target; sitting (action 6/7) → get up (action 8, 70), else
+    // vt[7] + vt[8]. (Called by FieldController / ShopDialogs.)
     _endBrooding() {
-        if (this.mBroodingEgg) {
-            this.mBroodingEgg._claimedBy = null;
-            if (this.mBroodingEgg.mBroodProgress !== undefined) {
-                this.mBroodingEgg.mBroodProgress = 0;
-            }
-        }
+        const e = this.mBroodingEgg;
+        if (!e) return;
+        if (e._claimedBy === this) e._claimedBy = null;
+        if (this.mAction === A_GETUP) return;
         this.mBroodingEgg = null;
-        this.mBroodActive = false;
-        this.mBroodProgress = 0;
-        this._broodTicks = 0;
-        this.mWalkingToEgg = false;
-        if (this.mState === ChickState.BROOD_IDLE || this.mState === ChickState.BROODING) {
-            this.setState(ChickState.IDLE);
+        if (this.mAction === A_NEST || this.mAction === A_SIT) {
+            this._setActionLen(A_GETUP, 70.0);
+        } else if (this.mStateO !== S_DEAD && this.mStateO !== S_HELD) {
+            this._decide(this._field);
+            this._start(this._field);
         }
     }
 
-    // While walking to its egg the broody must not re-decide (state 0x14).
-    _chooseNextAction(field) {
-        if (this.mWalkingToEgg && this.mBroodingEgg) {
-            this.setState(ChickState.WALK);
-            return;
-        }
-        super._chooseNextAction(field);
+    // Assignment by FUN_0040412c (FUN_0040271b into +0x70).
+    startBrooding(egg) {
+        this.mBroodingEgg = egg;
+        if (egg) egg._claimedBy = this;
     }
 }
 
-// RoosterChick — vtable 004dc9b4, built by FUN_00403ec2:4679-4691. No
-// overrides besides the destructor. Raven protection is global
-// (FUN_0040134a:446-461, handled in FieldController).
-export class RoosterChick extends Chick {
-    constructor(x, y) {
-        super(ChickType.ROOSTER, x, y);
-    }
+// RoosterChick — vtable 004dc9b4, FUN_00403ec2 asm 0x403f60-0x403f82.
+// No overrides besides the destructor.
+export class RoosterChick extends SimpleChick {
+    constructor(x, y) { super(ChickType.ROOSTER, x, y, false); }
 }
 
-// MagicChick — vtable 004dd62c, built by FUN_00403ec2:4693-4707 with
-// FUN_004032ca(pos, 0) (lay cooldown -1: never lays) and +0x68/+0x6c = 0.
+// MagicChick — vtable 004dd62c, FUN_00403ec2 asm 0x403f29-0x403f59:
+// FUN_004032ca(pos, 0) (never lays), +0x68/+0x6c = 0.
 export class MagicChick extends Chick {
-    constructor(x, y) {
-        super(ChickType.MAGIC, x, y);
-        this.mTargetMagicEgg = null;       // +0x68/+0x6c target egg
-        // Magic chicks never eat seeds (vt[11..13] are egg versions).
-        this.mFoodSeeker = false;
-    }
+    constructor(x, y) { super(ChickType.MAGIC, x, y, false); }
 
-    // vt[3] = FUN_0040e36f → 0.
-    canLayEggs() { return false; }
-
-    // vt[2] = FUN_0040e36f → 0: never shows the hungry icon.
+    // vt[2] = FUN_0040e36f → 0.
     showsHungryIcon() { return false; }
-
-    // vt[15] FUN_0040e372 (rwg_functions.c:17603) → 2 (DiamondBlue).
+    // vt[15] FUN_0040e372 → 2 (DiamondBlue).
     getCoinType() { return 2; }
 
-    // vt[13] FUN_0040e51f (rwg_functions.c:17749): if the egg list
-    // (world+0x24) has no un-picked egg (FUN_004077fa) → FUN_004039f5; else
-    // walk (action 11, 60) to the target chosen by FUN_004071b2.
+    // vt[13] FUN_0040e51f (asm 0x40e51f): no egg with +0x20 clear
+    // (FUN_004077fa) → FUN_004039f5; else action 11 (60) toward the egg chosen
+    // (and claimed) by FUN_004071b2.
     _seekFood(field) {
-        const egg = this._pickEgg(field);
-        if (!egg) {
-            this.mTargetMagicEgg = null;
+        if (!field || !field.getFreeEggCount || field.getFreeEggCount() === 0) {
             this._digOrIdle();
             return;
         }
-        this.mTargetMagicEgg = egg;
-        egg._magicClaim = this;
-        this.mTargetX = egg.mX;
-        this.mTargetY = egg.mY;
-        this._targetSeeds = null;
-        this.setState(ChickState.WALK);
+        this._setActionLen(A_WALK, 60.0);
+        this.mFoodTarget = field.claimNearestEgg ? field.claimNearestEgg(this) : null;
     }
 
-    // FUN_004071b2 (rwg_functions.c:8826): nearest egg by Chebyshev
-    // distance (FUN_00403c97) within 1e6 (_DAT_004e9280), not picked up
-    // (+0x20), not reserved by another chick; eggs of type 3/4 (Magic/Holy
-    // → BLUE/RED) are taken only if no other egg was found.
-    // JS also skips eggs committed to brooding (FUN_00406ab6 busy test is on
-    // egg+0x1c, whose JS equivalent is UNKNOWN).
-    _pickEgg(field) {
-        if (!field || !field.mGems) return null;
-        let best = null;
-        let bestD = 1000000;
-        for (const g of field.mGems) {
-            if (g.mType !== 4 /* EGG */ || !g.mIsAlive || g.mCollected) continue;
-            if (g.mBrooding) continue;
-            if (g._magicClaim && g._magicClaim !== this && g._magicClaim.mIsAlive
-                && g._magicClaim.mTargetMagicEgg === g) continue;
-            const d = Math.max(Math.abs(this.mX - g.mX), Math.abs(this.mY - g.mY));
-            if (d >= bestD) continue;
-            const special = g.mEggType === EggType.BLUE || g.mEggType === EggType.RED;
-            if (!special) {
-                bestD = d;
-                best = g;
-            } else if (!best) {
-                best = g;   // bestD unchanged (FUN_004071b2:8866-8869)
-            }
-        }
-        return best;
-    }
-
-    // Walking to the target egg: vt[12] FUN_0040e44d (rwg_functions.c:17686)
-    // — on arrival action 10 (peck, 30).
-    _updateWalk(field) {
-        if (this.mTargetMagicEgg) {
-            const egg = this.mTargetMagicEgg;
-            if (!egg.mIsAlive || egg.mCollected || egg.mBrooding) {
-                this.mTargetMagicEgg = null;
-                this._chooseNextAction(field);
-                return;
-            }
-            this.mTargetX = egg.mX;
-            this.mTargetY = egg.mY;
-            const dx = egg.mX - this.mX;
-            const dy = egg.mY - this.mY;
-            if (dx * dx + dy * dy < 25) {
-                this.setState(ChickState.PECK);
-                return;
-            }
-        }
-        super._updateWalk(field);
-    }
-
-    // vt[11] FUN_0040e392 (rwg_functions.c:17636) at the end of the peck:
-    // age (+0x1c) += cal; food (+0x34) += cal*3/2, capped at FUN_004058af;
-    // the egg is removed (FUN_004077ae). `cal` is read from
-    // `extraout_ECX + 0x14` whose object is ambiguous in the decompile —
-    // UNKNOWN; JS keeps its earlier value 36. Sound: FUN_004077ae plays a
-    // one-shot whose DAT is not visible — SOUND_EAT_EGG kept (UNKNOWN).
-    _updatePeck(field) {
-        if (!this.mTargetMagicEgg) {
-            super._updatePeck(field);
+    // vt[12] FUN_0040e44d (asm 0x40e44d): egg present and not busy → re-claim
+    // (FUN_004072bc), walk to the egg; on arrival action 10 (30). Otherwise
+    // clear the target and end the walk.
+    _walkToFood(field) {
+        const e = this.mFoodTarget;
+        if (!e || !e.mIsAlive || e.mCollected || e.mHatchProgress >= 1.0) {
+            this.mFoodTarget = null;
+            this._endAction();
             return;
         }
-        if (this.mStateTimer < DUR_PECK) return;
-        const egg = this.mTargetMagicEgg;
-        this.mTargetMagicEgg = null;
-        if (egg.mIsAlive && !egg.mCollected && !egg.mBrooding) {
-            egg.mIsAlive = false;
-            egg.mCollected = true;
-            const cal = 36; // UNKNOWN — not found in decompiled
+        e._magicClaim = this;
+        if (!this._step([e.mFieldX, e.mFieldY])) {
+            this._setActionLen(A_PECK, 30.0);
+        }
+    }
+
+    // vt[11] FUN_0040e392 (asm 0x40e392): egg present and not busy:
+    // age += egg+0x14 (4000); food += egg+0x14 * 3 / 2, capped at
+    // FUN_004058af; egg removed by FUN_004077ae, which plays DAT_004feda8
+    // SOUND_EAT_EGG (asm 0x4077c3). Target cleared.
+    _eatEnd(field) {
+        const e = this.mFoodTarget;
+        if (e && e.mIsAlive && !e.mCollected && !(e.mHatchProgress >= 1.0)) {
+            const cal = e.mBroodDuration;
             this.mAge += cal;
-            this.mFoodCounter += Math.floor((cal * 3) / 2);
-            const cap = Math.floor(200 * this.mScale);
+            this.mFoodCounter += Math.trunc((cal * 3) / 2);
+            const cap = foodCap(this.mLevel);
             if (this.mFoodCounter >= cap) this.mFoodCounter = cap;
+            if (field && field.removeEgg) field.removeEgg(e);
+            else { e.mIsAlive = false; e.mCollected = true; }
             if (SOUNDS.SOUND_EAT_EGG) SOUNDS.SOUND_EAT_EGG.play();
         }
-        this._chooseNextAction(field);
+        this.mFoodTarget = null;
     }
 }
 
 // HolyChick — vtable 004dd11c, alloc 0x74, +0x70 spell cooldown = 6000
-// (FUN_00403ec2:4709-4726).
-export class HolyChick extends Chick {
+// (asm 0x403f1d).
+export class HolyChick extends SimpleChick {
     constructor(x, y) {
-        super(ChickType.HOLY, x, y);
-        this.mSpellCooldown = 6000; // +0x70, FUN_00403ec2:4722
-        // Spell effect drawn at the converted chick (world+0x38 list entry,
-        // 16-byte {timer, x, y, z} built in FUN_00420e2e:40570-40577).
+        super(ChickType.HOLY, x, y, false);
+        this.mSpellCooldown = 6000; // +0x70
+        // Spell effect (world+0x38 list entry {timer, x, y, z}, FUN_00420e2e
+        // asm 0x420eeb-0x420f41).
         this.mSpellFx = null;
         this.mSpellFlashTimer = 0;
     }
 
-    // vt[1] FUN_0040d912 (rwg_functions.c:16790): +0x70-- (if > 0), then
-    // FUN_0040344c.
+    // vt[1] FUN_0040d912: +0x70-- (if > 0), then FUN_0040344c.
     update(field) {
         if (this.mSpellCooldown > 0) this.mSpellCooldown--;
-        super.update(field);
+        const r = super.update(field);
         if (this.mSpellFx) {
             this.mSpellFx.t++;
-            // Effect lifetime: UNKNOWN — not found in decompiled (JS 30 ticks).
+            // Effect timer advance/lifetime: UNKNOWN — not found in
+            // decompiled (JS 30 ticks).
             if (this.mSpellFx.t >= 30) this.mSpellFx = null;
         }
         this.mSpellFlashTimer = this.mSpellFx ? 30 - this.mSpellFx.t : 0;
+        return r;
     }
 
-    canLayEggs() { return false; }
-
-    // vt[8] FUN_0040d8b1 (rwg_functions.c:16759): if state == 4 and the
-    // cooldown is 0 and FUN_00420f72 finds a target → cooldown = 6000,
-    // action 12 (100). Otherwise FUN_0040386a.
-    _chooseNextAction(field) {
-        if (!this.mIsSick && this.mIsAdult && this.mSpellCooldown === 0
-            && this._pickSpellTarget(field)) {
-            this.mSpellCooldown = 6000;
-            this._wanderTarget = null;
-            this.setState(ChickState.HOLY_SPELL);
+    // vt[8] FUN_0040d8b1 (asm 0x40d8b1): state 4, cooldown 0 and a target
+    // (FUN_00420f72) → cooldown 6000, action 12 (100). Else FUN_0040386a.
+    _start(field) {
+        if (this.mStateO === S_NORMAL && this.mSpellCooldown === 0 && this._pickSpellTarget(field)) {
+            this.mSpellCooldown = 0x1770;
+            this._setActionLen(A_SPELL, 100.0);     // _DAT_004e9398
             return;
         }
-        super._chooseNextAction(field);
+        super._start(field);
     }
 
-    // Kept for API compatibility: force a cast attempt now.
-    castSpell(field) {
-        if (this.mSpellCooldown > 0 || !this.mIsAdult) return false;
-        if (!this._pickSpellTarget(field)) return false;
-        this.mSpellCooldown = 6000;
-        this.setState(ChickState.HOLY_SPELL);
-        return true;
-    }
-
-    // FUN_00420f72 (rwg_functions.c:40611): collect chicks with type 3
-    // (Magic) that are fed (FUN_00403a3e != 0), active (vt[5]) and on the
-    // field (!FUN_00403bbf); stop once more than 10 are collected; return a
-    // random one (rand % count), or null.
+    // FUN_00420f72 (rwg_functions.c:40611): Magic (type 3) chicks that are
+    // fed (FUN_00403a3e != 0), active (vt[5]) and on the field; stop once
+    // more than 10 are collected; random one.
     _pickSpellTarget(field) {
         if (!field || !field.mChickens) return null;
         const list = [];
         for (const c of field.mChickens) {
             if (c.mType !== ChickType.MAGIC) continue;
-            if (!c.mIsAlive || c.mState === ChickState.DEATH) continue;
-            if (!c.mIsAdult || c.mIsCarried) continue;
-            if (!c._isFed()) continue;
+            if (!c.isActive() || c._offField() || c.getFoodTier() === 0) continue;
             list.push(c);
             if (list.length > 10) break;
         }
         if (list.length === 0) return null;
-        return list[Math.floor(Math.random() * 0x7fffffff) % list.length];
+        return list[crtRand() % list.length];
     }
 
-    // vt[10] FUN_0040d922 (rwg_functions.c:16808) → FUN_00420e2e
-    // (rwg_functions.c:40526) at the end of action 12: pick a target again
-    // (FUN_00420f72); spawn a gem at its position (FUN_0040c4d9 — red
-    // diamond, matching SOUND_CHICK_TO_RED_DIAMOND; the gem-type argument is
-    // not visible in the decompile), kill it (FUN_0040342b, no death
-    // sound), play DAT_004fed70 SOUND_CHICK_TO_RED_DIAMOND and add the
-    // IMAGE_SPELL effect at its position.
-    _onSpellEnd(field) {
+    // vt[10] FUN_0040d922: action 12 → FUN_00420e2e (asm 0x420e2e):
+    // target = FUN_00420f72; value = 2*FUN_00403bd6(target), at least 2000;
+    // red diamond (FUN_0040c4d9 type 3, value) at the target position; kill
+    // it (FUN_0040342b, no death sound); SOUND_CHICK_TO_RED_DIAMOND
+    // (DAT_004fed70); spell effect at its position.
+    _onActionEnd(field) {
+        if (this.mAction !== A_SPELL) return;
         const target = this._pickSpellTarget(field);
         if (!target) return;
+        let value = 2000;
+        if (target.getSellPrice() * 2 > 2000) value = target.getSellPrice() * 2;
         const tx = target.mX, ty = target.mY;
-        if (field.spawnGem) field.spawnGem(3 /* DIAMOND_RED */, tx, ty - 20);
+        if (field.spawnGem) field.spawnGem(3 /* DIAMOND_RED */, tx, ty - 20, ty, value);
         target.die(false);
         if (SOUNDS.SOUND_CHICK_TO_RED_DIAMOND) SOUNDS.SOUND_CHICK_TO_RED_DIAMOND.play();
         this.mSpellFx = { x: tx, y: ty, t: 0 };
     }
 
+    // Kept for API compatibility: force a cast attempt now.
+    castSpell(field) {
+        if (this.mSpellCooldown > 0 || !this._pickSpellTarget(field)) return false;
+        this.mSpellCooldown = 0x1770;
+        this._setActionLen(A_SPELL, 100.0);
+        return true;
+    }
+
     // Spell effect — FUN_0040a3d6:13575-13602: IMAGE_SPELL (DAT_0050000c)
-    // drawn centred on the effect point (x - h/2, y - h/2), frame clamped to
-    // numFrames-1. Frame-advance rate: UNKNOWN (JS spreads 8 frames over 30 ticks).
-    draw(g) {
-        super.draw(g);
+    // at (x - h/2, y - h/2), frame clamped to numFrames-1.
+    drawSpellFx(g) {
         const fx = this.mSpellFx;
-        if (fx) {
-            const img = IMAGES.IMAGE_SPELL;
-            if (img && img.img) {
-                const fw = img.getCelWidth ? img.getCelWidth() : img.mWidth;
-                const fh = img.getCelHeight ? img.getCelHeight() : img.mHeight;
-                const numFrames = (img.mNumCols || 1) * (img.mNumRows || 1);
-                const frame = Math.min(numFrames - 1, Math.floor(fx.t * numFrames / 30));
-                const cols = img.mNumCols || 1;
-                const sx = (frame % cols) * fw;
-                const sy = Math.floor(frame / cols) * fh;
-                g.ctx.drawImage(img.img, sx, sy, fw, fh,
-                    fx.x - fh / 2, fx.y - fh / 2, fw, fh);
-            }
-        }
+        if (!fx) return;
+        const img = IMAGES.IMAGE_SPELL;
+        if (!img || !img.img) return;
+        const cols = img.mNumCols || 1;
+        const h = img.mHeight;
+        const frame = Math.min(cols - 1, Math.floor(fx.t * cols / 30));
+        drawWithParams(g, img, fx.x - Math.trunc(h / 2), fx.y - Math.trunc(h / 2), { frame });
     }
 }
 
@@ -1220,6 +1186,6 @@ export function createChick(type, x, y) {
         case ChickType.ROOSTER: return new RoosterChick(x, y);
         case ChickType.MAGIC:   return new MagicChick(x, y);
         case ChickType.HOLY:    return new HolyChick(x, y);
-        default:                return new SimpleChick(x, y);
+        default:                return new LayerChick(x, y);
     }
 }

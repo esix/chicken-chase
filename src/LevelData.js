@@ -20,9 +20,12 @@
 // field a case does not write keeps its constructor / FUN_00422c01 default —
 // there is NO inheritance between levels):
 //   +0x0c money obj  (ctor 7528-7535, +8 = 0xffffffff at 7533): +0 byte flag, +4 money, +8 cap (-1)
-//   +0x10 raven ctrl (FUN_00401202:284): +0x0c wolves/wave, +0x10 ?, +0x14
-//                    ravens/wave, +0x18 ?, +0x1c ravens at once, +0x34 float,
-//                    +0x38 delay (cs), +0x3c fixed-chance flag, +0x40 float
+//   +0x10 raven ctrl (FUN_00401202:284): +0x0c wolves/wave, +0x10 wolf HP
+//                    (asm 0x4015c7 → FUN_00410299 arg3 → FUN_00424be6 +0x38),
+//                    +0x14 ravens/wave, +0x18 raven HP (asm 0x40128f → raven
+//                    +0x44), +0x1c ravens at once (FUN_004014eb:597), +0x34
+//                    float, +0x38 delay (cs), +0x3c fixed-chance flag, +0x40
+//                    raven speed (asm 0x401288 → raven +0x4c)
 //   +0x14 field      (FUN_00404022:4765): +0x24c 5-bit chick-type bitset (all
 //                    set by ctor loop 0x4040b4-0x4040dd), +0x264, +0x26c,
 //                    +0x270 broody-egg cap (-1)
@@ -70,19 +73,43 @@ export const TOTAL_LEVELS = 50; // switch cases 1..0x32 (FUN_00422d10:42993)
 const TYPE_KEYS = ['layer', 'broody', 'rooster', 'magic', 'holy'];
 
 // Special-shop item ids unlocked by FUN_00423d75 (loop i = 0..N inclusive,
-// 43895-43907; asm 0x423d75-0x423de8). The list each id is pushed to is from
-// the asm; the item NAMES are taken from the level description that
-// announces each one (FUN_0042399c) — the item objects themselves were not
-// traced.
-//   0 → list (+0x1c)+0xc  "upgrade to your food"        (L6 text, 43579)
-//   1 → list (+0x44)+0xc  "mouse"                       (L9 text, 43601)
-//   2 → list (+0x1c)+0xc  "seeds can now be upgraded"   (L12 text, 43611)
-//   3 → list (+0x40)+4    "weapon upgrade"              (L15 text, 43620)
-//   4 → list (+0x44)+0xc  "elephant"                    (L17 text, 43625)
-//   5 → list (+0x1c)+0xc  "feed can be upgraded again"  (L19 text, 43635)
-//   6 → list (+0x1c)+0xc  "Another food upgrade"        (L24 text, 43650)
-//   7 → list (+0x40)+4    "new weapon upgrade"          (L27 text, 43659)
-export const SHOP_ITEMS = ['food1', 'mouse', 'seeds', 'weapon1', 'elephant', 'feed2', 'food3', 'weapon2'];
+// 43895-43907; asm 0x423d75-0x423de8) or pushed directly (L6/L7 FUN_0040ca85).
+// Identity of every id is fixed by the item image table DAT_005005d4 filled
+// at rwg_functions.c:31518-31538 in id order: "SEEDS_COUNT1", "MOUSE",
+// "SEEDS_CALORIES1", "GUN_AREA", "ELEPHANT", "SEEDS_COUNT2",
+// "SEEDS_CALORIES2", "GUN_POWER" (IMAGE_OFFENSIVE_<name>), and by the effect
+// of buying it:
+//   FUN_0041c3c6 (34581): seed list — 2 → seed ctl +0x1c = 1, 6 → +0x1c = 2,
+//                         0 → +0x20 = 1, 5 → +0x20 = 2 (+0x20 = index into
+//                         DAT_0050034c seeds-per-click {5,9,12}).
+//   FUN_0041ebd3 (38003): weapon list — 3 → (app+0x40)+0x10 = 1 (gun area),
+//                         7 → (app+0x40)+0x11 = 1 (gun power).
+//   FUN_00410223 (19917): pet list — 1 → FUN_00410299 type 0 (mouse),
+//                         4 → type 1 (elephant) (asm 0x410273-0x41028b).
+// The list each id lives in (asm of FUN_00423d75): 0/2/5/6 → (app+0x1c)+0xc,
+// 3/7 → (app+0x40)+4, 1/4 → (app+0x44)+0xc.
+export const SHOP_ITEMS = ['SEEDS_COUNT1', 'MOUSE', 'SEEDS_CALORIES1', 'GUN_AREA',
+    'ELEPHANT', 'SEEDS_COUNT2', 'SEEDS_CALORIES2', 'GUN_POWER'];
+// Item names: std::string array at 0x500480 (+id*0x1c), read by FUN_0041aeaf
+// (asm 0x41af79-0x41af7f); descriptions: std::string array DAT_005003a0
+// (+id*0x1c), drawn per row by FUN_00420758:40142. Its initializer is
+// not reachable in the decompiled code or the disassembly (no code references
+// the literals), so the names below are the .rdata literals at
+// 0x4dd930-0x4dd99c matched to ids by their description literals at
+// 0x4dd9ac-0x4ddaf0 (e.g. "Increases damage area of the weapon." = GUN_AREA).
+// Item 5 has no literal of its own: UNKNOWN — not found in decompiled
+// (assumed to reuse the merged "Seed upgrade" literal).
+// list: which original list the id belongs to (see above).
+export const SHOP_ITEM_LIST = [
+    { id: 0, list: 'seed',   name: 'Seed upgrade',            desc: 'Throw more seeds with each click.' },
+    { id: 1, list: 'pet',    name: 'Mouse',                   desc: 'Collects coins and diamonds in the field.' },
+    { id: 2, list: 'seed',   name: 'Longer-lasting seeds',    desc: 'Seeds have more sustenance so you don\u2019t have to feed the chickens as often.' },
+    { id: 3, list: 'weapon', name: 'Weapon upgrade',          desc: 'Increases damage area of the weapon.' },
+    { id: 4, list: 'pet',    name: 'Elephant',                desc: 'Protects chickens from ravens and wolves.' },
+    { id: 5, list: 'seed',   name: 'Seed upgrade',            desc: 'Throw the maximum amount of seeds with each click.' },
+    { id: 6, list: 'seed',   name: 'Longest-lasting seeds',   desc: 'Seeds have the most sustenance available.' },
+    { id: 7, list: 'weapon', name: 'Weapon strength upgrade', desc: 'Doubles weapon power.' },
+];
 
 // ---------------------------------------------------------------------------
 // Raw per-level data, transcribed from FUN_00422d10 (asm 0x422d64-0x4238c3).
@@ -390,8 +417,11 @@ function isEarlyLevel(level) {
 // the elephant pet), +0x0c = wolves per wave (FUN_00401543 plays SOUND_WOLF
 // DAT_004feda0 and spawns +0x0c pets of the wolf factory FUN_00410299),
 // +0x3c != 0 → raven chance fixed at _DAT_004e93c0 = 0.02f instead of the
-// rooster-count based value (FUN_0040134a:466-467). +0x10, +0x18, +0x1c,
-// +0x34, +0x40: exact meaning UNKNOWN (raw values kept).
+// rooster-count based value (FUN_0040134a:466-467). +0x10 = wolf HP (asm
+// 0x4015c7, FUN_00424be6 0x424c3f), +0x18 = raven HP (asm 0x40128f),
+// +0x1c = ravens alive at once (FUN_004014eb, FUN_00401427), +0x40 = raven
+// speed factor (asm 0x401288). +0x34: used only when +0x38 == 0 (attack
+// chance +0x34*0.1*2, FUN_0040134a:458-461).
 function ravenDefaults(level) {
     let perWave = 8;
     let wolvesPerWave = 1;
@@ -437,8 +467,8 @@ export function getLevelConfig(level) {
     if (level >= 30) startMoney = 400;
     if (isEarlyLevel(level)) startMoney += 100;
     // Money obj +8: -1 from ctor (7533). Cases 0x1e/0x24/0x2f/0x30/0x31 write
-    // 500/1000/800/800/1000 — matching the "cap your earnings" texts. The
-    // consumer of +8 was not located; -1 is treated as "no cap".
+    // 500/1000/800/800/1000. Consumer: FUN_00424b5d:45049-45052 clamps money
+    // to +8 when 0 < +8 < money, so -1 = no cap (Infinity here).
     const moneyCap = (s.cap !== undefined) ? s.cap : Infinity;
 
     // ---- chick types & buy slots ------------------------------------------
