@@ -1,35 +1,71 @@
-// Port of Sexy::Gem and subclasses
-// Original vtables:
-//   Sexy::Gem at 004dcf2c
-//   Sexy::CoinGold at 004dcf4c
-//   Sexy::CoinSilver at 004dcf6c
-//   Sexy::DiamondBlue at 004dcf8c
-//   Sexy::DiamondRed at 004dcfac
+// Port of Sexy::Gem and subclasses (coins / diamonds) plus the field egg.
 //
-// Key functions:
-//   FUN_0040c311 - Gem constructor (10 lines)
-//   FUN_0040c4d9 - Gem::update (136 lines)
-//   FUN_00448b4b - Coin value decay
+// Original vtables (rwg_vtables.txt:1677-1951). Slot layout shared by all
+// concrete gems (slot index -> vtable byte offset):
+//   [0] +0x00 FUN_0040c311  destructor
+//   [1] +0x04 Update        CoinGold/CoinSilver FUN_0040c1c1, Diamonds FUN_0040c278
+//   [2] +0x08 FUN_0040c1b8  isCollected (returns byte +0x04)
+//   [3] +0x0c FUN_0040c1bc  setCollected (byte +0x04 = 1)
+//   [4] +0x10 getValue      Gold FUN_0040c20a, Silver FUN_0040c236,
+//                           Blue FUN_0040c2bf, Red FUN_0040c2c5
+//   [5] +0x14 getProgress   Coins FUN_0040c2fe (1 - timer), Diamonds FUN_0040c32e (timer)
+//   [6] +0x18 playSound     Coins FUN_0040c262, Blue FUN_0040c2d2, Red FUN_0040c2e8
+// Base Sexy::Gem has FUN_004a2016 (purecall) in slots 1,4,5,6.
+//
+// Gem struct (FUN_0040c4d9 rwg_functions.c:15132-15270):
+//   +0x04 byte collected, +0x08 type (0=Gold 1=Silver 2=DiamondBlue 3=DiamondRed),
+//   +0x0c/+0x10 field x/y (copied from the spawning chick), +0x14 float timer,
+//   +0x18 tick counter (diamonds), +0x1c value override (DiamondRed).
+//
+// Float constants read from the original binary's .rdata (app/chicken_chase.RWG,
+// the PE the decompilation was produced from):
+//   _DAT_004e9128 (double) = 0.0025  coin timer decrement per tick
+//   _DAT_004e9120 (float)  = 0.3     coin low tier threshold
+//   _DAT_004dc47c (float)  = 0.6     coin mid tier threshold
+//   _DAT_004e90f8 (double) = 0.015   diamond timer increment per tick
+//
+// Coordinates: the original stores gems in field units and projects them with
+// FUN_00409567 (screen = (6*fx + 10, 2.8*fy - 6*fz + 367)). The JS port keeps
+// every ground entity in screen pixels, so mX/mY here are the already
+// projected screen point of the gem's field position.
 
 import { IMAGES, SOUNDS } from './Res.js';
 
 // Cached tinted egg-cel offscreen canvases — generated once per (img, frame,
-// eggType) and reused. Keyed by `${img.mPath}_${frame}_${type}`. Each entry
-// is an OffscreenCanvas/HTMLCanvasElement holding the egg cel pre-tinted via
-// 'source-atop' composite (clipped to the cel's own alpha, so no background
-// spillover when blitted onto the main canvas).
+// eggType) and reused. Keyed by `${img.mPath}_${frame}_${type}`.
 const _eggTintCache = new Map();
-// Egg-type tint colors keyed off the original mission_eggs_*.png art:
-//   0=WHITE (layer)   — no tint
-//   1=BLUE (magic)    — bright cyan/sky-blue, matches mission_eggs_magic.png
-//   2=RED (holy)      — bright red, matches mission_eggs_holy.png
-//   3=BLACK (rooster) — pure black, matches mission_eggs_rooster.png
-//   4=BROODY          — deep saturated blue, matches mission_eggs_broody.png
-//                       (NOT golden — golden was JS-port speculation, the
-//                       original broody egg is the deep-blue colour seen in
-//                       the broody mission-icon art).
-const EGG_TINT_COLORS = [null, '#33b5ff', '#ff2030', '#000000', '#2828dd'];
 
+// Field egg colorize table — FUN_00409fca (rwg_functions.c:12914, asm 0x409fca):
+// five Color(r,g,b) built in order and indexed by the egg's +0x10 type, which
+// in the original is the chick type (0=Layer 1=Broody 2=Rooster 3=Magic 4=Holy):
+//   0 (0xff,0xff,0xff)  1 (0x40,0x3d,0xbe)  2 (0x45,0x45,0x45)
+//   3 (0x2b,0x9b,0xf2)  4 (0xf5,0x27,0x49)
+// The JS EggType enum (Chick.js) numbers eggs differently:
+//   0=WHITE(layer) 1=BLUE(magic) 2=RED(holy) 3=BLACK(rooster) 4=GOLDEN(broody)
+// so this array is indexed by the JS egg type and holds the original color of
+// the corresponding chick type. Index 0 (white) is the identity colorize.
+const EGG_TINT_COLORS = [
+    null,        // JS 0 WHITE  -> orig 0 Layer   (0xff,0xff,0xff) = no change
+    '#2b9bf2',   // JS 1 BLUE   -> orig 3 Magic   (0x2b,0x9b,0xf2)
+    '#f52749',   // JS 2 RED    -> orig 4 Holy    (0xf5,0x27,0x49)
+    '#454545',   // JS 3 BLACK  -> orig 2 Rooster (0x45,0x45,0x45)
+    '#403dbe',   // JS 4 GOLDEN -> orig 1 Broody  (0x40,0x3d,0xbe)
+];
+
+// Egg collect value table DAT_0050033c, filled at rwg_functions.c:6711-6727:
+// orig type 0=50 (0x32), 1=100, 2=200, 3=300, 4=500. Read by the egg click
+// handler FUN_004072fa (rwg_functions.c:8920) via the egg's +0x10 type.
+// Re-indexed by JS egg type (see mapping above).
+const EGG_VALUE_BY_JS_TYPE = [
+    50,   // JS 0 WHITE  -> orig 0 Layer
+    300,  // JS 1 BLUE   -> orig 3 Magic
+    500,  // JS 2 RED    -> orig 4 Holy
+    200,  // JS 3 BLACK  -> orig 2 Rooster
+    100,  // JS 4 GOLDEN -> orig 1 Broody
+];
+
+// Sexy colorized DrawImage multiplies each pixel by the color (white = no-op).
+// Implemented with an offscreen 'multiply' + 'destination-in' pass.
 export function getTintedEggCel(img, frame, eggType) {
     if (!eggType || eggType < 0 || eggType >= EGG_TINT_COLORS.length) return null;
     const tint = EGG_TINT_COLORS[eggType];
@@ -48,383 +84,387 @@ export function getTintedEggCel(img, frame, eggType) {
     off.width = celW;
     off.height = celH;
     const offCtx = off.getContext('2d');
-    // Draw the cel
     offCtx.drawImage(img.img, sx, sy, celW, celH, 0, 0, celW, celH);
-    // Apply tint via 'multiply' so the result is BRIGHT and SATURATED —
-    // matches the original mission_eggs_*.png art which is fully saturated
-    // (not the muted/pastel look that source-atop at 0.55 alpha produced).
-    // Multiply preserves shading: white pixels become the full tint colour,
-    // shaded (darker) pixels become a darker tint, transparent stays
-    // transparent. globalAlpha=1.0 so the colour is fully applied.
     offCtx.globalCompositeOperation = 'multiply';
     offCtx.globalAlpha = 1.0;
     offCtx.fillStyle = tint;
     offCtx.fillRect(0, 0, celW, celH);
-    // multiply on top of transparent pixels can leave colour fringe in the
-    // alpha=0 area on some browsers; clip back to the original silhouette.
     offCtx.globalCompositeOperation = 'destination-in';
-    offCtx.globalAlpha = 1.0;
     offCtx.drawImage(img.img, sx, sy, celW, celH, 0, 0, celW, celH);
     _eggTintCache.set(key, off);
     return off;
 }
 
 // Gem types matching the decompiled Gem struct +0x08 (FUN_0040c4d9:15155-15246).
-// Order: 0=Gold, 1=Silver, 2=DiamondBlue, 3=DiamondRed. Previously had Silver/Gold
-// inverted which made mType not match the spawn-dispatch type id.
 export const GemType = {
     COIN_GOLD: 0,
     COIN_SILVER: 1,
     DIAMOND_BLUE: 2,
     DIAMOND_RED: 3,
-    EGG: 4,
+    EGG: 4,   // JS-only tag: eggs live in Field.mGems in the port (original: separate list)
 };
 
+// _ftol after +0.5 as used by the projection FUN_00409567 (asm 0x409585-0x4095bc).
+function _ftolRound(v) { return Math.trunc(v + 0.5); }
+
 export class Gem {
-    // Port of Sexy::Gem - vtable at 004dcf2c
-    // Constructor: FUN_0040c311
+    // FUN_0040c4d9 (rwg_functions.c:15153-15160) common Gem init:
+    //   vtable, +0x04 collected = 0, +0x08 type, +0x0c/+0x10 position.
+    // FUN_0040c311 (rwg_functions.c:14926) is the destructor.
     constructor(type, x, y) {
-        this.mType = type;              // offset +0x00
-        this.mX = x;                    // offset +0x04
-        this.mY = y;                    // offset +0x08
-        this.mVelocityY = -3;           // offset +0x10 - bounce up then fall
-        this.mValue = 10;               // offset +0x14
-        this.mBaseValue = 10;           // offset +0x18
-        this.mLifeTimer = 0;            // offset +0x1c
-        this.mMaxLife = 600;             // offset +0x20 - 6 seconds at 100fps
-        this.mIsAlive = true;           // offset +0x24
-        this.mCollected = false;        // offset +0x25
-        this.mAnimTimer = 0;            // offset +0x2c
-        this.mBouncing = true;          // offset +0x30
-        this.mGroundY = y;              // offset +0x34
+        this.mType = type;              // +0x08
+        this.mX = x;                    // +0x0c (projected to screen px)
+        this.mY = y;                    // +0x10 (projected to screen px)
+        this.mCollected = false;        // +0x04
+        this.mTimer = 0;                // +0x14
+        this.mIsAlive = true;           // JS: list membership (Update() result)
     }
 
-    // FUN_0040c4d9 - Gem::update (136 lines)
-    update() {
-        if (!this.mIsAlive) return;
+    // Base Sexy::Gem slot [1] is FUN_004a2016 (purecall) — subclasses override.
+    update() {}
 
-        this.mLifeTimer++;
-        this.mAnimTimer++;
+    // FUN_0040c1b8 (rwg_functions.c:14679) isCollected
+    isCollected() { return this.mCollected; }
 
-        // Bouncing physics
-        if (this.mBouncing) {
-            this.mVelocityY += 0.15; // gravity
-            this.mY += this.mVelocityY;
-            if (this.mY >= this.mGroundY) {
-                this.mY = this.mGroundY;
-                this.mVelocityY = -this.mVelocityY * 0.4;
-                if (Math.abs(this.mVelocityY) < 0.5) {
-                    this.mBouncing = false;
-                    this.mVelocityY = 0;
-                }
-            }
-        }
+    // FUN_0040c1bc (rwg_functions.c:14693) setCollected
+    setCollected() { this.mCollected = true; }
 
-        // Value decay for coins - FUN_00448b4b
-        // "Collect coins as soon as possible. The longer the coin is available, the less valuable it becomes."
-        if (this.mType === GemType.COIN_SILVER || this.mType === GemType.COIN_GOLD) {
-            this.mValue = Math.max(1, Math.floor(this.mBaseValue * (1 - this.mLifeTimer / this.mMaxLife)));
-        }
+    // Slot [4] getValue — purecall in base.
+    getValue() { return 0; }
 
-        // Expire
-        if (this.mLifeTimer >= this.mMaxLife) {
-            this.mIsAlive = false;
-        }
-    }
+    // Slot [5] getProgress — purecall in base.
+    getProgress() { return 0; }
 
-    // Collect
+    // Slot [6] playSound — purecall in base.
+    _playCollectSound() {}
+
+    getImage() { return null; }
+
+    // FUN_0040c75b (rwg_functions.c:15342) gem pickup:
+    //   if (!vt[2] isCollected) { money += vt[4] getValue (FUN_00406b22);
+    //     counter++ (FUN_0041fb98); vt[6] playSound; FUN_0040c49d -> vt[3]
+    //     setCollected + remove from list (FUN_0040c8cc) }
+    // Money/counters are applied by the JS caller with the returned value.
     collect() {
         if (!this.mIsAlive || this.mCollected) return 0;
-        this.mCollected = true;
-        this.mIsAlive = false;
+        const value = this.getValue();
         this._playCollectSound();
-        return this.mValue;
+        this.setCollected();
+        this.mIsAlive = false;
+        return value;
     }
 
-    _playCollectSound() {
-        // Override in subclass
+    // FUN_00409652 (rwg_functions.c:12041, asm 0x409652-0x409778) gem rect:
+    //   x = screenX + width / (cols * -2)   (integer division)
+    //   y = screenY + (0x10 - height)
+    //   w = h = image height
+    getRect() {
+        const img = this.getImage();
+        if (!img) return null;
+        const width = img.mWidth || 0;
+        const height = img.mHeight || 0;
+        const cols = img.mNumCols || 1;
+        const sx = _ftolRound(this.mX);
+        const sy = _ftolRound(this.mY);
+        return {
+            x: sx + Math.trunc(width / (cols * -2)),
+            y: sy + (0x10 - height),
+            w: height,
+            h: height,
+        };
     }
 
-    getImage() {
-        return null;
+    // FUN_00409e90 (rwg_functions.c:12728, asm 0x409e90-0x409f03) gem cel:
+    //   frame = ftol(vt[5] getProgress() * numCols); if (frame >= numCols) frame = numCols-1
+    getFrame() {
+        const img = this.getImage();
+        const cols = (img && img.mNumCols) || 1;
+        let frame = Math.trunc(this.getProgress() * cols);
+        if (frame >= cols) frame = cols - 1;
+        return frame;
     }
 
+    // Gem shadow — FUN_0040a3d6 gem loop (asm 0x40ab31-0x40ab6f): diamonds
+    // only (type != 0 && type != 1) draw IMAGE_SHADOW (DAT_00500010) with
+    // FUN_00466895 (DrawImage into rect) at (x, y + h - shadow.h/2, w, h).
+    // It is an immediate draw issued while the gem itself is only queued in
+    // the depth-sorted list, so Field.draw calls this before the sorted pass.
+    drawShadow(g) {
+        if (!this.mIsAlive) return;
+        if (this.mType === GemType.COIN_GOLD || this.mType === GemType.COIN_SILVER) return;
+        const sh = IMAGES.IMAGE_SHADOW;
+        const r = this.getRect();
+        if (!r || !sh || !sh.img) return;
+        const tx = g.mTransX || 0, ty = g.mTransY || 0;
+        const shH = sh.mHeight || 0;
+        g.ctx.drawImage(sh.img, tx + r.x, ty + r.y + r.h - Math.trunc(shH / 2), r.w, r.h);
+    }
+
+    // Gem draw — FUN_0040a3d6 gem loop (rwg_functions.c:13492-13529):
+    //   rect FUN_00409652, cel FUN_00409e90, image DAT_005005f4[type],
+    //   queued with depth key = gem field y (FUN_004090ec 4th arg, piVar13[4]).
     draw(g) {
         const img = this.getImage();
-        if (img && img.img && this.mIsAlive) {
-            // Blinking near end of life (only when MaxLife > 0)
-            if (this.mMaxLife > 0 && this.mLifeTimer > this.mMaxLife * 0.75) {
-                if (Math.floor(this.mAnimTimer / 5) % 2 === 0) return;
-            }
-            const celW = img.getCelWidth();
-            const celH = img.getCelHeight();
-            const numFrames = img.mNumCols * img.mNumRows;
-            const frame = numFrames > 1 ? Math.floor(this.mAnimTimer / 8) % numFrames : 0;
-            // Brief "pop-in" scale animation in first 15 ticks
-            let scale = 1;
-            if (this.mAnimTimer < 15) {
-                scale = 0.5 + (this.mAnimTimer / 15) * 0.5;
-            }
-            const w = celW * scale, h = celH * scale;
-            const ctx = g.ctx;
-            const sx = (img.mNumCols && img.mNumCols > 1) ? (frame % img.mNumCols) * celW : 0;
-            const sy = Math.floor(frame / (img.mNumCols || 1)) * celH;
-            ctx.drawImage(img.img, sx, sy, celW, celH, this.mX - w / 2, this.mY - h / 2, w, h);
-        }
+        if (!this.mIsAlive || !img || !img.img) return;
+        const r = this.getRect();
+        const tx = g.mTransX || 0, ty = g.mTransY || 0;
+        const celW = img.getCelWidth();
+        const frame = this.getFrame();
+        const cols = img.mNumCols || 1;
+        const srcX = (frame % cols) * celW;
+        g.ctx.drawImage(img.img, srcX, 0, celW, img.mHeight, tx + r.x, ty + r.y, r.w, r.h);
     }
 
+    // Hit test used by the hand: FUN_0040c6a5 (rwg_functions.c:15277) builds
+    // the gem rect with FUN_00409652 and tests the click with FUN_00407ad4
+    // (rwg_functions.c:9520): x >= rx && x < rx+w && y >= ry && y < ry+h.
     contains(x, y) {
-        return Math.abs(x - this.mX) < 20 && Math.abs(y - this.mY) < 20;
+        const r = this.getRect();
+        if (!r) return false;
+        return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
     }
 }
 
+// FUN_0040c1c1 (rwg_functions.c:14710) Coin Update (CoinGold & CoinSilver slot [1]):
+//   if (isCollected) return false;
+//   timer -= _DAT_004e9128 (0.0025); if (timer < 0) timer = 0;
+//   return timer > 0;
+function coinUpdate(gem) {
+    if (gem.isCollected()) { gem.mIsAlive = false; return false; }
+    gem.mTimer = gem.mTimer - 0.0025;
+    if (gem.mTimer < 0) gem.mTimer = 0;
+    const alive = gem.mTimer > 0;
+    gem.mIsAlive = alive;
+    return alive;
+}
+
+// FUN_0040c278 (rwg_functions.c:14810) Diamond Update (DiamondBlue & DiamondRed slot [1]):
+//   if (isCollected) return false;
+//   timer += _DAT_004e90f8 (0.015); if (timer > 1.0) timer = 0;
+//   counter(+0x18)++; return counter < 0x7d1 (2001);
+function diamondUpdate(gem) {
+    if (gem.isCollected()) { gem.mIsAlive = false; return false; }
+    gem.mTimer = gem.mTimer + 0.015;
+    if (gem.mTimer > 1.0) gem.mTimer = 0;
+    gem.mCounter++;
+    const alive = gem.mCounter < 0x7d1;
+    gem.mIsAlive = alive;
+    return alive;
+}
+
 export class CoinSilver extends Gem {
-    // vtable at 004dcf6c
-    // FUN_0040c236: timer>0.66 -> $20, timer>0.33 -> $10, else -> $5
+    // vtable 004dcf6c. FUN_0040c4d9:15183-15192: alloc 0x18, type 1,
+    // +0x14 timer = 0x3f800000 (1.0).
     constructor(x, y) {
         super(GemType.COIN_SILVER, x, y);
-        this.mTimer = 1.0; // starts at 1.0, decays to 0
-        // User reported: "wait ~1s, coin rotates 39→20→10→disappears" → ~3s total.
-        // 1.0 / (0.0033/tick) = ~303 ticks = 3s @ 100fps.
-        this.mDecayRate = 0.0033;
-        this.mValue = 20;
-        this.mBaseValue = 20;
-        // mMaxLife must match the actual mTimer-driven lifetime (~303 ticks)
-        // because the base Gem.draw blink-near-expiry check uses
-        // `mLifeTimer > mMaxLife * 0.75`. With mMaxLife=1000 the coin would
-        // need 750 ticks of life to blink, but it expires at ~303 ticks of
-        // mTimer decay — so coins NEVER blinked before vanishing, silently
-        // failing the "collect coins quickly" visual cue. With mMaxLife=303
-        // the blink kicks in at mTimer ≈ 0.25, right as the coin enters its
-        // final $5 tier.
-        this.mMaxLife = 303;
+        this.mTimer = 1.0;
     }
 
-    update() {
-        if (!this.mIsAlive) return;
-        this.mAnimTimer++;
-        this.mLifeTimer++;
-        // Bouncing physics — original Gem update does this for all gem types.
-        if (this.mBouncing) {
-            this.mVelocityY += 0.15;
-            this.mY += this.mVelocityY;
-            if (this.mY >= this.mGroundY) {
-                this.mY = this.mGroundY;
-                this.mVelocityY = -this.mVelocityY * 0.4;
-                if (Math.abs(this.mVelocityY) < 0.5) {
-                    this.mBouncing = false;
-                    this.mVelocityY = 0;
-                }
-            }
-        }
-        this.mTimer -= this.mDecayRate;
-        // Three-tier value decay from decompiled FUN_0040c236
-        if (this.mTimer > 0.66) this.mValue = 20;
-        else if (this.mTimer > 0.33) this.mValue = 10;
-        else if (this.mTimer > 0) this.mValue = 5;
-        else { this.mIsAlive = false; }
+    // FUN_0040c1c1 (rwg_functions.c:14710)
+    update() { return coinUpdate(this); }
+
+    // FUN_0040c236 (rwg_functions.c:14770): timer < 0.3 -> 5, < 0.6 -> 10, else 0x14 (20)
+    getValue() {
+        if (this.mTimer < 0.3) return 5;
+        if (this.mTimer < 0.6) return 10;
+        return 0x14;
     }
+
+    // FUN_0040c2fe (rwg_functions.c:14912): 1.0 - timer
+    getProgress() { return 1.0 - this.mTimer; }
 
     getImage() { return IMAGES.IMAGE_COIN_SILVER; }
 
+    // FUN_0040c262 (rwg_functions.c:14790): play DAT_004fed74 = SOUND_COLLECT_COIN
     _playCollectSound() {
         if (SOUNDS.SOUND_COLLECT_COIN) SOUNDS.SOUND_COLLECT_COIN.play();
     }
 }
 
 export class CoinGold extends Gem {
-    // vtable at 004dcf4c
-    // FUN_0040c20a: timer>0.66 -> $30, timer>0.33 -> $20, else -> $10
+    // vtable 004dcf4c. FUN_0040c4d9:15160-15169: alloc 0x18, type 0,
+    // +0x14 timer = 0x3f800000 (1.0).
     constructor(x, y) {
         super(GemType.COIN_GOLD, x, y);
         this.mTimer = 1.0;
-        this.mDecayRate = 0.0033;
-        this.mValue = 30;
-        this.mBaseValue = 30;
-        // See CoinSilver — mMaxLife must match mTimer's decay-to-0 lifetime
-        // (1.0 / 0.0033 ≈ 303 ticks) so the base Gem.draw blink trigger
-        // (mLifeTimer > mMaxLife * 0.75) fires before the coin expires.
-        this.mMaxLife = 303;
     }
 
-    update() {
-        if (!this.mIsAlive) return;
-        this.mAnimTimer++;
-        this.mLifeTimer++;
-        // Bouncing physics — original Gem update does this for all gem types.
-        if (this.mBouncing) {
-            this.mVelocityY += 0.15;
-            this.mY += this.mVelocityY;
-            if (this.mY >= this.mGroundY) {
-                this.mY = this.mGroundY;
-                this.mVelocityY = -this.mVelocityY * 0.4;
-                if (Math.abs(this.mVelocityY) < 0.5) {
-                    this.mBouncing = false;
-                    this.mVelocityY = 0;
-                }
-            }
-        }
-        this.mTimer -= this.mDecayRate;
-        // Three-tier value decay from decompiled FUN_0040c20a
-        if (this.mTimer > 0.66) this.mValue = 30;
-        else if (this.mTimer > 0.33) this.mValue = 20;
-        else if (this.mTimer > 0) this.mValue = 10;
-        else { this.mIsAlive = false; }
+    // FUN_0040c1c1 (rwg_functions.c:14710)
+    update() { return coinUpdate(this); }
+
+    // FUN_0040c20a (rwg_functions.c:14748): timer < 0.3 -> 10, < 0.6 -> 0x14 (20), else 0x1e (30)
+    getValue() {
+        if (this.mTimer < 0.3) return 10;
+        if (this.mTimer < 0.6) return 0x14;
+        return 0x1e;
     }
+
+    // FUN_0040c2fe (rwg_functions.c:14912): 1.0 - timer
+    getProgress() { return 1.0 - this.mTimer; }
 
     getImage() { return IMAGES.IMAGE_COIN_GOLD; }
 
+    // FUN_0040c262 (rwg_functions.c:14790): play DAT_004fed74 = SOUND_COLLECT_COIN
     _playCollectSound() {
         if (SOUNDS.SOUND_COLLECT_COIN) SOUNDS.SOUND_COLLECT_COIN.play();
     }
 }
 
 export class DiamondBlue extends Gem {
-    // vtable at 004dcf8c
-    // FUN_0040c2bf:14842 — getValue returns 300 fixed (no decay tiers).
-    // FUN_0040c278:14810 — lifetime is 2001 ticks (tick_counter < 0x7d1).
+    // vtable 004dcf8c. FUN_0040c4d9:15206-15216: alloc 0x1c, type 2,
+    // +0x14 timer = 0, +0x18 counter = 0.
     constructor(x, y) {
         super(GemType.DIAMOND_BLUE, x, y);
-        this.mValue = 300;
-        this.mBaseValue = 300;
-        this.mMaxLife = 2001;
+        this.mTimer = 0;
+        this.mCounter = 0;
     }
+
+    // FUN_0040c278 (rwg_functions.c:14810)
+    update() { return diamondUpdate(this); }
+
+    // FUN_0040c2bf (rwg_functions.c:14842): return 300
+    getValue() { return 300; }
+
+    // FUN_0040c32e (rwg_functions.c:14945): return timer
+    getProgress() { return this.mTimer; }
 
     getImage() { return IMAGES.IMAGE_DIAMOND_BLUE; }
 
+    // FUN_0040c2d2 (rwg_functions.c:14876): play DAT_004fed98 = SOUND_COLLECT_BLUE_DIAMOND
     _playCollectSound() {
         if (SOUNDS.SOUND_COLLECT_BLUE_DIAMOND) SOUNDS.SOUND_COLLECT_BLUE_DIAMOND.play();
     }
 }
 
 export class DiamondRed extends Gem {
-    // vtable at 004dcfac
-    // FUN_0040c2c5:14860 — getValue returns *(this+0x1c) if > 0, else 2000.
-    // FUN_0040c278:14810 — lifetime is 2001 ticks.
-    constructor(x, y) {
+    // vtable 004dcfac. FUN_0040c4d9:15228-15240: alloc 0x20, type 3,
+    // +0x14 timer = 0, +0x18 counter = 0, +0x1c = value argument of the
+    // spawn call (FUN_0040c4d9 param at [ebp+0xc]).
+    constructor(x, y, value) {
         super(GemType.DIAMOND_RED, x, y);
-        this.mValue = 2000;
-        this.mBaseValue = 2000;
-        this.mMaxLife = 2001;
+        this.mTimer = 0;
+        this.mCounter = 0;
+        this.mValueOverride = value | 0;   // +0x1c
     }
+
+    // FUN_0040c278 (rwg_functions.c:14810)
+    update() { return diamondUpdate(this); }
+
+    // FUN_0040c2c5 (rwg_functions.c:14856): v = +0x1c; if (v < 1) v = 2000;
+    getValue() {
+        let v = this.mValueOverride;
+        if (v < 1) v = 2000;
+        return v;
+    }
+
+    // FUN_0040c32e (rwg_functions.c:14945): return timer
+    getProgress() { return this.mTimer; }
 
     getImage() { return IMAGES.IMAGE_DIAMOND_RED; }
 
+    // FUN_0040c2e8 (rwg_functions.c:14894): play DAT_004fedb0 = SOUND_COLLECT_RED_DIAMOND
     _playCollectSound() {
         if (SOUNDS.SOUND_COLLECT_RED_DIAMOND) SOUNDS.SOUND_COLLECT_RED_DIAMOND.play();
     }
 }
 
+// Field egg. In the original eggs are NOT Sexy::Gem objects: they are 0x24-byte
+// structs created by FUN_00407038 (rwg_functions.c:8721) and kept in their own
+// list (field controller +0x24). The port stores them in Field.mGems tagged
+// GemType.EGG; only the game-visible behavior below is mirrored.
+//   +0x08/+0x0c position (copied from the laying chick), +0x10 type,
+//   +0x14 = 4000 (brood duration), +0x18 = -1 brood countdown,
+//   +0x1c = 0 hatch-anim progress, +0x20 = 0 flag.
 export class Egg extends Gem {
-    // Eggs are similar to Gems but can also be hatched
-    // Click on egg -> choose to collect or hatch
-    update() {
-        // Lifetime decay pauses while a broody is committed to the egg —
-        // either walking toward it OR actively sitting on it. Walking can
-        // take ~16s across the full field at the broody's 0.5 px/tick speed,
-        // and an egg laid 30s earlier would expire mid-walk (4000-tick = 40s
-        // lifetime). Player would commit a broody → broody walks across →
-        // egg expires before arrival → broody gives up → player lost the
-        // egg with no recourse. Pause as soon as broody is assigned so the
-        // commitment is the only timing that matters.
-        //
-        // Guard against "marked but immortal" eggs: require a live, claimed
-        // broody that's actually targeting THIS egg (mWalkingToEgg OR
-        // mBroodActive). Stale-claim cleanup in FieldController.update
-        // clears _claimedBy when the broody drops the egg, so a dead/lost
-        // broody won't pause forever.
-        const broody = this._claimedBy;
-        const broodyEngaged = this.mBrooding && broody
-            && broody.mIsAlive && !broody.mIsCarried
-            && broody.mBroodingEgg === this
-            && (broody.mBroodActive || broody.mWalkingToEgg);
-        if (broodyEngaged) {
-            this.mAnimTimer++;
-            return;
-        }
-        super.update();
-    }
     constructor(eggType, x, y) {
         super(GemType.EGG, x, y);
         this.mEggType = eggType;
-        // Sell value depends on type per DAT_0050035c table — overridden below.
-        // Layer (white) base sell ~ 50 (mid), Magic 300, Holy 500, Rooster 200, Broody 100.
-        // Egg-collect values — the original DAT_0050035c is the CHICK sell-price
-        // table (FUN_00403bd6 indexes it by chick type), not egg-collect values.
-        // Eggs themselves likely use a distinct table that's UNKNOWN in decompiled.
-        // Use proportional values that reflect the relative chick-type rarity.
-        this.mEggSellValue = [50, 100, 200, 300, 500][eggType] || 50;
-        this.mValue = this.mEggSellValue;
-        this.mBaseValue = this.mEggSellValue;
-        // Lifetime confirmed: FUN_00407038 line 8775 — egg[5] = 4000 (~40s at 100fps).
-        this.mMaxLife = 4000;
-        // mBrooding: true once player has committed the egg for brooding via
-        // the HUD egg-box click. Stays true until hatch, cancellation toggle
-        // (second egg-box click), or natural lifetime expiry. Note: this is
-        // the player INTENT flag, not "broody actively sitting" — that's
-        // checked separately in Egg.update via _claimedBy.mBroodActive.
+        // Collect value DAT_0050033c[type] (rwg_functions.c:6711-6727) via FUN_004072fa.
+        this.mEggSellValue = EGG_VALUE_BY_JS_TYPE[eggType] || EGG_VALUE_BY_JS_TYPE[0];
+        // +0x1c hatch-animation progress (FUN_00407038 sets 0). It only grows
+        // once hatching started (FUN_00406c85:8489-8496, += _DAT_004e9150 = 0.01
+        // per tick while > 0). The JS brooding code (Chick.js) hatches eggs
+        // directly, so this stays 0 here.
+        this.mHatchProgress = 0;
+        // Player brood-intent flag / progress, written by Chick.js and
+        // FieldController.js (JS port brood bookkeeping).
         this.mBrooding = false;
-        this.mBroodProgress = 0;       // 0..1 (progress, NOT remaining)
-        // mBroodDuration & mBroodTimer were used by the now-removed
-        // auto-hatch fallback. Brood timing lives entirely on BroodyChick
-        // (mBroodProgress / mBroodDuration there).
+        this.mBroodProgress = 0;
     }
+
+    // Egg controller update FUN_00406c85 (rwg_functions.c:8432-8530) only
+    // decrements the +0x18 brood countdown and advances the +0x1c hatch anim;
+    // an egg leaves the field only when collected (FUN_004072fa) or hatched.
+    // There is no lifetime expiry for eggs (the +0x14 = 4000 written by
+    // FUN_00407038:8775 is the brood duration used by FUN_00406ac9, not a
+    // lifetime). Brood countdown/hatch are driven by Chick.js in the port.
+    update() {}
+
+    getValue() { return this.mEggSellValue; }
 
     getImage() { return IMAGES.IMAGE_EGG; }
 
-    // Override draw: progress through cracking frames as egg ages.
-    // IMAGE_EGG is configured as 1×N frames at load (rwg_functions.c:31177-31186):
-    //   frame 0 = whole, last frame = fully cracked.
+    // FUN_004095cd (rwg_functions.c:12006, asm 0x4095cd-0x409651) egg rect:
+    //   size = ftol(IMAGE_EGG.height * scale(1.0) + 0.5)
+    //   x = screenX - size/2, y = screenY - size/2, w = h = size
+    getRect() {
+        const img = this.getImage();
+        if (!img) return null;
+        const size = _ftolRound((img.mHeight || 0) * 1.0);
+        const sx = _ftolRound(this.mX);
+        const sy = _ftolRound(this.mY);
+        const half = Math.trunc(size / 2);
+        return { x: sx - half, y: sy - half, w: size, h: size };
+    }
+
+    // FUN_00409fca (asm 0x40a044-0x40a061): frame = ftol(+0x1c * numCols), clamp numCols-1
+    getFrame() {
+        const img = this.getImage();
+        const cols = (img && img.mNumCols) || 1;
+        let frame = Math.trunc(this.mHatchProgress * cols);
+        if (frame >= cols) frame = cols - 1;
+        return frame;
+    }
+
+    // Egg shadow — FUN_0040a3d6 egg loop (asm 0x40a9ce-0x40aa25): IMAGE_SHADOW
+    // (DAT_00500010) drawn immediately (not depth-sorted) into
+    //   (x + w/4 + 5, y + h - shadow.h/2 - 0x19, w/2, h/2).
+    drawShadow(g) {
+        if (!this.mIsAlive) return;
+        const sh = IMAGES.IMAGE_SHADOW;
+        const r = this.getRect();
+        if (!r || !sh || !sh.img) return;
+        const tx = g.mTransX || 0, ty = g.mTransY || 0;
+        const shH = sh.mHeight || 0;
+        g.ctx.drawImage(sh.img,
+            tx + r.x + Math.trunc(r.w / 4) + 5,
+            ty + r.y + r.h - Math.trunc(shH / 2) - 0x19,
+            Math.trunc(r.w / 2), Math.trunc(r.h / 2));
+    }
+
+    // Egg draw — FUN_0040a3d6 egg loop (rwg_functions.c:13463-13487):
+    //   rect FUN_004095cd, colorize with FUN_00409fca's table, cel from +0x1c,
+    //   queued with depth key = egg field y (local_104[3]).
     draw(g) {
         const img = this.getImage();
-        if (img && img.img && this.mIsAlive) {
-            const celW = img.getCelWidth();
-            const celH = img.getCelHeight();
-            const numFrames = (img.mNumCols || 1) * (img.mNumRows || 1);
-            // Progress through frames as the egg decays
-            const lifeFrac = this.mMaxLife > 0 ? Math.min(1, this.mLifeTimer / this.mMaxLife) : 0;
-            let frame = Math.min(numFrames - 1, Math.floor(lifeFrac * numFrames));
-            if (this.mBrooding) frame = 0; // hatching reset
-
-            const dx = this.mX - celW / 2;
-            const dy = this.mY - celH / 2;
-            // Color tint per egg type — matches the original which has
-            // colored egg variants (visible in mission_eggs_*.png icons:
-            // layer=white, magic=blue, holy=red, rooster=dark, broody=golden).
-            // The field egg sprite egg.png is white; we tint by pre-baking
-            // colored variants into offscreen canvases (cached on the Image
-            // object). Offscreen 'source-atop' composite clips the tint to
-            // the egg's own alpha — no spillover onto the canvas background.
-            // 0=white (no tint), 1=blue (magic), 2=red (holy),
-            // 3=dark (rooster), 4=golden (broody).
-            const tinted = getTintedEggCel(img, frame, this.mEggType);
-            if (tinted) {
-                g.ctx.drawImage(tinted, dx, dy);
-            } else {
-                g.drawImageCell(img, dx, dy, frame);
-            }
-
-            // Brood progress bar above the broody chick — egg is at chick's
-            // feet, chick body extends ~78px up, so bar at egg.mY - 90 sits
-            // just above the chick's head. Previous offset of -10 placed it
-            // *behind* the broody sprite where it was invisible.
-            if (this.mBrooding && this.mBroodProgress > 0) {
-                const barW = 40, barH = 5;
-                const bx = this.mX - barW / 2;
-                const by = this.mY - 90;
-                const ctx = g.ctx;
-                ctx.fillStyle = 'rgba(60,40,20,0.7)';
-                ctx.fillRect(bx, by, barW, barH);
-                ctx.fillStyle = '#5cff5c';
-                ctx.fillRect(bx, by, barW * Math.min(1, this.mBroodProgress), barH);
-                ctx.strokeStyle = '#000';
-                ctx.lineWidth = 1;
-                ctx.strokeRect(bx, by, barW, barH);
-            }
-
+        if (!this.mIsAlive || !img || !img.img) return;
+        const r = this.getRect();
+        const tx = g.mTransX || 0, ty = g.mTransY || 0;
+        const frame = this.getFrame();
+        const celW = img.getCelWidth();
+        const celH = img.getCelHeight();
+        const tinted = getTintedEggCel(img, frame, this.mEggType);
+        if (tinted) {
+            g.ctx.drawImage(tinted, 0, 0, celW, celH, tx + r.x, ty + r.y, r.w, r.h);
+        } else {
+            const cols = img.mNumCols || 1;
+            g.ctx.drawImage(img.img, (frame % cols) * celW, 0, celW, celH,
+                tx + r.x, ty + r.y, r.w, r.h);
         }
     }
 
+    // Egg click sound: FUN_004072fa ends with vt+0xc4 play; the only read of
+    // DAT_004feda4 (SOUND_COLLECT_EGG) in the binary is inside it (asm 0x407486).
     _playCollectSound() {
         if (SOUNDS.SOUND_COLLECT_EGG) SOUNDS.SOUND_COLLECT_EGG.play();
     }

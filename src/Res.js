@@ -55,7 +55,8 @@ const HAS_ALPHA_MASK = new Set([
     'images/number_slot_task.png','images/number_slot.png',
     'images/pets/wolf/eat.jpg','images/pets/wolf/walk.jpg',
     'images/shadow.png','images/shop_slot_big.png','images/shop_slot_closed.png',
-    'images/shop_slot_open.PNG','images/slider_thumb.png','images/slider.png',
+    'images/shop_slot_open.PNG' /* mask is shop_slot_open_.png, see MASK_PATH_OVERRIDE */,
+    'images/slider_thumb.png','images/slider.png',
     'images/specials/elephant.png','images/specials/gun_area.png',
     'images/specials/gun_power.png','images/specials/mouse.png',
     'images/specials/seeds_calories1.png','images/specials/seeds_calories2.png',
@@ -68,15 +69,29 @@ const HAS_ALPHA_MASK = new Set([
     'images/up16.jpg',
 ]);
 
+// The only image whose "_" mask file uses a different extension case than the
+// colour file (app/images/shop_slot_open.PNG + app/images/shop_slot_open_.png).
+// Sexy's image loader resolves the mask by base name, independent of the
+// extension; a case-sensitive web server needs the exact name.
+const MASK_PATH_OVERRIDE = {
+    'images/shop_slot_open.PNG': 'images/shop_slot_open_.png',
+};
+
 export class Res {
     static loaded = false;
 
     static async loadAll(progressCallback) {
         // Exact paths from extracted filesystem (case-sensitive, with correct extensions)
-        const imageList = [
-            // Init group
+        // resources.xml group "Init" — loaded synchronously by GameApp::Init
+        // (FUN_004084d8 rwg:10622) before the TitleScreen is created.
+        const initList = [
             ['IMAGE_PROGRESSBAR', 'images/progressbar.png'],
             ['IMAGE_PROGRESSBAR_BACK', 'images/progressbar_back.png'],
+        ];
+        // resources.xml group "Game" — loaded by LoadingThreadProc
+        // (FUN_0040860b rwg:10678). The FONT_* entries of this group are not
+        // loaded: the port draws text with browser fonts.
+        const imageList = [
             // Backgrounds
             ['IMAGE_GAME_BACK', 'images/back.jpg'],
             ['IMAGE_GAME_BACK_UPGRADE0', 'images/up0.jpg'],
@@ -316,13 +331,23 @@ export class Res {
             ['SOUND_GAV_GAV', 'sounds/gav_gav.ogg'],
             ['SOUND_WOLF', 'sounds/wolf.ogg'],
             ['SOUND_FIELD_UPGRADE', 'sounds/field_upgrade.ogg'],
+            // NOT in resources.xml and never loaded by the original code
+            // (no "elephant" sound string in rwg_functions.c). Kept only
+            // because Pet.js references it — UNKNOWN — not found in decompiled.
             ['SOUND_ELEPHANT', 'sounds/elephant.ogg'],
-            // Music tracks
-            ['MUSIC_MAIN', 'music/main.ogg'],
-            ['MUSIC_GAME0', 'music/game0.ogg'],
-            ['MUSIC_GAME1', 'music/game1.ogg'],
         ];
 
+        // Music is loaded AFTER the Game group finished, outside the progress
+        // count: FUN_0040860b rwg:10688-10703 — LoadMusic(0,"music/main.ogg"),
+        // LoadMusic(1,"music/game0.ogg"), LoadMusic(2,"music/game1.ogg").
+        const musicList = [
+            ['MUSIC_MAIN', 'music/main.ogg'],     // music id 0
+            ['MUSIC_GAME0', 'music/game0.ogg'],   // music id 1
+            ['MUSIC_GAME1', 'music/game1.ogg'],   // music id 2
+        ];
+
+        // Progress = loaded / total of the Game group, stored into
+        // TitleScreen+0x84 (FUN_0040860b rwg:10710-10721).
         const total = imageList.length + soundList.length;
         let loaded = 0;
 
@@ -343,7 +368,8 @@ export class Res {
             // PopCap alpha mask: file "foo_.ext" is the alpha mask for "foo.ext"
             if (HAS_ALPHA_MASK.has(path)) {
                 const dotIdx = path.lastIndexOf('.');
-                const maskPath = BASE_PATH + path.slice(0, dotIdx) + '_' + path.slice(dotIdx);
+                const maskPath = BASE_PATH + (MASK_PATH_OVERRIDE[path]
+                    || (path.slice(0, dotIdx) + '_' + path.slice(dotIdx)));
                 const maskEl = new window.Image();
                 try {
                     await new Promise((resolve, reject) => {
@@ -376,6 +402,14 @@ export class Res {
             if (progressCallback) progressCallback(loaded / total);
         };
 
+        // "Init" group first (FUN_004084d8 rwg:10622-10627); these do not
+        // count toward the Game-group progress.
+        const savedCb = progressCallback;
+        progressCallback = null;
+        await Promise.all(initList.map(item => loadImage(item)));
+        loaded = 0;
+        progressCallback = savedCb;
+
         // Load in batches for performance
         const batchSize = 15;
         const allTasks = [
@@ -386,6 +420,10 @@ export class Res {
         for (let i = 0; i < allTasks.length; i += batchSize) {
             await Promise.all(allTasks.slice(i, i + batchSize).map(fn => fn()));
         }
+
+        // Music after the Game group (FUN_0040860b rwg:10688-10703).
+        progressCallback = null;
+        await Promise.all(musicList.map(item => loadSound(item)));
 
         Res.loaded = true;
     }

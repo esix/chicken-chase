@@ -1,21 +1,30 @@
 // Port of Sexy::GameApp - vtable at 004dcbfc
-// Constructor: FUN_0040826e
-// Destructor: FUN_00408394
+// Constructor: FUN_0040826e (rwg:10436) - "Chicken Chase", "1.0",
+//   registry "PosITive\\Chicken Chase", 800x600 (rwg:10462-10475)
+// Destructor: FUN_00408394 (rwg:10516)
 //
-// Key functions:
-//   FUN_0040826e - GameApp constructor (54 lines) - sets up "Chicken Chase", 800x600
-//   FUN_00408394 - GameApp destructor (73 lines)
-//   FUN_004088d0 - GameApp::startLevel
-//   FUN_00408799 - GameApp::showMainMenu
-//   FUN_00408c24 - GameApp::showOptions
-//   FUN_00408dae - GameApp::restartLevel
-//   FUN_00408a1b - GameApp::nextLevel
+// Key functions (view slots on the app object):
+//   FUN_004084d8 (rwg:10593) Init: load "Init" group, create TitleScreen (+0x5f8)
+//   FUN_0040860b (rwg:10657) LoadingThreadProc: load "Game" group, progress,
+//                            then LoadMusic 0/1/2 = main/game0/game1
+//   FUN_0040874e (rwg:10730) LoadingThreadCompleted: remove TitleScreen,
+//                            FUN_00408799
+//   FUN_00408799 (rwg:10760) show MainMenuView (+0x5e4), main music
+//   FUN_004088d0 (rwg:10840) show SelectLevelView (+0x5e8) with a level arg
+//                            (-1 = max unlocked, 1000 = credits, >=51 = win)
+//   FUN_00408a1b (rwg:10921) show GameView (+0x5ec)
+//   FUN_00408c24 (rwg:11047) show UpgradesView (+0x5f0)
+//   FUN_00408dae (rwg:11129) start level: Core::StartLevel (FUN_00406069),
+//                            FUN_00408a1b, random game music
+//   FUN_00408e2f (rwg:11193) vtable[76] — pause level (focus lost)
+//   FUN_00408e62 (rwg:11220) vtable[75] — resume level (focus regained)
+//   FUN_00423e95 (rwg:43997) TitleScreen::Draw
 
 import { SexyAppBase, SoundManager } from './SexyApp.js';
 import { Res, SOUNDS } from './Res.js';
 import { GameView } from './GameView.js';
 import { MainMenuView, SelectLevelView } from './MainMenuView.js';
-import { Core } from './Core.js';
+import { Core, DEFAULT_MUSIC_VOLUME, DEFAULT_SFX_VOLUME } from './Core.js';
 import { OptionsDialog } from './OptionsDialog.js';
 import { ChangePlayerDialog } from './PlayerDialogs.js';
 import { CreditsView } from './CreditsView.js';
@@ -56,31 +65,78 @@ export class GameApp extends SexyAppBase {
         return (this.mCore && this.mCore.mPlayerName) || '';
     }
 
-    // FUN_004a7bea - Init sequence
+    // FUN_004084d8 (Init) + FUN_0040860b (LoadingThreadProc) +
+    // FUN_0040874e (LoadingThreadCompleted).
     async init() {
-        // Load all resources
-        await Res.loadAll((progress) => {
-            this.mLoadProgress = progress;
-        });
-
-        // Apply persisted volumes from current player profile to SoundManager.
-        // OptionsDialog reads/writes the same fields (mMusicVolume / mSoundVolume).
+        // App-global volumes (registry MusicVolume/SfxVolume, read by
+        // FUN_0044431f rwg:80130-80146; defaults FUN_00440396 rwg:77186/77188).
         if (this.mCore) {
-            SoundManager.setMusicVolume(this.mCore.mMusicVolume ?? 0.5);
-            SoundManager.setSfxVolume(this.mCore.mSoundVolume ?? 0.7);
+            SoundManager.setMusicVolume(this.mCore.mMusicVolume ?? DEFAULT_MUSIC_VOLUME);
+            SoundManager.setSfxVolume(this.mCore.mSoundVolume ?? DEFAULT_SFX_VOLUME);
         }
+
+        // The TitleScreen is shown WHILE the Game group loads
+        // (FUN_004084d8 rwg:10644 adds it before the loader runs), so
+        // the loop starts now and draws the loading state.
+        this.mState = GameState.LOADING;
+        this.mRunning = true;
+        this.mLastTime = performance.now();
+        this._gameLoop();
+
+        // Load all resources ("Init", then "Game", then music — see Res.js)
+        await Res.loadAll((progress) => {
+            this.mLoadProgress = progress;   // TitleScreen+0x84 (rwg:10721)
+        });
 
         // Create views
         this.mMainMenuView = new MainMenuView(this);
         this.mGameView = new GameView(this);
 
-        // Show main menu
+        // FUN_0040874e rwg:10744-10748: remove TitleScreen, show main menu.
         this.showMainMenu();
 
-        // Start game loop
-        this.mRunning = true;
-        this.mLastTime = performance.now();
-        this._gameLoop();
+        this._setupFocusPause();
+    }
+
+    // FUN_00408e2f (vtable[76], rwg:11193) / FUN_00408e62 (vtable[75],
+    // rwg:11220). The slots are identified as LostFocus/GotFocus by Sexy's
+    // SexyAppBase declaration order (GotFocus then LostFocus); the bodies are:
+    //   LostFocus: if a level exists (Core+4) and it is NOT paused (+4 == 0):
+    //              paused = 1, +0xd = 0, FUN_004090b9(0), app+0x5f4 = 1;
+    //              else app+0x5f4 = 0.
+    //   GotFocus:  if a level exists and app+0x5f4: paused = 0, +0xd = 0.
+    //              app+0x5f4 = 0.
+    // Port: Core+4 "paused" == FieldController.mIsPaused. The +0xd byte and
+    // the cursor reset FUN_004090b9 → FUN_0040cc01 (its EAX mode argument is
+    // not recoverable from the decompile) are NOT ported:
+    // UNKNOWN — not found in decompiled.
+    _setupFocusPause() {
+        if (typeof window === 'undefined' || this._focusPauseInstalled) return;
+        this._focusPauseInstalled = true;
+        this.mPausedByFocus = false;   // app+0x5f4
+        window.addEventListener('blur', () => this.lostFocus());
+        window.addEventListener('focus', () => this.gotFocus());
+    }
+
+    // FUN_00408e2f rwg:11204-11214
+    lostFocus() {
+        const fc = this.mGameView && this.mGameView.mFieldController;
+        const levelExists = !!(fc && this.mState === GameState.PLAYING);
+        if (levelExists && !fc.mIsPaused) {
+            fc.mIsPaused = true;          // rwg:11207
+            this.mPausedByFocus = true;   // rwg:11210
+            return;
+        }
+        this.mPausedByFocus = false;      // rwg:11213
+    }
+
+    // FUN_00408e62 rwg:11231-11238
+    gotFocus() {
+        const fc = this.mGameView && this.mGameView.mFieldController;
+        if (fc && this.mPausedByFocus) {
+            fc.mIsPaused = false;         // rwg:11234
+        }
+        this.mPausedByFocus = false;      // rwg:11237
     }
 
     // Override _gameLoop to handle loading screen
@@ -118,54 +174,84 @@ export class GameApp extends SexyAppBase {
         requestAnimationFrame(() => this._gameLoop());
     }
 
+    // TitleScreen::Draw — FUN_00423e95 (rwg:43997-44028).
+    //   SetColor(DAT_005012b0) + FillRect(0, 0, w, h)          rwg:44014-44016
+    //     DAT_005012b0 = Sexy Color::Black (same global is the black bottom/
+    //     right bevel of the stock ButtonWidget draw, rwg:69455-69459).
+    //   DrawImageF(IMAGE_PROGRESSBAR_BACK = DAT_0050002c, x, y) rwg:44017-44018
+    //     x involves (width - back.width) / 2; y UNKNOWN (float args lost).
+    //   repeat N times: DrawImageF(IMAGE_PROGRESSBAR = DAT_00500028, x, y)
+    //     N = ftol(f(progress +0x84)); f, x, y UNKNOWN.        rwg:44019-44027
+    // The previous "Loading..." text / green bar / percentage were invented
+    // and are removed. Only the verified black fill is drawn:
+    // progress-bar placement is UNKNOWN — not found in decompiled.
     _drawLoadingScreen() {
         this.mCtx.fillStyle = '#000';
-        this.mCtx.fillRect(0, 0, 800, 600);
-        this.mCtx.fillStyle = '#fff';
-        this.mCtx.font = '24px Arial, sans-serif';
-        this.mCtx.textAlign = 'center';
-        this.mCtx.fillText('Loading...', 400, 280);
-
-        // Progress bar
-        this.mCtx.strokeStyle = '#fff';
-        this.mCtx.strokeRect(250, 300, 300, 20);
-        this.mCtx.fillStyle = '#4a4';
-        this.mCtx.fillRect(252, 302, 296 * this.mLoadProgress, 16);
-        this.mCtx.fillStyle = '#fff';
-        this.mCtx.fillText(`${Math.floor(this.mLoadProgress * 100)}%`, 400, 340);
-        this.mCtx.textAlign = 'left';
+        this.mCtx.fillRect(0, 0, this.mWidth, this.mHeight);
     }
 
-    // FUN_00408799 - showMainMenu
+    // FUN_00408799 (rwg:10760) - show MainMenuView. Music (rwg:10801-10805):
+    //   if (!music->IsPlaying(0)) { music->StopAllMusic(); music->PlayMusic(0,0,false); }
+    // SoundManager.playMusic is a no-op when that track is already playing.
     showMainMenu() {
         this.mState = GameState.MAIN_MENU;
         this.mCurrentView = this.mMainMenuView;
         this.mCanvas.style.cursor = 'default';
-        // Switch to main-menu music
-        if (SOUNDS.MUSIC_MAIN) SoundManager.playMusic(SOUNDS.MUSIC_MAIN);
+        if (SOUNDS.MUSIC_MAIN) SoundManager.playMusic(SOUNDS.MUSIC_MAIN);   // music id 0
     }
 
-    // FUN_004088d0 - startGame (starts a level)
+    // FUN_00408dae (rwg:11129) - start a level: Core::StartLevel
+    // (FUN_00406069), show GameView (FUN_00408a1b), then game music.
+    // Callers: SelectLevelDialog START (FUN_0041c98e rwg:35012) and the
+    // LevelFailed RESTART button (FUN_0040e217 rwg:17482).
     startGame(level) {
         this.mState = GameState.PLAYING;
         this.mCurrentView = this.mGameView;
         this.mCanvas.style.cursor = 'none';
         this.mGameView.startLevel(level);
         this.mGameView.showLevelIntro(level);
-        // Switch to game music — alternate by level for variety
-        const track = (level % 2 === 0) ? SOUNDS.MUSIC_GAME1 : SOUNDS.MUSIC_GAME0;
+        this.playGameMusic();
+    }
+
+    // Music part of FUN_00408dae (rwg:11141-11147):
+    //   id = 2 - ((rand() & 1) != 0)   → odd: id 1 (game0.ogg), even: id 2 (game1.ogg)
+    //   if (!music->IsPlaying(id)) { StopAllMusic(); PlayMusic(id, 0, false); }
+    // rand = thunk_FUN_00429891 (PRNG, rwg:49219). Previously the port chose
+    // the track by level parity — not in the source.
+    playGameMusic() {
+        const odd = (Math.floor(Math.random() * 0x7fffffff) & 1) !== 0;
+        const track = odd ? SOUNDS.MUSIC_GAME0 : SOUNDS.MUSIC_GAME1;
         if (track) SoundManager.playMusic(track);
     }
 
-    // SelectLevelDialog opener (FUN_0041c48a). Now an HTML dialog overlaid on
-    // the main-menu background (mCurrentView stays the menu so the bg draws).
-    showSelectLevel() {
+    // FUN_004088d0 (rwg:10840) - show SelectLevelView with a level argument
+    // (stored at view+0x9c). FUN_004088d0 does NOT touch music.
+    // SelectLevelView::AddedToManager FUN_0041d22e (rwg:35539) dispatches:
+    //   level == 1000            → credits roll (FUN_0041d395)
+    //   maxUnlocked == 1         → IntroductionDialog (FUN_0041d346)
+    //   level < 0x33 (51)        → SelectLevelDialog (FUN_0041d2f4)
+    //   otherwise (>= 51)        → win sequence
+    // maxUnlocked = min(50, completed + 1) (FUN_0041614b:28638). Level -1
+    // means "max unlocked" (FUN_0041c48a rwg:34745-34749). Callers: main-menu
+    // START with -1 (FUN_0040ea92 rwg:18089-18093), CREDITS with 1000
+    // (rwg:18128-18129), LevelCompleted CONTINUE with level+1 (FUN_0040dd6a
+    // rwg:17101-17104), UpgradesView done (FUN_00424a1c rwg:44923).
+    // Port: the IntroductionDialog lives in GameView.showLevelIntro, so the
+    // "maxUnlocked == 1" branch starts level 1 through startGame.
+    showSelectLevel(level = -1) {
+        if (level === 1000) { this.showCredits(); return; }
+        const maxUnlocked = Math.min(50, (this.mCore && this.mCore.mMaxLevelReached) || 1);
+        if (maxUnlocked === 1) { this.startGame(1); return; }
+        if (level >= 0x33) { this.showWin(); return; }
         if (!this.mSelectLevelView) {
             this.mSelectLevelView = new SelectLevelView(this);
         }
-        this.mSelectLevelView.mMaxLevel = (this.mCore && this.mCore.mMaxLevelReached) || 1;
-        this.mSelectLevelView.mSelectedLevel = Math.min(this.mSelectLevelView.mMaxLevel, 50);
+        this.mSelectLevelView.mMaxLevel = maxUnlocked;
+        this.mSelectLevelView.mSelectedLevel = (level === -1) ? maxUnlocked
+            : Math.max(1, Math.min(level, maxUnlocked));
         this.mState = GameState.SELECT_LEVEL;
+        // Port: the dialog is HTML overlaid on the main-menu background; the
+        // original swaps to a separate SelectLevelView widget.
         this.mCurrentView = this.mMainMenuView;
         this.mSelectLevelView.openHtml();
     }
@@ -183,8 +269,8 @@ export class GameApp extends SexyAppBase {
         const core = this.mCore;
         HtmlDialogs.open('options', {
             binds: {
-                music: core ? (core.mMusicVolume ?? 0.5) : 0.5,
-                sfx: core ? (core.mSoundVolume ?? 0.7) : 0.7,
+                music: core ? (core.mMusicVolume ?? DEFAULT_MUSIC_VOLUME) : DEFAULT_MUSIC_VOLUME,
+                sfx: core ? (core.mSoundVolume ?? DEFAULT_SFX_VOLUME) : DEFAULT_SFX_VOLUME,
                 fullscreen: !!(typeof document !== 'undefined' && document.fullscreenElement),
                 hwaccel: true,
             },
@@ -230,14 +316,11 @@ export class GameApp extends SexyAppBase {
     showChangePlayer() {
         if (!this.mCore) return;
         new ChangePlayerDialog(this.mCore, () => {
-            // Re-sync SoundManager volumes from the (possibly new) profile.
-            // Core.selectPlayer updates mMusicVolume/mSoundVolume on this.mCore
-            // but doesn't push the new values into SoundManager — so without
-            // this, the new player's profile volumes wouldn't take effect
-            // until they open OptionsDialog.
+            // Volumes are app-global in the original (registry, not per
+            // player) — re-applying them here is a no-op safety sync.
             if (this.mCore) {
-                SoundManager.setMusicVolume(this.mCore.mMusicVolume ?? 0.5);
-                SoundManager.setSfxVolume(this.mCore.mSoundVolume ?? 0.7);
+                SoundManager.setMusicVolume(this.mCore.mMusicVolume ?? DEFAULT_MUSIC_VOLUME);
+                SoundManager.setSfxVolume(this.mCore.mSoundVolume ?? DEFAULT_SFX_VOLUME);
             }
             // Pet ownership isn't saved to profile (within-session only).
             // Reset on profile switch so the new player doesn't inherit
@@ -249,21 +332,27 @@ export class GameApp extends SexyAppBase {
         }).openHtml();
     }
 
-    // Credits — opens the alien-letter credits roll (FUN_0041d828:35977).
+    // Credits — FUN_004088d0(1000) (main-menu CREDITS, FUN_0040ea92
+    // rwg:18128-18129) → SelectLevelView mode 1000 → FUN_0041d395 roll
+    // (text FUN_0041d828:35977). FUN_004088d0 does not change music, so the
+    // main-menu track keeps playing.
     showCredits() {
         this.mCurrentView = new CreditsView(this, 'credits');
-        // Switch back to menu music — game music keeps blasting otherwise.
-        if (SOUNDS.MUSIC_MAIN) SoundManager.playMusic(SOUNDS.MUSIC_MAIN);
     }
 
-    // Win screen — fires after final level. Text from FUN_0041d723:35923.
+    // Win screen — FUN_004088d0(51) after level 50 (FUN_0040dd6a rwg:17104);
+    // text FUN_0041d723:35923. No music change (the game track continues)
+    // until the sequence returns to the main menu (FUN_0041d3e0 rwg:35754
+    // → FUN_00408799, which switches to main music).
     showWin() {
         this.mCurrentView = new CreditsView(this, 'win');
-        if (SOUNDS.MUSIC_MAIN) SoundManager.playMusic(SOUNDS.MUSIC_MAIN);
     }
 
     // unlockNextLevel — bumps player profile's max-level-reached and persists.
-    // Original FUN_xxxxxxxx for unlockNextLevel not pinpointed in our trace.
+    // The original has no separate unlock: completing level L appends its
+    // time to the player's times vector (FUN_0041111b rwg:21406), and
+    // maxUnlocked = min(50, count + 1) (FUN_0041614b:28638). Core.recordLevelTime
+    // mirrors that; this helper is kept for FieldController's call order.
     unlockNextLevel(level) {
         if (this.mCore) {
             if (level > (this.mCore.mMaxLevelReached || 1)) {

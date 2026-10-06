@@ -301,9 +301,13 @@ export class SoundInstance {
 
 export class SoundManager {
     // Port of Sexy::SoundManager/DSoundManager - vtable at 004e6754
-    static mMasterVolume = 0.7;
-    static mSfxVolume = 1.0;
-    static mMusicVolume = 0.5;
+    // DSoundManager ctor rwg:121954 — master volume double = 1.0
+    // (0x3ff0000000000000). The previous 0.7 was not from the source.
+    static mMasterVolume = 1.0;
+    // SexyAppBase ctor FUN_00440396 rwg:77188 — mSfxVolume = _DAT_004e9340 = 0.85
+    static mSfxVolume = 0.85;
+    // SexyAppBase ctor FUN_00440396 rwg:77186 — mMusicVolume = _DAT_004e9348 = 0.6
+    static mMusicVolume = 0.6;
     static mCurrentMusic = null;     // BufferSourceNode (Web Audio) or HTMLAudio (fallback)
     static mCurrentMusicGain = null; // GainNode for Web Audio music volume
     static mCurrentMusicSrc = null;  // mPath of the playing track (same-track guard)
@@ -515,7 +519,9 @@ export class SexyAppBase {
     constructor(canvasId) {
         this.mWidth = 800;                   // DAT_004fe764
         this.mHeight = 600;                  // DAT_004fe768
-        this.mFrameRate = 100;               // ~10ms per tick
+        // SexyAppBase ctor FUN_00440396 rwg:77153: _DAT_004feaf4 (app+0x41c,
+        // frame time) = 10 ms → 100 updates per second.
+        this.mFrameRate = 100;
         this.mCanvas = document.getElementById(canvasId);
         this.mCtx = this.mCanvas.getContext('2d');
         this.mGraphics = new Graphics(this.mCtx);

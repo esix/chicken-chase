@@ -71,6 +71,54 @@
         </div>
       </div>
 
+      <!-- SURPRISE! prompt — FUN_0041b94a rwg:33711-33716 via the same
+           YES/NO builder FUN_0040279c as QUIT? (screenshot 32). -->
+      <div class="cc-dialog" data-dialog="surprise-ask" hidden>
+        <div class="cc-box cc-box-quit cc-box-surprise">
+          <div class="cc-plate"><h2 class="cc-title">SURPRISE!</h2></div>
+          <div class="cc-body">
+            <p class="cc-text">Do you feel clucky?</p>
+            <div class="cc-buttons cc-buttons-row">
+              <button class="cc-btn" data-action="yes">YES</button>
+              <button class="cc-btn" data-action="no">NO</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SURPRISE! result — FUN_0041ba27 rwg:33817-33826 via the OK-only
+           builder FUN_0040f491 (rwg:19014 "OK"); body = RiskCase+4 string
+           (DAT_004decf4..DAT_004dee30, the block just before "SURPRISE!"). -->
+      <div class="cc-dialog" data-dialog="surprise-result" hidden>
+        <div class="cc-box cc-box-quit cc-box-surprise">
+          <div class="cc-plate"><h2 class="cc-title">SURPRISE!</h2></div>
+          <div class="cc-body">
+            <!-- One template per RiskCase (RiskController.js mKey); SurpriseDialog.js
+                 unhides the rolled one and puts the case's mValue into [data-value]
+                 (the %i of the original sprintf, or the appended item name). -->
+            <!-- RiskCaseOffensive FUN_0041aeaf: DAT_004decf4 + itemName (0x500480 + item*0x1c) -->
+            <p class="cc-text" data-risk-case="Offensive" hidden>You've earned a free upgrade: <span data-value></span></p>
+            <!-- RiskCasePlusMoney FUN_0041afd1: DAT_004ded14 -->
+            <p class="cc-text" data-risk-case="PlusMoney" hidden>Congratulations! You won a bet of $ <span data-value></span>!</p>
+            <!-- RiskCaseStealChickens FUN_0041b0f3: DAT_004ded3c -->
+            <p class="cc-text" data-risk-case="StealChickens" hidden>Someone has stolen <span data-value></span> of your chickens!</p>
+            <!-- RiskCaseMinusMoney FUN_0041b3ae: DAT_004ded64 -->
+            <p class="cc-text" data-risk-case="MinusMoney" hidden>You lost <span data-value></span> dollars.</p>
+            <!-- RiskCaseNothing FUN_0041b569 rwg:33457: DAT_004ded7c -->
+            <p class="cc-text" data-risk-case="Nothing" hidden>Nothing happens...</p>
+            <!-- RiskCasePlusTime FUN_0041b569 rwg:33499: DAT_004ded90 -->
+            <p class="cc-text" data-risk-case="PlusTime" hidden>Your watch was fast! You have 30 more seconds!</p>
+            <!-- RiskCaseRavensScared FUN_0041b569 rwg:33517: DAT_004dedc0 -->
+            <p class="cc-text" data-risk-case="RavensScared" hidden>Your new scarecrow has frightened away all of the ravens for a few minutes.</p>
+            <!-- RiskCaseChickFlu FUN_0041b569 rwg:33563: DAT_004dee0c -->
+            <p class="cc-text" data-risk-case="ChickFlu" hidden>An epidemic of the flu has begun!</p>
+            <!-- RiskCaseRavensAttack FUN_0041b569 rwg:33579: DAT_004dee30 -->
+            <p class="cc-text" data-risk-case="RavensAttack" hidden>Acht! They are back!</p>
+            <div class="cc-buttons"><button class="cc-btn" data-action="ok">OK</button></div>
+          </div>
+        </div>
+      </div>
+
       <!-- NEW PLAYER -->
       <div class="cc-dialog" data-dialog="new-player" hidden>
         <div class="cc-box cc-box-newplayer">

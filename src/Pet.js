@@ -1,517 +1,776 @@
-// Port of Sexy::Pet and subclasses
-// Original vtables:
-//   Sexy::Pet at 004dca0c
-//   Sexy::Mouse at 004dd7a4
-//   Sexy::Elephant at 004dca48
-//   Sexy::Wolf at 004e191c
-//   Sexy::Pet::PetAction at 004dca0c (inner class)
-//   Sexy::Mouse::Action at 004dd7e0
-//   Sexy::Elephant::Action at 004dca84
-//   Sexy::Wolf::Action at 004e1958
+// Port of Sexy::Pet and subclasses (Mouse, Elephant, Wolf).
+// Original vtables (rwg_vtables.txt):
+//   Sexy::Pet       004dca0c   Sexy::Elephant 004dca48   Sexy::Mouse 004dd7a4
+//   Sexy::Wolf      004e191c
+//   Sexy::Elephant::Action 004dca84, Sexy::Mouse::Action 004dd7e0,
+//   Sexy::Wolf::Action 004e1958 (action-length tables)
 //
-// Key functions (verified against decompiled):
-//   FUN_00407ebf - Elephant constructor (sets vftable + fields including
-//                  speed at +0x2c = 1.0f)
-//   FUN_0040ebe7 - Mouse constructor (sets vftable + speed +0x2c = 1.0f
-//                  + wander timer = (rand%1500)*2 + 1500)
-//   FUN_00424be6 - Wolf constructor (sets vftable + speed +0x3c = 1.0f)
-//   FUN_00424f19 - Wolf hit handler (HP-=damage, stun=0xf, knockback)
-//   FUN_00408052 - Elephant movement helper
-//   FUN_0040ef39 - Mouse pickup check (within 2× pet radius)
-// (FUN_00407f66, FUN_00424c7f are subclass dispatchers, not Pet logic.)
+// Shared vtable slot meaning (derived from the Elephant/Mouse/Wolf tables):
+//   [0] dtor            [1] Update            [2] getAction (this+0x20 / +0x1c)
+//   [3] hit (Pet: FUN_0040d554 = no-op, Wolf: FUN_00424f19)
+//   [4] isDead (Pet: FUN_0040e36f = false)  [5] isStunned (Pet: false)
+//   [6] moveTowards FUN_00410081 (Wolf FUN_00424fa0)
+//   [7] isNear FUN_00410037   [8] getRadius   [9] getSpeed
+//   [10] onActionEnd  [11] chooseNextAction  [12] tickAction  [13] rerandomRate
+//
+// The original simulates pets in FIELD units (x 0..128, y 0..72 — clamp
+// constants _DAT_004e9140=128.0 / _DAT_004e9144=72.0 in FUN_00408149) and maps
+// to the screen with FUN_00409567 (rwg_functions.c:11987, asm 0x409567):
+//   sx = (int)(x*6.0 + 0.5) + 10,  sy = (int)(y*2.8 - 6.0*z + 0.5) + 367
+// (matrix _DAT_004fc3ec=6.0, _DAT_004fc3f8=2.8, _DAT_004fc400=-6.0, offsets
+// _DAT_004fc3e4=10, _DAT_004fc3e8=367, rounding _DAT_004e90c8=0.5).
+// The inverse is FUN_00409533 (rwg_functions.c:11965). The JS port keeps the
+// field position in mPosX/mPosY and exposes pixel mX/mY accessors so the rest
+// of the port (Field y-sort, click tests, spawn code) keeps working.
 
-import { IMAGES, SOUNDS } from './Res.js';
+import { IMAGES } from './Res.js';
 
-// Pet types
+// Pet types — this+0x04 (Mouse ctor FUN_0040ebe7 sets 0, Elephant FUN_00407ebf
+// sets 1, Wolf FUN_00424be6 sets 2).
 export const PetType = {
     MOUSE: 0,
     ELEPHANT: 1,
     WOLF: 2,
 };
 
-// Pet action states
-const PetState = {
-    IDLE: 0,
-    WALK: 1,
-    SPECIAL: 2,
+// Action ids (this+0x30 for Mouse/Elephant, +0x2c for Wolf). The id also
+// selects the sprite in FUN_0040a32a (rwg_functions.c:13046): 0 = idle image
+// (DAT_00500664), 1 = walk image (DAT_00500584), 2 = special (DAT_005005a4).
+const ACTION_IDLE = 0;
+const ACTION_WALK = 1;
+const ACTION_SPECIAL = 2;
+
+// Action lengths, read from the binary (Action vtable[0] lookups):
+//   Elephant FUN_00407ea4 -> DAT_004dc9fc = {160, 80, 0}
+//   Mouse    FUN_0040ebcc -> DAT_004dd794 = {50, 30, 0}
+//   Wolf     FUN_00424bcb -> PTR_004e190c = {0, 60, 60}
+const ACTION_LENGTHS = {
+    [PetType.MOUSE]: [50, 30, 0],
+    [PetType.ELEPHANT]: [160, 80, 0],
+    [PetType.WOLF]: [0, 60, 60],
 };
 
+// Sprite cel widths passed to FUN_0041a5b6 by the resource loader
+// (asm 0x41973b-0x419749: 0x46, 0x64, 0x87). cols = image width / cel width.
+const CEL_WIDTH = {
+    [PetType.MOUSE]: 70,
+    [PetType.ELEPHANT]: 100,
+    [PetType.WOLF]: 135,
+};
+
+// _DAT_004e9230 = -1.0f: "no target" marker.
+const NO_TARGET = -1.0;
+// _DAT_004e9280 = 1000000.0f: initial "best distance" in nearest searches.
+const BIG_DIST = 1000000.0;
+
+// ---------------------------------------------------------------------------
+// Field <-> screen mapping
+// ---------------------------------------------------------------------------
+// FUN_00409567 (rwg_functions.c:11987)
+export function fieldToScreenX(x) { return Math.trunc(x * 6.0 + 0.5) + 10; }
+export function fieldToScreenY(y, z = 0) { return Math.trunc(y * 2.8 - 6.0 * z + 0.5) + 367; }
+// FUN_00409533 (rwg_functions.c:11965)
+export function screenToFieldX(px) { return (px - 10) / 6.0; }
+export function screenToFieldY(py) { return (py - 367) / 2.8; }
+
+// ---------------------------------------------------------------------------
+// Random helpers
+// ---------------------------------------------------------------------------
+// thunk_FUN_00429891 (rwg_functions.c:49178): Mersenne Twister, 31-bit result.
+function mtRand() { return Math.floor(Math.random() * 2147483648); }
+// _rand (FUN_004a082c): MSVC rand, 0..32767.
+function crtRand() { return Math.floor(Math.random() * 32768); }
+// FUN_00403207 (rwg_functions.c:3308): (base - spread) + rand*_DAT_004e9248*spread*2,
+// _DAT_004e9248 = 4.656612873077393e-10 (1/2^31).
+function randAround(base, spread) {
+    const f = mtRand() * 4.656612873077393e-10 * spread;
+    return (base - spread) + f + f;
+}
+// FUN_00401148 (asm 0x401148): rand() / _DAT_004e9178 (32767.0)
+function rand01() { return crtRand() / 32767.0; }
+// FUN_00410471 (rwg_functions.c:20113): random wander point (rand%128, rand%57)
+function randomWanderPoint() { return [mtRand() % 128, mtRand() % 57]; }
+// FUN_00408107 (rwg_functions.c:10260): random spawn point (rand%128, rand%72)
+export function randomSpawnPoint() { return [mtRand() % 128, mtRand() % 72]; }
+
+// FUN_00403c97 (rwg_functions.c:4316): Chebyshev length max(|dx|,|dy|)
+function chebyshev(dx, dy) {
+    const ax = Math.abs(dx), ay = Math.abs(dy);
+    return ay < ax ? ax : ay;
+}
+
+// Chick vtable[5] isActive — FUN_0040327c (rwg_functions.c:3368):
+//   state(+0x08) != 6 (death) && state != 0 (newborn) && z(+0x28) == 0.
+// JS mapping: mIsAlive <-> state != 6, mIsAdult <-> state != 0 (same mapping
+// Field.spawnRaven uses), !mIsCarried <-> z == 0.
+function chickIsActive(c) {
+    return !!c && c.mIsAlive && c.mIsAdult && !c.mIsCarried;
+}
+
+// Gem field position (gem +0x0c/+0x10 in the original). JS gems keep pixel
+// coordinates; mGroundY is the resting y while bouncing.
+function gemFieldPos(gem) {
+    const py = (typeof gem.mGroundY === 'number') ? gem.mGroundY : gem.mY;
+    return [screenToFieldX(gem.mX), screenToFieldY(py)];
+}
+
+// Original gem list (global+0x28) only holds live coins/diamonds; eggs are a
+// separate list. JS Field.mGems mixes eggs (type 4) and dead gems.
+function liveFieldGems(field) {
+    if (!field || !field.mGems) return [];
+    return field.mGems.filter(g => g.mIsAlive && !g.mCollected && g.mType !== 4);
+}
+
 export class Pet {
-    // Port of Sexy::Pet - vtable at 004dca0c
-    constructor(type) {
-        this.mType = type;              // offset +0x00
-        this.mX = 400;                  // offset +0x04
-        this.mY = 500;                  // offset +0x08
-        this.mTargetX = 400;            // offset +0x0c
-        this.mTargetY = 500;            // offset +0x10
-        this.mState = PetState.IDLE;    // offset +0x14
-        this.mAnimTimer = 0;            // offset +0x1c
-        this.mStateTimer = 0;           // offset +0x20
-        this.mSpeed = 1.0;              // offset +0x24
-        this.mDirection = 1;            // offset +0x28
-        // Field.update filters mWolves by `w.mIsAlive`; without an explicit
-        // init this was `undefined` (falsy), so every freshly-spawned wolf
-        // was filtered out the tick after spawn and never visibly attacked.
+    // Base of Sexy::Pet (vtable 004dca0c). Field layout shared by subclasses:
+    //   +0x04 type, +0x08/+0x0c pos, +0x10/+0x14 direction, +0x18 mode,
+    //   action object: max / cur / rate / id.
+    constructor(type, fx = 0, fy = 0) {
+        this.mType = type;               // +0x04
+        this.mPosX = fx;                 // +0x08 (field units)
+        this.mPosY = fy;                 // +0x0c
+        this.mDirX = 1.0;                // +0x10 (all ctors store 1.0)
+        this.mDirY = 0.0;                // +0x14
+        this.mMode = 0;                  // +0x18
+        this.mActionMax = 0;             // action +4
+        this.mActionCur = 0;             // action +8
+        this.mActionRate = 1.0;          // action +0xc (0x3f800000 in every ctor)
+        this.mActionId = ACTION_IDLE;    // action +0x10
+        // Pets live in the FieldController's pet list (global+0x44) and are
+        // removed when vtable[1] Update returns false (FUN_00410116,
+        // asm 0x41016d-0x41017d). Field.js filters wolves by mIsAlive.
         this.mIsAlive = true;
-        // mIsActive (offset +0x2c in original) — always true in our port. The
-        // original used it to pause specific pets via the Risk system, but we
-        // don't have an "inactive pet" code path, so the field is omitted to
-        // avoid the impression that it gates anything.
+        // The original constructors call vtable[10] and vtable[11] at the end
+        // (e.g. FUN_00407ebf: `(*vt+0x28)(); (*vt+0x2c)();`). JS callers
+        // construct first and set mX/mY afterwards, so those two calls run at
+        // the start of the first update() instead.
+        this._needsCtorActions = true;
     }
 
-    // Pet base update — anim/state timers + clamp to playable yard.
-    // Subclasses override and chain via super.update(field).
+    // Pixel accessors (FUN_00409567 / FUN_00409533) so external code that
+    // reads/writes mX/mY in screen space keeps working.
+    get mX() { return fieldToScreenX(this.mPosX); }
+    set mX(px) { this.mPosX = screenToFieldX(px); }
+    get mY() { return fieldToScreenY(this.mPosY); }
+    set mY(py) { this.mPosY = screenToFieldY(py); }
+    // Facing: the draw flag is (dirX > 0) — FUN_00409f04 asm 0x409f1b-0x409f33.
+    get mDirection() { return this.mDirX > 0 ? 1 : 0; }
+    set mDirection(d) { this.mDirX = d ? 1.0 : -1.0; this.mDirY = 0.0; }
+
+    // Action vtable[0] length lookup (FUN_00407ea4 / FUN_0040ebcc / FUN_00424bcb)
+    _actionLength(id) {
+        const t = ACTION_LENGTHS[this.mType];
+        if (!t || id < 0 || id > 2) return 0;
+        return t[id];
+    }
+
+    // FUN_0040ffe3 (rwg_functions.c:19729): start action `id`
+    _startAction(id) {
+        this.mActionCur = 0;
+        this.mActionId = id;
+        this.mActionMax = this._actionLength(id);
+    }
+
+    // FUN_00407e39 (rwg_functions.c:9865): finished = max > 0 && cur == max
+    _actionFinished() {
+        return this.mActionMax > 0 && this.mActionCur === this.mActionMax;
+    }
+
+    // FUN_00407e59 (rwg_functions.c:9882): cur += rate*f, clamped to max
+    _advanceAction(f) {
+        if (this.mActionMax > 0 && !this._actionFinished()) {
+            this.mActionCur = this.mActionRate * f + this.mActionCur;
+        }
+        if (this.mActionCur > this.mActionMax) this.mActionCur = this.mActionMax;
+    }
+
+    // vtable[4] isDead — FUN_0040e36f returns 0 for Pet/Mouse/Elephant
+    isDead() { return false; }
+    // vtable[5] isStunned — FUN_0040e36f returns 0 for Pet/Mouse/Elephant
+    isStunned() { return false; }
+    // vtable[3] hit — FUN_0040d554 (`ret 8`, no-op) for Pet/Mouse/Elephant
+    hit() {}
+
+    // vtable[7] FUN_00410037 (rwg_functions.c:19778):
+    //   chebyshev(target - pos) < getRadius() * _DAT_004e9260 (1.1)
+    _isNear(tx, ty) {
+        return chebyshev(tx - this.mPosX, ty - this.mPosY) < this._getRadius() * 1.100000023841858;
+    }
+
+    // vtable[6] FUN_00410081 (rwg_functions.c:19802): step toward target.
+    // Returns true while still moving, false when it snapped onto the target.
+    _moveTowards(tx, ty) {
+        const step = this._getSpeed();
+        let dx = tx - this.mPosX;
+        let dy = ty - this.mPosY;
+        const moving = step * 1.100000023841858 <= chebyshev(dx, dy);
+        if (moving) {
+            // FUN_00403cdf (rwg_functions.c:4344): normalize to length 1.0
+            const len = Math.sqrt(dx * dx + dy * dy);
+            dx = dx * (1.0 / len);
+            dy = (1.0 / len) * dy;
+            this.mDirX = dx;
+            this.mDirY = dy;
+            this.mPosX = dx * step + this.mPosX;
+            this.mPosY = dy * step + this.mPosY;
+        } else {
+            this.mPosX = tx;
+            this.mPosY = ty;
+        }
+        return moving;
+    }
+
+    // FUN_00410001 (rwg_functions.c:19751) — Pet::Update core
+    _petUpdate(field) {
+        if (this._actionFinished()) {
+            this._onActionEnd(field);     // vtable[10]
+            this._chooseNextAction(field); // vtable[11]
+            this._rerandomRate();         // vtable[13]
+        }
+        this._tickAction(field);          // vtable[12]
+        return true;
+    }
+
+    _runCtorActions(field) {
+        if (!this._needsCtorActions) return;
+        this._needsCtorActions = false;
+        this._onActionEnd(field);
+        this._chooseNextAction(field);
+    }
+
     update(field) {
-        this.mAnimTimer++;
-        this.mStateTimer++;
-        // Clamp to field bounds. The `!== undefined` checks here are dead —
-        // mX/mY are always defined (set in constructor lines 43-44) — removed
-        // to keep the hot-path simple.
-        this.mX = Math.max(40, Math.min(760, this.mX));
-        this.mY = Math.max(370, Math.min(580, this.mY));
+        this._runCtorActions(field);
+        return this._petUpdate(field);
     }
 
+    // Image for the current action — FUN_0040a32a (rwg_functions.c:13046)
+    _getActionImage() {
+        switch (this.mType) {
+            case PetType.MOUSE:
+                return this.mActionId === ACTION_WALK ? IMAGES.IMAGE_PET_WALK_MOUSE
+                    : this.mActionId === ACTION_SPECIAL ? null : IMAGES.IMAGE_PET_IDLE_MOUSE;
+            case PetType.ELEPHANT:
+                return this.mActionId === ACTION_WALK ? IMAGES.IMAGE_PET_WALK_ELEPHANT
+                    : this.mActionId === ACTION_SPECIAL ? null : IMAGES.IMAGE_PET_IDLE_ELEPHANT;
+            case PetType.WOLF:
+                // No idle wolf image is loaded (loader skips index 2 for
+                // DAT_00500664, rwg_functions.c:31556).
+                return this.mActionId === ACTION_WALK ? IMAGES.IMAGE_PET_WALK_WOLF
+                    : this.mActionId === ACTION_SPECIAL ? IMAGES.IMAGE_PET_SPECIAL_WOLF : null;
+        }
+        return null;
+    }
+
+    // FUN_00409800 (asm 0x409800): pet rect {x, y, w, h} in screen space.
+    //   H = walkImg[type].height * scale, W = walkImg[type].width * scale /
+    //   walkImg[0].numCols (note: always the MOUSE walk image's column count).
+    //   x = sx - (int)(W*k + 0.5), k = 0.25/0.75 for the mouse (unflipped/
+    //   flipped; _DAT_004e92c0 / _DAT_004e92b8) else 0.5,
+    //   y = sy - (int)(H*_DAT_004e92a0(0.8) + 0.5). Also used as the wolf
+    //   click rect by the field click handler (asm 0x40cea3 + FUN_0040d241).
+    getRect() {
+        const walkImgs = [IMAGES.IMAGE_PET_WALK_MOUSE, IMAGES.IMAGE_PET_WALK_ELEPHANT,
+            IMAGES.IMAGE_PET_WALK_WOLF];
+        const img = walkImgs[this.mType];
+        const mouseWalk = walkImgs[0];
+        if (!img || !img.mWidth || !mouseWalk || !mouseWalk.mWidth) return null;
+        const scale = 1.0; // FUN_004090cd: params +0x18 = 1.0f
+        const mouseCols = Math.floor(mouseWalk.mWidth / CEL_WIDTH[PetType.MOUSE]);
+        const H = img.mHeight * scale;
+        const W = (img.mWidth * scale) / mouseCols;
+        const sx = this.mX;
+        const sy = this.mY;
+        const flip = this.mDirX > 0;
+        let k = 0.5;
+        if (this.mType === PetType.MOUSE) k = flip ? 0.75 : 0.25;
+        return {
+            x: sx - Math.trunc(W * k + 0.5),
+            y: sy - Math.trunc(H * 0.800000011920929 + 0.5),
+            w: Math.trunc(W + 0.5),
+            h: Math.trunc(H + 0.5),
+        };
+    }
+
+    // Pet draw — GameView::Draw pet loop (asm 0x40ab9b-0x40ac8e):
+    //   rect FUN_00409800, params FUN_00409f04, image FUN_0040a32a.
+    // FUN_00409f04 (asm 0x409f04): mirror when dirX > 0, frame =
+    // (int)(numCols * cur/max) clamped to numCols-1, colorize (255,150,150)
+    // when vtable[5] isStunned. No shadow is drawn for pets (IMAGE_SHADOW is
+    // only drawn in the chick and diamond loops, rwg_functions.c:13405/13495).
     draw(g) {
-        // Override in subclass
-    }
-
-    // Helper: draw a small shadow ellipse below the pet at feet level.
-    _drawShadow(g, w = 30, h = 8) {
+        if (!this.mIsAlive) return;
+        const img = this._getActionImage();
+        if (!img || !img.img) return;
+        if (g._isReady && !g._isReady(img.img)) return;
+        const rect = this.getRect();
+        if (!rect) return;
+        const celW = CEL_WIDTH[this.mType];
+        const cols = Math.max(1, Math.floor(img.mWidth / celW));
+        const celH = img.mHeight;
+        const progress = this.mActionMax <= 0 ? 0 : this.mActionCur / this.mActionMax;
+        let frame = Math.trunc(cols * progress);
+        if (frame >= cols) frame = cols - 1;
+        const flip = this.mDirX > 0;
+        const tint = this.isStunned();
         const ctx = g.ctx;
-        ctx.fillStyle = 'rgba(0,0,0,0.30)';
-        ctx.beginPath();
-        ctx.ellipse(this.mX, this.mY + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
-        ctx.fill();
+        const ox = (g.mTransX || 0) + rect.x;
+        const oy = (g.mTransY || 0) + rect.y;
+        let src = img.img, srcX = frame * celW, srcY = 0;
+        if (tint) {
+            // Sexy colorized draw multiplies the pixels by (255,150,150)
+            // (FUN_00450771(0xff,0x96,0x96), asm 0x409f96-0x409fa8).
+            const off = document.createElement('canvas');
+            off.width = celW;
+            off.height = celH;
+            const octx = off.getContext('2d');
+            octx.drawImage(img.img, srcX, 0, celW, celH, 0, 0, celW, celH);
+            octx.globalCompositeOperation = 'multiply';
+            octx.fillStyle = 'rgb(255,150,150)';
+            octx.fillRect(0, 0, celW, celH);
+            octx.globalCompositeOperation = 'destination-in';
+            octx.drawImage(img.img, srcX, 0, celW, celH, 0, 0, celW, celH);
+            src = off; srcX = 0; srcY = 0;
+        }
+        if (flip) {
+            ctx.save();
+            ctx.translate(ox + celW, oy);
+            ctx.scale(-1, 1);
+            ctx.drawImage(src, srcX, srcY, celW, celH, 0, 0, celW, celH);
+            ctx.restore();
+        } else {
+            ctx.drawImage(src, srcX, srcY, celW, celH, ox, oy, celW, celH);
+        }
     }
 }
 
 export class Mouse extends Pet {
-    // Sexy::Mouse vtable at 0x004dd7a4. FUN_0040ebe7 (rwg_functions.c:18227).
-    // Alloc 0x50 (80 bytes). State machine wander↔chase per FUN_0040ed90:18397.
-    // - Wander timer: (rand%1500)*2 + 1500 ms per FUN_0040ee9e:18519
-    // - Chase: picks gem within 2× pet radius (FUN_0040ef39:18616)
-    // - Also disperses ravens nearby (FUN_0040c75b at line 18632)
-    constructor() {
-        super(PetType.MOUSE);
-        // FUN_0040ebe7:18253 sets +0x2c (piVar2[0xb]) = 0x3f800000 = 1.0f.
-        this.mSpeed = 1.0;
-        this.mTargetGem = null;
-        // First wander target picked within ~1 sec instead of 15-45 sec —
-        // otherwise the mouse just sits at spawn doing nothing while waiting
-        // out the full wander interval. Subsequent intervals stay long.
-        this.mWanderTimer = 30 + Math.floor(Math.random() * 60);
-        this.mScareRadius = 80;
+    // Sexy::Mouse vtable 004dd7a4. Constructor FUN_0040ebe7 (rwg_functions.c:18227,
+    // asm 0x40ebe7): alloc 0x50.
+    constructor(fx = 0, fy = 0) {
+        super(PetType.MOUSE, fx, fy);
+        this.mMoveX = 0;                  // +0x34 current move destination
+        this.mMoveY = 0;                  // +0x38
+        this.mTargetX = NO_TARGET;        // +0x3c wander target (_DAT_004e9230)
+        this.mTargetY = NO_TARGET;        // +0x40
+        this.mRateTimer = 0;              // +0x44
+        this.mIdleCount = 0;              // +0x48
+        this.mAccel = 0;                  // +0x4c (0..1 ramp)
+        // +0x1c = (rand % 1500) * 2 + 1500 (asm 0x40ec44-0x40ec5a). Nothing
+        // ever decrements it, so the "timer == 0" branch of FUN_0040ede2 is
+        // never taken; kept for fidelity.
+        this.mWanderTimer = (mtRand() % 0x5dc) * 2 + 0x5dc;
+        this.mMode = 0;                   // +0x18
     }
 
+    // vtable[8] FUN_0040eddb: radius = _DAT_004e90e4 = 3.0f
+    _getRadius() { return 3.0; }
+    // vtable[9] FUN_0040edbd (rwg_functions.c:18440):
+    //   accel * rate * _DAT_004e9118 (0.17) * _DAT_004e9110 (1.4)
+    _getSpeed() {
+        return Math.fround(this.mAccel * this.mActionRate * 0.17000000178813934 * 1.399999976158142);
+    }
+
+    // vtable[10] FUN_0040ed77 (rwg_functions.c:18379): mode = gem list non-empty
+    _onActionEnd(field) {
+        this.mMode = liveFieldGems(field).length !== 0 ? 1 : 0;
+    }
+
+    // vtable[11] FUN_0040ed90 (rwg_functions.c:18397)
+    _chooseNextAction(field) {
+        if (this.mMode === 0) this._wander();
+        else if (this.mMode === 1) this._chase(field);
+    }
+
+    // vtable[13] FUN_0040ecf9 (rwg_functions.c:18324)
+    _rerandomRate() {
+        if (this.mRateTimer < 1) {
+            this.mRateTimer = 1000;
+            this.mActionRate = Math.fround(randAround(1.0, 0.20000000298023224)); // _DAT_004e90e0
+        }
+    }
+
+    // FUN_0040eda8 (rwg_functions.c:18419): idle
+    _idle() {
+        this._startAction(ACTION_IDLE);
+        this.mIdleCount++;
+        this.mAccel = 0;
+    }
+
+    // FUN_0040f08d (rwg_functions.c:18649): set move destination; reset the
+    // acceleration ramp if there was no previous destination or the new one
+    // points backwards (dot product < 0).
+    _setMoveTarget(px, py) {
+        if (this.mAccel > 0
+            && (this.mMoveX <= 0
+                || ((this.mMoveY - this.mPosY) * (py - this.mPosY)
+                    + (px - this.mPosX) * (this.mMoveX - this.mPosX)) < 0)) {
+            this.mAccel = 0;
+        }
+        this.mMoveX = px;
+        this.mMoveY = py;
+    }
+
+    // FUN_0040ee9e (rwg_functions.c:18519, asm 0x40ee9e): wander
+    _wander() {
+        if (this._isNear(this.mTargetX, this.mTargetY)) {
+            this.mTargetX = NO_TARGET;
+            this.mTargetY = NO_TARGET;
+            this._idle();
+            return;
+        }
+        if (this.mTargetX < 0) {
+            // idleCount < 2: 50% (rand & 0x80000001) chance to pick a point;
+            // idleCount >= 2: always pick.
+            let pick = true;
+            if (this.mIdleCount < 2) pick = (mtRand() % 2) !== 0;
+            if (pick) {
+                const [x, y] = randomWanderPoint();
+                this.mTargetX = x;
+                this.mTargetY = y;
+            }
+        }
+        if (this.mTargetX < 0) {
+            this._idle();
+            return;
+        }
+        this.mIdleCount = 0;
+        this._setMoveTarget(this.mTargetX, this.mTargetY);
+        this._startAction(ACTION_WALK);
+    }
+
+    // FUN_0040ede2 (rwg_functions.c:18471, asm 0x40ede2): chase nearest gem
+    _chase(field) {
+        if (this.mIdleCount < 2 && this.mWanderTimer === 0) {
+            this.mWanderTimer = (mtRand() % 0x5dc) * 2 + 0x5dc;
+            this._idle();
+            return;
+        }
+        // FUN_0040c7db (rwg_functions.c:15406): nearest by Chebyshev distance,
+        // initial best _DAT_004e9280 = 1e6, strict '<'.
+        let best = BIG_DIST;
+        let bestGem = null;
+        for (const gem of liveFieldGems(field)) {
+            const [gx, gy] = gemFieldPos(gem);
+            const d = chebyshev(this.mPosX - gx, this.mPosY - gy);
+            if (d < best) {
+                best = d;
+                bestGem = gem;
+            }
+        }
+        if (!bestGem) {
+            this._wander();
+            return;
+        }
+        this.mIdleCount = 0;
+        const [gx, gy] = gemFieldPos(bestGem);
+        this._setMoveTarget(gx, gy);
+        this._startAction(ACTION_WALK);
+    }
+
+    // vtable[12] FUN_0040ed26 (rwg_functions.c:18347)
+    _tickAction(field) {
+        this._advanceAction(this.mActionId === ACTION_WALK ? this.mAccel : 1.0);
+        if (!this._actionFinished() && this.mActionId === ACTION_WALK) {
+            if (!this._moveTowards(this.mMoveX, this.mMoveY)) {
+                this.mActionCur = this.mActionMax;
+                if (this.mMode === 1) this._collectNearbyGems(field);
+            }
+        }
+    }
+
+    // FUN_0040ef39 (rwg_functions.c:18579, asm 0x40ef39): collect every gem
+    // whose Chebyshev distance is < 2*radius, each via FUN_0040c75b
+    // (rwg_functions.c:15342): add value with FUN_00424b5d (money + popup at
+    // the gem position), bump the collection counter, play the gem's sound
+    // (vtable[6]), mark collected (vtable[3]) and remove it from the list.
+    // NOTE: the old JS also scared ravens here — FUN_0040c75b is the gem
+    // pickup, not a raven scare, so that was removed.
+    _collectNearbyGems(field) {
+        const r2 = this._getRadius() + this._getRadius();
+        const picked = [];
+        for (const gem of liveFieldGems(field)) {
+            const [gx, gy] = gemFieldPos(gem);
+            if (chebyshev(gx - this.mPosX, gy - this.mPosY) < r2) picked.push(gem);
+        }
+        const fc = field && field.mFieldController;
+        for (const gem of picked) {
+            if (gem.mCollected) continue;
+            const value = gem.collect();   // JS: marks collected + plays sound
+            if (value > 0 && fc) {
+                fc.addMoney(value);
+                // Same popup path the player's click uses (both go through
+                // FUN_00424b5d -> FUN_0040693f in the original).
+                if (fc.addFloatingText) {
+                    let color = '#fff';
+                    if (gem.mType === 0) color = '#ffd700';
+                    else if (gem.mType === 1) color = '#cccccc';
+                    else if (gem.mType === 2) color = '#5cb8ff';
+                    else if (gem.mType === 3) color = '#ff5c5c';
+                    fc.addFloatingText(gem.mX, gem.mY - 10, `+$${value}`, color);
+                }
+                if (fc._trackCollection) fc._trackCollection(gem);
+            }
+        }
+    }
+
+    // vtable[1] FUN_0040ec95 (rwg_functions.c:18290)
     update(field) {
-        super.update(field);
-        if (!field) return;
-
-        // Find a gem to chase (within 2× pickup radius). Mouse collects coins
-        // and diamonds — not eggs (player must hatch or collect those).
-        if (!this.mTargetGem || !this.mTargetGem.mIsAlive) {
-            this.mTargetGem = null;
-            let minDist = Infinity;
-            for (const gem of field.mGems) {
-                if (!gem.mIsAlive || gem.mCollected) continue;
-                if (gem.mType === 4 /* EGG */) continue;
-                const dx = gem.mX - this.mX;
-                const dy = gem.mY - this.mY;
-                const dist = dx * dx + dy * dy;
-                if (dist < minDist) {
-                    minDist = dist;
-                    this.mTargetGem = gem;
-                }
-            }
+        this._runCtorActions(field);
+        if (this.mMode !== 0) {
+            this.mTargetX = NO_TARGET;
+            this.mTargetY = NO_TARGET;
         }
-
-        if (this.mTargetGem) {
-            // Chase mode (FUN_0040ede2:18471). Mouse must walk to gem before pickup.
-            this.mState = PetState.WALK;
-            const dx = this.mTargetGem.mX - this.mX;
-            const dy = this.mTargetGem.mY - this.mY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < 14) {
-                const gem = this.mTargetGem;
-                const value = gem.collect();
-                if (value > 0 && field.mFieldController) {
-                    field.mFieldController.addMoney(value);
-                    // Count toward COLLECT_COINS / COLLECT_*_DIAMONDS tasks.
-                    if (field.mFieldController._trackCollection) {
-                        field.mFieldController._trackCollection(gem);
-                    }
-                }
-                this.mTargetGem = null;
-            } else {
-                this.mDirection = dx > 0 ? 1 : 0;
-                this.mX += (dx / dist) * this.mSpeed;
-                this.mY += (dy / dist) * this.mSpeed;
-            }
-        } else {
-            // Wander mode (FUN_0040ee9e:18519)
-            this.mWanderTimer--;
-            if (this.mWanderTimer <= 0) {
-                this.mTargetX = 80 + Math.random() * 640;
-                this.mTargetY = 380 + Math.random() * 180;
-                this.mWanderTimer = 1500 + Math.floor(Math.random() * 1500) * 2;
-                this.mState = PetState.WALK;
-            }
-            const dx = this.mTargetX - this.mX;
-            const dy = this.mTargetY - this.mY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist > 5) {
-                this.mDirection = dx > 0 ? 1 : 0;
-                this.mX += (dx / dist) * this.mSpeed * 0.5;
-                this.mY += (dy / dist) * this.mSpeed * 0.5;
-            } else {
-                this.mState = PetState.IDLE;
-            }
+        if (this.mAccel < 1.0) {
+            const a = Math.fround(this.mAccel + 0.05000000074505806); // _DAT_004e9228
+            this.mAccel = a;
+            if (1.0 < a) this.mAccel = 1.0;
         }
-
-        // Disperse ravens (FUN_0040c75b). Skip already-SCARED or dead
-        // ravens: scare() is idempotent so they're already a no-op, but
-        // filtering here avoids the per-raven dx/dy/r² math for ravens that
-        // would no-op anyway. Defensive in case scare() gains side effects
-        // later (e.g. animation triggers that aren't gated by state).
-        if (field.mRavens) {
-            for (const raven of field.mRavens) {
-                if (!raven.mIsAlive || raven.mState === 3 /* SCARED */) continue;
-                const dx = raven.mX - this.mX;
-                const dy = raven.mY - this.mY;
-                if (dx * dx + dy * dy < this.mScareRadius * this.mScareRadius) {
-                    raven.scare();
-                }
-            }
-        }
-    }
-
-    draw(g) {
-        this._drawShadow(g, 26, 7);
-        const img = this.mState === PetState.WALK
-            ? IMAGES.IMAGE_PET_WALK_MOUSE
-            : IMAGES.IMAGE_PET_IDLE_MOUSE;
-        if (img && img.img) {
-            const celW = img.getCelWidth();
-            const celH = img.getCelHeight();
-            const numFrames = img.mNumCols * img.mNumRows;
-            const frame = numFrames > 1 ? Math.floor(this.mAnimTimer / 6) % numFrames : 0;
-            _drawPetCell(g, img, frame, this.mX, this.mY, celW, celH, this.mDirection);
-        }
-    }
-}
-
-// Helper — draws a pet sprite cell with optional horizontal flip based on
-// movement direction (mDirection: 1=heading right, 0=heading left).
-// Pet sprites face right by default, so we flip when heading left.
-function _drawPetCell(g, img, frame, x, y, celW, celH, dir) {
-    const ctx = g.ctx;
-    const cols = img.mNumCols || 1;
-    const srcX = (frame % cols) * celW;
-    const srcY = Math.floor(frame / cols) * celH;
-    const flip = dir === 0;
-    if (flip) {
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.scale(-1, 1);
-        ctx.drawImage(img.img, srcX, srcY, celW, celH,
-            -celW / 2, -celH / 2, celW, celH);
-        ctx.restore();
-    } else {
-        g.drawImageCell(img, x - celW / 2, y - celH / 2, frame);
+        if (this.mRateTimer > 0) this.mRateTimer--;
+        return this._petUpdate(field);
     }
 }
 
 export class Elephant extends Pet {
-    // Sexy::Elephant vtable at 0x004dca48. FUN_00407ebf (rwg_functions.c:9951).
-    // Alloc 0x44 (68 bytes). VERY slow meander (no active scaring).
-    // Effect on ravens (FUN_004104b3(1)) is INDIRECT, applied by spawn logic:
-    //  - FUN_00401308:407: max-deduction −5 instead of −1
-    //  - FUN_004014eb:593: attack count *= 2/3
-    //  - FUN_00401543:648: active attacks capped at 2
-    constructor() {
-        super(PetType.ELEPHANT);
-        // FUN_00407ebf:9976 sets +0x2c (piVar3[0xb]) = 0x3f800000 = 1.0f.
-        // Elephant feels "slow" because it picks new targets infrequently,
-        // not because of a low speed value.
-        this.mSpeed = 1.0;
+    // Sexy::Elephant vtable 004dca48. Constructor FUN_00407ebf (rwg_functions.c:9951):
+    // alloc 0x44. Its effect on ravens is applied by the raven controller via
+    // FUN_004104b3(1) (pet of type 1 present) — FieldController's job.
+    constructor(fx = 0, fy = 0) {
+        super(PetType.ELEPHANT, fx, fy);
+        this.mTargetX = NO_TARGET;   // +0x34 (_DAT_004e9230)
+        this.mTargetY = NO_TARGET;   // +0x38
+        this.mRateTimer = 0;         // +0x3c
+        this.mIdleCount = 0;         // +0x40
     }
 
+    // vtable[8] FUN_0040804b: radius = _DAT_004e90e0 = 0.2f
+    _getRadius() { return 0.20000000298023224; }
+    // vtable[9] FUN_00408030 (rwg_functions.c:10154):
+    //   rate * _DAT_004e9148 (0.03) * _DAT_004e9110 (1.4)
+    _getSpeed() {
+        return Math.fround(this.mActionRate * 0.029999999329447746 * 1.399999976158142);
+    }
+
+    // vtable[10] FUN_00407fef: +0x18 = 0
+    _onActionEnd() { this.mMode = 0; }
+
+    // vtable[11] FUN_00407ff4: if +0x18 == 0 -> FUN_00408052
+    _chooseNextAction() {
+        if (this.mMode === 0) this._chooseTarget();
+    }
+
+    // FUN_00408002 (rwg_functions.c:10130): idle
+    _idle() {
+        this.mTargetX = NO_TARGET;
+        this.mTargetY = NO_TARGET;
+        this._startAction(ACTION_IDLE);
+        this.mIdleCount++;
+    }
+
+    // FUN_00408052 (rwg_functions.c:10186, asm 0x408052)
+    _chooseTarget() {
+        if (this._isNear(this.mTargetX, this.mTargetY)) {
+            this.mTargetX = NO_TARGET;
+            this.mTargetY = NO_TARGET;
+            this._idle();
+            return;
+        }
+        if (this.mTargetX < 0) {
+            // pick when (rand & 0x80000001) is odd, or idleCount >= 2
+            if ((mtRand() % 2) !== 0 || this.mIdleCount >= 2) {
+                const [x, y] = randomWanderPoint();
+                this.mTargetX = x;
+                this.mTargetY = y;
+            }
+        }
+        if (this.mTargetX < 0) {
+            this._idle();
+        } else {
+            this._startAction(ACTION_WALK);
+            this.mIdleCount = 0;
+        }
+    }
+
+    // vtable[13] FUN_00407f93 (rwg_functions.c:10049)
+    _rerandomRate() {
+        if (this.mRateTimer < 1) {
+            this.mRateTimer = 1000;
+            this.mActionRate = Math.fround(randAround(1.0, 0.20000000298023224)); // _DAT_004e90e0
+        }
+    }
+
+    // vtable[12] FUN_00407fc0 (rwg_functions.c:10072)
+    _tickAction() {
+        this._advanceAction(1.0);
+        if (this.mActionId === ACTION_WALK) {
+            if (!this._moveTowards(this.mTargetX, this.mTargetY)) {
+                this.mActionCur = this.mActionMax;
+            }
+        }
+    }
+
+    // vtable[1] FUN_00407f83 (rwg_functions.c:10029)
     update(field) {
-        super.update(field);
-        if (!field) return;
-
-        // Slow meander (FUN_00408052:10186). No active scare.
-        if (this.mState === PetState.IDLE && this.mStateTimer > 200) {
-            this.mTargetX = 100 + Math.random() * 600;
-            this.mTargetY = 380 + Math.random() * 180;
-            this.mState = PetState.WALK;
-            this.mStateTimer = 0;
-            // Occasional trumpet — sound asset elephant.ogg exists in /sounds/.
-            if (SOUNDS && SOUNDS.SOUND_ELEPHANT && Math.random() < 0.25) {
-                SOUNDS.SOUND_ELEPHANT.play();
-            }
-        }
-        if (this.mState === PetState.WALK) {
-            const dx = this.mTargetX - this.mX;
-            const dy = this.mTargetY - this.mY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < 5) {
-                this.mState = PetState.IDLE;
-                this.mStateTimer = 0;
-            } else {
-                this.mDirection = dx > 0 ? 1 : 0;
-                this.mX += (dx / dist) * this.mSpeed;
-                this.mY += (dy / dist) * this.mSpeed;
-            }
-        }
-    }
-
-    draw(g) {
-        this._drawShadow(g, 60, 14);
-        const img = this.mState === PetState.WALK
-            ? IMAGES.IMAGE_PET_WALK_ELEPHANT
-            : IMAGES.IMAGE_PET_IDLE_ELEPHANT;
-        if (img && img.img) {
-            const celW = img.getCelWidth();
-            const celH = img.getCelHeight();
-            const numFrames = img.mNumCols * img.mNumRows;
-            const frame = numFrames > 1 ? Math.floor(this.mAnimTimer / 6) % numFrames : 0;
-            _drawPetCell(g, img, frame, this.mX, this.mY, celW, celH, this.mDirection);
-        }
+        this._runCtorActions(field);
+        if (this.mRateTimer > 0) this.mRateTimer--;
+        return this._petUpdate(field);
     }
 }
 
 export class Wolf extends Pet {
-    // Sexy::Wolf vtable at 0x004e191c.
-    // Constructor FUN_00424be6 (rwg_functions.c:45130). Alloc size 0x4c (76 bytes).
-    // Field offsets verified per DECOMPILED_MAP (Wolf research):
-    //   +0x38 HP (isDead via FUN_00424bb9: HP < 1)
-    //   +0x40 stun timer (FUN_00424bc2: 0 < stun)
-    //   +0x3c speed (1.0f init, line 45170)
-    //   +0x34 target chicken
-    //   +0x2c state machine (1=pursuing, 2=at-target)
-    //   +0x44/+0x48 knockback velocity offsets
-    constructor() {
-        super(PetType.WOLF);
-        this.mHP = 3;                  // HP — exact init UNKNOWN, picked low (3 hits)
-        this.mStun = 0;                // +0x40 stun ticks
-        // FUN_00424be6:45160 sets +0x3c (piVar2[0xf]) = 0x3f800000 = 1.0f.
-        this.mSpeed = 1.0;
-        this.mTargetChick = null;
-        this.mEatTimer = 0;
-        this.mKnockbackX = 0;
-        this.mKnockbackY = 0;
+    // Sexy::Wolf vtable 004e191c. Constructor FUN_00424be6 (rwg_functions.c:45130,
+    // asm 0x424be6): alloc 0x4c. Fields:
+    //   action at +0x1c (max +0x20, cur +0x24, rate +0x28, id +0x2c),
+    //   +0x30/+0x34 target chick (shared ptr), +0x38 HP, +0x3c speed factor,
+    //   +0x40 stun, +0x44/+0x48 knockback.
+    // HP comes from the caller (factory FUN_00410299 passes the wave's +0x10,
+    // asm 0x4015c7) — the JS spawn code does not pass it yet, so the default
+    // below is UNKNOWN — not found in decompiled (kept from the old port).
+    constructor(hp = 3, fx = 0, fy = 0) {
+        super(PetType.WOLF, fx, fy);
+        this.mHP = hp;                  // +0x38 — default UNKNOWN (see above)
+        this.mSpeedFactor = 1.0;        // +0x3c
+        this.mStun = 0;                 // +0x40
+        this.mKnockbackX = 0;           // +0x44
+        this.mKnockbackY = 0;           // +0x48
+        this.mTargetChick = null;       // +0x34
     }
 
-    isDead() { return this.mHP < 1; }
+    // vtable[4] FUN_00424bb9: HP <= 0
+    isDead() { return this.mHP <= 0; }
+    // vtable[5] FUN_00424bc2: stun > 0
     isStunned() { return this.mStun > 0; }
 
-    // Damage handler — vtable[3] FUN_00424f19 (rwg_functions.c:45439).
-    // Sets stun=15 (0xf), drains HP, applies knockback.
+    // vtable[3] FUN_00424f19 (rwg_functions.c:45439): HP -= dmg (floored at 0),
+    // stun = 15, knockback += dir * _DAT_004e91a8 (0.6) * dmg.
+    // dirX/dirY are the hit direction in field units.
     hit(damage = 1, dirX = 0, dirY = -1) {
-        // Idempotent — don't re-stun or re-knockback an already-dead wolf
-        // (HP < 1 per FUN_00424bb9 isDead). The click handler gates on
-        // mIsAlive but there's a one-tick window between HP=0 and the
-        // update loop setting mIsAlive=false, and clicks could land here.
-        if (this.mHP < 1) return;
         this.mHP -= damage;
         if (this.mHP < 0) this.mHP = 0;
-        this.mStun = 15;          // 0xf ticks
-        this.mKnockbackX += dirX * 4 * damage;
-        this.mKnockbackY += dirY * 4 * damage;
-        // No dedicated wolf-hit sound in original; the gunshot (SOUND_SHOOT)
-        // plays from the click handler.
+        this.mStun = 0xf;
+        const k = 0.6000000238418579;
+        this.mKnockbackX = this.mKnockbackX + dirX * k * damage;
+        this.mKnockbackY = this.mKnockbackY + damage * k * dirY;
     }
 
-    update(field) {
-        super.update(field);
-        if (!field) return;
+    // vtable[8] FUN_0040eddb: radius 3.0
+    _getRadius() { return 3.0; }
 
-        // Stun decrement (FUN_00424cb9:45218 — base update decrements +0x40)
-        if (this.mStun > 0) this.mStun--;
-        // Velocity decay (rwg_functions.c:45226-45228 with _DAT_004e9268)
-        this.mKnockbackX *= 0.85;
-        this.mKnockbackY *= 0.85;
-        this.mX += this.mKnockbackX;
-        this.mY += this.mKnockbackY;
-        // Re-clamp after knockback so a hard hit at the edge doesn't push
-        // the wolf off-canvas (Pet.update's clamp ran before knockback).
-        this.mX = Math.max(40, Math.min(760, this.mX));
-        this.mY = Math.max(370, Math.min(580, this.mY));
+    // FUN_00424d88 (asm 0x424d88): stunned (and alive) -> _DAT_004e90e0 (0.2),
+    // else +0x3c.
+    _speedFactor() {
+        if (!this.isDead() && this.isStunned()) return 0.20000000298023224;
+        return this.mSpeedFactor;
+    }
+    // vtable[9] FUN_00424d6d: speedFactor * _DAT_004e90e8 (0.2)
+    _getSpeed() { return Math.fround(this._speedFactor() * 0.20000000298023224); }
 
+    // vtable[6] FUN_00424fa0 (rwg_functions.c:45485): like Pet::moveTowards but
+    // the knockback is added to the position while moving.
+    _moveTowards(tx, ty) {
+        const step = this._getSpeed();
+        let dx = tx - this.mPosX;
+        let dy = ty - this.mPosY;
+        const moving = step * 1.100000023841858 <= chebyshev(dx, dy);
+        if (moving) {
+            const len = Math.sqrt(dx * dx + dy * dy);
+            dx = dx * (1.0 / len);
+            dy = (1.0 / len) * dy;
+            this.mDirX = dx;
+            this.mDirY = dy;
+            this.mPosX = this.mPosX + this.mKnockbackX + dx * step;
+            this.mPosY = this.mKnockbackY + dy * step + this.mPosY;
+        } else {
+            this.mPosX = tx;
+            this.mPosY = ty;
+        }
+        return moving;
+    }
+
+    // vtable[10] FUN_00424cf5 (rwg_functions.c:45248, asm 0x424cf5):
+    // dead -> mode 1; else target = FUN_00404fb1 (nearest chick), mode = 0 if
+    // a target was found, 1 otherwise ("leave the field").
+    _onActionEnd(field) {
         if (this.isDead()) {
-            // Defeat visual — wolf has no death sprite in the original asset
-            // set (only walk + eat), so the kill currently registered as a
-            // silent vanish. A particle burst gives the player feedback that
-            // their shots paid off.
-            const fc = field.mFieldController;
-            if (this.mIsAlive && fc && fc.addParticleBurst) {
-                fc.addParticleBurst(this.mX, this.mY - 20, '#882222', 22);
-                if (fc.addFloatingText) {
-                    fc.addFloatingText(this.mX, this.mY - 30, '*DOWN*', '#ff8');
-                }
-            }
-            this.mIsAlive = false;
-            // Drop the target reference — defensive cleanup. Without this, a
-            // dead wolf holds a reference to the chick it was chasing until
-            // the Field.update filter runs at end of tick. If the chick dies
-            // and gets filtered before the wolf, the wolf's mTargetChick
-            // points to a stale chick that's no longer in mChickens.
-            this.mTargetChick = null;
+            this.mMode = 1;
             return;
         }
-        if (this.isStunned()) return; // can't act while stunned
-
-        switch (this.mState) {
-            case PetState.IDLE:
-                if (this.mStateTimer > 60) {
-                    this.mTargetChick = null;
-                    // Pick NEAREST alive non-rooster non-carried chicken. The
-                    // wolf is a predator — going for the closest target is
-                    // both more menacing and avoids the wolf running across
-                    // the field past nearer prey.
-                    let nearestD2 = Infinity;
-                    for (const c of field.mChickens) {
-                        if (!c.mIsAlive || c.mIsCarried || c.mType === 2 /* ROOSTER */) continue;
-                        // Skip juveniles — matches Field.spawnRaven's filter
-                        // per the original's vtable[5] isActive gate (state
-                        // != NEWBORN, FUN_0040327c:3371). Baby chicks were
-                        // never wolf prey in the original; without this gate,
-                        // a wolf could chase a newly-hatched half-scale chick.
-                        if (!c.mIsAdult) continue;
-                        // Skip sitting broody (same reason as Field.spawnRaven —
-                        // broody is anchored to its egg and can't be moved/eaten
-                        // cleanly while brooding).
-                        if (c.mBroodActive) continue;
-                        const dx = c.mX - this.mX;
-                        const dy = c.mY - this.mY;
-                        const d2 = dx * dx + dy * dy;
-                        if (d2 < nearestD2) {
-                            nearestD2 = d2;
-                            this.mTargetChick = c;
-                        }
-                    }
-                    if (this.mTargetChick) {
-                        this.mState = PetState.WALK;
-                        this.mStateTimer = 0;
-                    }
-                }
-                break;
-
-            case PetState.WALK: {
-                if (!this.mTargetChick || !this.mTargetChick.mIsAlive
-                    || this.mTargetChick.mIsCarried) {
-                    // Drop unreachable target. mIsCarried check: once a raven
-                    // grabs the chick, it's at Y~100 (sky) but the wolf clamps
-                    // to mY ≥ 370, so the chick is permanently out of reach.
-                    // Without this guard, the wolf paces directly under the
-                    // raven indefinitely until the raven flies off-screen,
-                    // then the chick dies via ravenAttack — but the wolf is
-                    // still in WALK state because the dist check never fires.
-                    this.mState = PetState.IDLE;
-                    this.mStateTimer = 0;
-                    this.mTargetChick = null;
-                    break;
-                }
-                const dx = this.mTargetChick.mX - this.mX;
-                const dy = this.mTargetChick.mY - this.mY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                this.mDirection = dx > 0 ? 1 : 0;
-                if (dist < 15) {
-                    // FUN_00424da9 → FUN_0040481d → FUN_0040466e → FUN_00405184
-                    // Wolf instantly kills the chicken on contact.
-                    this.mState = PetState.SPECIAL;
-                    this.mStateTimer = 0;
-                    this.mEatTimer = 0;
-                    // Reset mAnimTimer so the eat animation (9 frames × 6 ticks
-                    // = 54-tick one-shot) plays from frame 0. Without this,
-                    // the eat anim starts at whatever mAnimTimer % 9 frame
-                    // the wolf's walk-anim had reached — skipping the lunge
-                    // frames and starting mid-chew.
-                    this.mAnimTimer = 0;
-                    const fc = field.mFieldController;
-                    if (fc) {
-                        if (fc.addShake) fc.addShake(8);
-                        if (fc.addParticleBurst) {
-                            fc.addParticleBurst(this.mTargetChick.mX,
-                                this.mTargetChick.mY, '#cc0000', 18);
-                        }
-                    }
-                    this.mTargetChick.die();
-                    if (SOUNDS.SOUND_WOLF) SOUNDS.SOUND_WOLF.play();
-                } else {
-                    this.mX += (dx / dist) * this.mSpeed;
-                    this.mY += (dy / dist) * this.mSpeed;
-                }
-                break;
-            }
-
-            case PetState.SPECIAL:
-                this.mEatTimer++;
-                // 54 = 9 eat-anim frames × 6 ticks/frame. `>= 54` transitions
-                // out the moment mAnimTimer reaches 54, which is when the
-                // (mAnimTimer/6) % 9 frame index wraps from 8 back to 0. The
-                // previous `> 54` kept SPECIAL for 1-2 extra ticks past the
-                // wrap, briefly restarting the eat anim from frame 0 before
-                // the wolf disengaged — visible as a tiny "double bite" at
-                // the end of the eat sequence.
-                if (this.mEatTimer >= 54) {
-                    this.mState = PetState.IDLE;
-                    this.mStateTimer = 0;
-                }
-                break;
-        }
+        this.mTargetChick = this._findTarget(field);
+        this.mMode = this.mTargetChick ? 0 : 1;
     }
 
-    draw(g) {
-        // Defensive `!mIsAlive` guard. The mWolves filter at Field.update:640
-        // (`mWolves.filter(w => w.mIsAlive)`) runs BEFORE Field.draw in the
-        // normal frame order, so a dead wolf shouldn't reach this draw call.
-        // But the filter and draw live in different functions that could
-        // be reordered by a future refactor — keep the guard as a cheap
-        // safety net.
-        if (!this.mIsAlive) return;
-        this._drawShadow(g, 50, 12);
-        let img;
-        if (this.mState === PetState.SPECIAL) {
-            img = IMAGES.IMAGE_PET_SPECIAL_WOLF;
-        } else {
-            img = IMAGES.IMAGE_PET_WALK_WOLF;
-        }
-        // Red flash when stunned/hit
-        const isHit = this.mStun > 8 && (Math.floor(this.mStun / 3) % 2 === 0);
-        if (img && img.img) {
-            const celW = img.getCelWidth();
-            const celH = img.getCelHeight();
-            const numFrames = img.mNumCols * img.mNumRows;
-            // For SPECIAL (eating) use mEatTimer, not mAnimTimer, so the eat
-            // animation freezes during stun. mAnimTimer ticks in the Pet base
-            // update unconditionally, but mEatTimer is gated behind the
-            // isStunned() early-return — without this, shooting an eating
-            // wolf shows the chew anim still advancing while the wolf is
-            // motionless ("eating while stunned").
-            const animSrc = (this.mState === PetState.SPECIAL)
-                ? (this.mEatTimer || 0)
-                : this.mAnimTimer;
-            const frame = numFrames > 1 ? Math.floor(animSrc / 6) % numFrames : 0;
-            _drawPetCell(g, img, frame, this.mX, this.mY, celW, celH, this.mDirection);
-            if (isHit) {
-                g.ctx.fillStyle = 'rgba(255,0,0,0.5)';
-                g.ctx.fillRect(this.mX - celW / 2, this.mY - celH / 2, celW, celH);
-            }
-            // HP bar above the wolf — only when hurt (HP < max), so it
-            // doesn't add visual noise for fresh wolves. Wolf starts with
-            // 3 HP, so the bar appears after the first hit.
-            if (this.mHP < 3 && this.mHP > 0) {
-                const ctx = g.ctx;
-                const barW = 30, barH = 4;
-                const bx = this.mX - barW / 2;
-                const by = this.mY - celH / 2 - 8;
-                ctx.fillStyle = 'rgba(0,0,0,0.6)';
-                ctx.fillRect(bx, by, barW, barH);
-                ctx.fillStyle = '#ff4040';
-                ctx.fillRect(bx + 1, by + 1, Math.floor((barW - 2) * (this.mHP / 3)), barH - 2);
+    // FUN_00404fb1 (rwg_functions.c:6116): nearest chick with vtable[5]
+    // isActive, distance FUN_004050cf = 3D Chebyshev of
+    // (wolf.x - c.x, wolf.y - c.y, 0 - c.z); best starts at 1e6, strict '<'.
+    _findTarget(field) {
+        if (!field || !field.mChickens) return null;
+        let best = BIG_DIST;
+        let target = null;
+        for (const c of field.mChickens) {
+            if (!chickIsActive(c)) continue;
+            const dx = Math.abs(this.mPosX - screenToFieldX(c.mX));
+            const dy = Math.abs(this.mPosY - screenToFieldY(c.mY));
+            const dz = 0; // isActive implies z == 0
+            const d = Math.max(dx, dy, dz);
+            if (d < best) {
+                best = d;
+                target = c;
             }
         }
+        return target;
+    }
+
+    // vtable[11] FUN_00424d5f: always start walking (action 1)
+    _chooseNextAction() { this._startAction(ACTION_WALK); }
+
+    // vtable[13] FUN_0044a036: no-op
+    _rerandomRate() {}
+
+    // vtable[12] FUN_00424da9 (rwg_functions.c:45365, asm 0x424da9)
+    _tickAction(field) {
+        this._advanceAction(this._speedFactor());
+        if (this._actionFinished()) {
+            if (this.mActionId === ACTION_SPECIAL) {
+                // End of the eat action: FUN_0040481d -> FUN_0040466e kills the
+                // chick (FUN_0040342b sets state 6) when it is still active.
+                const t = this.mTargetChick;
+                if (t && chickIsActive(t)) t.die();
+                this.mTargetChick = null;  // FUN_004022f8 resets the shared ptr
+            }
+            return;
+        }
+        if (this.mActionId !== ACTION_WALK) return;
+        if (this.mMode === 1) {
+            // Leave the field: x = (_DAT_004e9210 (64) < x) ? _DAT_004e920c (138)
+            // : _DAT_004e9208 (-10), y unchanged.
+            const ex = (64.0 < this.mPosX) ? 138.0 : -10.0;
+            if (!this._moveTowards(ex, this.mPosY)) this.mActionCur = this.mActionMax;
+            return;
+        }
+        const t = this.mTargetChick;
+        if (!t || !t.mIsAlive || !chickIsActive(t)) {
+            this.mActionCur = this.mActionMax;
+            return;
+        }
+        const tx = screenToFieldX(t.mX);
+        const ty = screenToFieldY(t.mY);
+        if (!this._isNear(tx, ty) && this._moveTowards(tx, ty)) return;
+        this._startAction(ACTION_SPECIAL);
+    }
+
+    // vtable[1] FUN_00424cb9 (rwg_functions.c:45218): returns false when dead,
+    // which makes the pet list (FUN_00410116) remove the wolf.
+    update(field) {
+        this._runCtorActions(field);
+        this._petUpdate(field);
+        if (this.mStun > 0) this.mStun--;
+        if (this.isDead()) {
+            this.mIsAlive = false;
+            this.mTargetChick = null;
+            return false;
+        }
+        const k = 0.9200000166893005; // _DAT_004e9268
+        this.mKnockbackX = Math.fround(this.mKnockbackX * k);
+        this.mKnockbackY = Math.fround(this.mKnockbackY * k);
+        return true;
     }
 }

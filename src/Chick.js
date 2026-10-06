@@ -1,33 +1,51 @@
 // Port of Sexy::Chick and subclasses
-// Original vtable: Sexy::Chick at 004dc894
-// SimpleChick at 004dc8dc, BroodyChick at 004dc924
-// LayerChick at 004dc96c, RoosterChick at 004dc9b4
-// MagicChick at 004dd62c, HolyChick at 004dd11c
+// Original vtables (rwg_vtables.txt):
+//   Chick 004dc894, SimpleChick 004dc8dc, BroodyChick 004dc924,
+//   LayerChick 004dc96c, RoosterChick 004dc9b4,
+//   MagicChick 004dd62c, HolyChick 004dd11c
 //
-// Verified key addresses (others were mislabels — see DECOMPILED_MAP.md):
-//   FUN_004032ca - Chick base constructor (sets state=4 ADULT, age, hunger)
-//   FUN_0040344c - Chick::update (the per-tick logic)
-//   FUN_0040327c - vtable[5] isActive: state != 6 && state != 0 && stun == 0
-//   FUN_00402342 - isWalking: action == 3 || action == 4
-//   FUN_00403a3e - food-tier check (foodCounter vs base*5 / base*0xb)
-//   FUN_00403a9a - sickness check (age < 3000 sets sick; age >= 5000 clears)
-//   FUN_00403e3c - LayerChick canLay (vt[3]); other types' vt[3] = FUN_0040e36f returns 0
-//   FUN_00403e7e - LayerChick subclass dispatcher
-//   FUN_0040dba2 - LayerChick getEggType (random across 5 weighted types)
-//   FUN_0040e36f - "returns 0" stub used as no-op vt[3] for non-layer types
-//   FUN_0040e372 - MagicChick vt[15] getCoinType: returns 2 (DiamondBlue).
-//                  NOTE: previously described as "getEggType returns magic
-//                  egg id" but MagicChick.canLayEggs is false (vt[3] =
-//                  FUN_0040e36f returns 0) so getEggType is unused for
-//                  magic — vt[15] is the coin-drop type, not egg-lay type.
-//   FUN_0040c4d9 - Gem factory (CoinGold/CoinSilver/DiamondBlue/DiamondRed)
-//   FUN_004201a0 - default vt[15] coin-type chooser (gold vs silver by food)
-//   FUN_00405899 - food base: 700 (level >= 7) or 500 (level < 7)
-//   FUN_00405886 - "is level < 7" predicate
+// Vtable slot meaning (derived from call offsets in FUN_0040344c /
+// FUN_00403602 / FUN_0040a3d6):
+//   [1] +0x04 Update             FUN_0040344c (Broody FUN_00403de4, Holy FUN_0040d912)
+//   [2] +0x08 showHungryIcon     FUN_00403ac8 (Magic FUN_0040e36f → 0)
+//   [3] +0x0c canBeSickTarget    FUN_0040e36f → 0 (Layer FUN_00403e3c)
+//   [4] +0x10                    FUN_0040325a
+//   [5] +0x14 isActive           FUN_0040327c (Broody FUN_00403dec)
+//   [6] +0x18 inHurry            FUN_00403ae9 (Broody FUN_00402700)
+//   [7] +0x1c decideState        FUN_004037e8 (Broody FUN_00402369)
+//   [8] +0x20 startAction        FUN_0040386a (Broody FUN_0040241b, Holy FUN_0040d8b1)
+//   [9] +0x24 onArrive           FUN_004037e1 (Broody FUN_004024b1)
+//   [10] +0x28 onActionEnd       FUN_0044a036 no-op (Broody FUN_0040258b, Holy FUN_0040d922)
+//   [11] +0x2c eatEnd            SimpleChick FUN_0041ff9a (Magic FUN_0040e392)
+//   [12] +0x30 walkToFood        SimpleChick FUN_00420069 (Magic FUN_0040e44d)
+//   [13] +0x34 seekFood          SimpleChick FUN_0042013e (Magic FUN_0040e51f)
+//   [14] +0x38 eggType           FUN_00465f98 returns own type (Layer FUN_0040dba2)
+//   [15] +0x3c coinType          FUN_004201a0 (Magic FUN_0040e372 → 2)
+//
+// Original action ids (+0x0c) and nominal durations (PTR_004d01f0 table,
+// read from the binary: [0,150,120,50,100,50,70,400,70,100,30,60,100,200]):
+//   1 idle(150)  2 dig(120)  3 sick-start(50)  4 sick-idle(100)
+//   5 cured(50)  6/7/8 broody sit/on-nest/get-up (70/400/70)
+//   9 lay egg(100)  10 peck/eat(30)  11 walk(60)  12 holy spell(100)
+//   13 death(200)
+// Action → image (FUN_0040a166:12962 + loader loop rwg_functions.c:31025-31157,
+// load order matches app/properties/resources.xml):
+//   default → IDLE0, 2 → IDLE1 (dig.jpg), 3/5 → SICK_START (LAYER only),
+//   4 → SICK_IDLE (LAYER only), 9 → LAYER_LAYER, 10 → PECK, 11 → WALK,
+//   12 → CHICK_HOLY_SPELL, 13 → DEATH.
+//
+// Float constants read from app/chicken_chase.RWG .rdata (the PE the
+// decompilation was produced from): _DAT_004e9398=100.0, _DAT_004e92ac=50.0,
+// _DAT_004e9240=120.0, _DAT_004e9360=60.0, _DAT_004e9410=30.0,
+// _DAT_004e9244=200.0, _DAT_004e9150=0.01 (double), _DAT_004e9408=0.999
+// (double), _DAT_004e9388=0.35 (double), _DAT_004e9380=0.24, _DAT_004e9378=0.14,
+// _DAT_004e9370=0.15, _DAT_004e9368=2147483647.0, _DAT_004dc7e0=1.0.
 
 import { IMAGES, SOUNDS } from './Res.js';
 
-// Chick types enum - from FUN_00403ec2 switch
+// Chick types enum - from FUN_00403ec2 switch (rwg_functions.c:4645-4726).
+// The type id is also the egg type id the chick lays/hatches from
+// (FUN_00465f98 returns chick+0x04 = type).
 export const ChickType = {
     LAYER: 0,    // SimpleChick/LayerChick
     BROODY: 1,   // BroodyChick
@@ -36,141 +54,141 @@ export const ChickType = {
     HOLY: 4,     // HolyChick
 };
 
-// Module-level throttle timestamp for SOUND_CHICK_DEATH. Prevents the death
-// sound from clipping into a wall of overlapping plays when multiple chicks
-// die within the same handful of ticks (RiskCaseChickFlu sick wave, raven
-// wave, wolf pack feeding). 300ms gate.
-let _lastDeathSoundT = 0;
-
-// Chick states from decompiled FUN_004032ca, DECOMPILED_MAP.md section 11.
-// NOTE: state field at +0x08 vs action field at +0x0C. JS conflates them as mState
-// for simplicity, with action subdivided via mAction.
+// Chick states. NOTE: original keeps state (+0x08) and action (+0x0c)
+// separately; the JS port folds them into one mState value.
 export const ChickState = {
-    NEWBORN: 0,    // state +0x08 = 0 (rwg_functions.c:3580)
-    ADULT: 4,      // state +0x08 = 4 (default, rwg_functions.c:3480)
-    DEATH: 6,      // state +0x08 = 6 (rwg_functions.c:3541)
-    BROODING: 0x14, // state +0x08 = 0x14 (BroodyChick sitting, rwg_functions.c:2127)
-    // JS-internal action states (kept for visual rendering):
-    IDLE: 0x100,
-    WALK: 0x101,
-    PECK: 0x102,
-    SICK_START: 0x103,
-    SICK_IDLE: 0x104,
-    LAYING: 0x105,
-    BROOD_IDLE: 0x107,
-    HOLY_SPELL: 0x10c,
+    NEWBORN: 0,    // state +0x08 = 0 (held by hand / not active)
+    ADULT: 4,      // state +0x08 = 4 (FUN_004032ca:3480)
+    DEATH: 6,      // state +0x08 = 6 (FUN_0040342b:3541)
+    BROODING: 0x14, // state +0x08 = 0x14 (FUN_00402369:2127)
+    // JS action states (map to original action ids, see header):
+    IDLE: 0x100,       // action 1
+    WALK: 0x101,       // action 11
+    PECK: 0x102,       // action 10
+    SICK_START: 0x103, // action 3/5
+    SICK_IDLE: 0x104,  // action 4
+    LAYING: 0x105,     // action 9
+    DIG: 0x106,        // action 2
+    BROOD_IDLE: 0x107, // action 7
+    HOLY_SPELL: 0x10c, // action 12
 };
 
-// Egg types - from FUN_00422228 decompiled constants
+// Egg types (JS ids, used by Field.hatchEgg / Gem.js tinting). The original
+// egg type is the chick type id; mapping chickType → EggType:
+//   LAYER→WHITE, BROODY→GOLDEN, ROOSTER→BLACK, MAGIC→BLUE, HOLY→RED.
 export const EggType = {
     WHITE: 0,     // layer eggs
-    BLUE: 1,      // magic eggs -> blue diamonds
-    RED: 2,       // holy eggs -> red diamonds
+    BLUE: 1,      // magic eggs
+    RED: 2,       // holy eggs
     BLACK: 3,     // rooster eggs
-    GOLDEN: 4,    // broody eggs -> gold coins
+    GOLDEN: 4,    // broody eggs
 };
+
+const CHICK_TO_EGG = [EggType.WHITE, EggType.GOLDEN, EggType.BLACK, EggType.BLUE, EggType.RED];
+
+// Action durations from PTR_004d01f0 (see header).
+const DUR_IDLE = 150;   // action 1
+const DUR_DIG = 120;    // action 2 (_DAT_004e9240 = 120.0, FUN_004039f5:4031)
+const DUR_LAY = 100;    // action 9 (_DAT_004e9398 = 100.0, FUN_00403602:3711)
+const DUR_PECK = 30;    // action 10 (_DAT_004e9410 = 30.0, FUN_00420069:39654)
+const DUR_SPELL = 100;  // action 12 (_DAT_004e9398 = 100.0, FUN_0040d8b1:16775)
+
+function levelOf(field) {
+    return (field && field.mFieldController) ? field.mFieldController.mCurrentLevel : 1;
+}
 
 export class Chick {
     // Port of Sexy::Chick - vtable at 004dc894
-    // Constructor: FUN_0040329b
-
+    // Constructor: FUN_004032ca (rwg_functions.c:3426)
     constructor(type, x, y) {
-        // Offsets verified from DECOMPILED_MAP.md section 11 (FUN_004032ca:3426).
-        // Layout: +0=vtable, +4=owner, +8=state, +0xC=action, +0x10=actionDur,
-        // +0x14=actionElapsed, +0x18=scaleX, +0x1C=age/lifespan, +0x20=posX, +0x24=posY,
-        // +0x28=stun, +0x34=foodCounter, +0x38=hungerTimer, +0x40=sickTimer,
-        // +0x44=sickFlag, +0x48=layCooldown.
+        // Layout: +0=vtable, +4=type, +8=state, +0xC=action, +0x10=actionDur,
+        // +0x14=actionElapsed, +0x18=speed mult, +0x1C=age, +0x20=posX, +0x24=posY,
+        // +0x28=height(z), +0x34=food, +0x38=hunger, +0x3c=id, +0x40=layCooldown,
+        // +0x44=sick flag, +0x48=digCooldown, +0x4c=speed reroll timer,
+        // +0x54/+0x58=walk target, +0x5c/+0x60=wander target, +0x64=hungry anim.
         this.mType = type;
         this.mX = x;                        // +0x20
         this.mY = y;                        // +0x24
-        // mState is set to IDLE at end of ctor — don't bother with the
-        // transient NEWBORN value (it's never visible during gameplay).
-        // Age/lifespan timer: init = (rand%200)*2 + 0xCE4 (rwg_functions.c:3479).
-        // rand%200 = [0,199] → *2 = [0,398] → +3300 (0xCE4) = [3300,3698].
-        // Even values only (every-other-tick since the *2 doubling).
+        // FUN_004032ca:3479: age = (rand%200)*2 + 0xCE4 → [3300, 3698]
         this.mAge = (Math.floor(Math.random() * 200)) * 2 + 0xCE4;
-        // Hunger timer: init = 2000 (line 3450)
+        // FUN_004032ca:3446: hunger (+0x38) = 2000
         this.mHunger = 2000;
-        // Sickness flag at +0x44 (deterministic, NOT random) (line 4111-4121)
+        // +0x44 sick flag, recomputed by FUN_00403a9a (rwg_functions.c:4103)
         this.mIsSick = false;
-        // Egg-lay (action 9) and coin-dig (action 2) use SEPARATE cooldown
-        // timers in the original (rwg_functions.c:3760-3782):
-        //   egg-lay  → in_EAX[0x10] (+0x40), reset to 1500 (lvl<7) / 2000
-        //   coin-dig → in_EAX[0x12] (+0x48), reset to 800 (lvl<7) / 1000
-        // Conflating them (resetting both on either action) starved coin
-        // production — fed layer chicks laid eggs every cycle and never dug
-        // coins, making L1's "collect 15 coins" task unwinnable. Keep them
-        // independent so a layer chick produces BOTH eggs and coins.
-        this.mLayCooldown = 0;   // +0x40 — egg-lay gate
-        // Food/seeds-eaten counter at +0x34 (line 3633)
+        // +0x40 egg-lay cooldown. FUN_004032ca:3447-3455 sets it to -1 or
+        // 1500/2000 depending on a ctor argument whose value at the
+        // FUN_0041ff68 call sites is UNKNOWN — not found in decompiled.
+        // JS keeps 0.
+        this.mLayCooldown = 0;
+        // +0x34 food counter
         this.mFoodCounter = 0;
-        // Target X/Y at +0x54/+0x58
+        // +0x54/+0x58 walk target
         this.mTargetX = x;
         this.mTargetY = y;
-        // Misc rendering / JS-only fields
+        // +0x5c/+0x60 wander target (init -1 = none, FUN_004032ca:3466-3469)
+        this._wanderTarget = null;
+        // +0x64 hungry-icon animation timer (0..0.999)
+        this.mHungryAnim = 0;
+        // Show-hungry-icon flag cached from update (vt[2]) for draw().
+        this._hungryIcon = false;
+        // JS-only bookkeeping
         this.mIsAdult = false;
         this.mIsAlive = true;
         this.mAnimTimer = 0;
         this.mStateTimer = 0;
+        this.mActionDur = 0;
+        // Walking speed in screen px/tick. Original step is
+        // (fedRatio*0.05*0.5+0.05)*speedMult logical units (FUN_00403af3:4189)
+        // in a 128x57 logical field; the logical→screen scale is UNKNOWN —
+        // not found in decompiled. JS keeps its 0.5 px/tick.
         this.mSpeed = 0.5;
         this.mDirection = Math.random() < 0.5 ? 0 : 1;
-        this.mScale = 0.5;          // visual growth, separate from struct +0x18 scaleX
-        // Peck/coin-drop cooldown +0x48 (rwg_functions.c:3779). Set to 1000 (or
-        // 800 in late game) after each EAT_PECK that spawns a gem.
+        this.mScale = 0.5;
+        // +0x48 coin-dig cooldown
         this.mPeckCooldown = 0;
         this.mBroodingEgg = null;
         this.mDeathTimer = 0;
-        // Seed cluster the chick is heading toward (set by _updateIdle when
-        // hungry; cleared on arrival/peck-end).
         this._targetSeeds = null;
-        // Idle wait threshold — picked per IDLE entry, refreshed via
-        // `_idleWait === undefined` check in _updateIdle. Explicit init keeps
-        // V8 hidden-class shape consistent (same pattern as Raven.mScareTimer,
-        // HolyChick.mSpellFlashTimer fixes earlier).
-        this._idleWait = 60 + Math.floor(Math.random() * 120);
-        // mGrowTimer — incremented in update's juvenile-growth branch.
-        // Explicit init avoids the `(undefined || 0) + 1` pattern that would
-        // require V8 to add the field to the hidden class on first growth tick.
         this.mGrowTimer = 0;
-        // Set true when a raven captures this chick mid-flight (Field.js Raven
-        // CATCHING → FLYING_OUT). Skips AI updates while carried.
+        // Set true when a raven captures this chick mid-flight (Field.js).
         this.mIsCarried = false;
-        // Mood emote — short-lived emoji shown above the chick (♥ on feed,
-        // ♪ when laying, etc.). Visible while mEmoteTimer > 0.
-        this.mEmote = null;
-        this.mEmoteTimer = 0;
-        // After-init: enter the IDLE behaviour state. The decompiled "state +0x08 = 4"
-        // (ADULT) is just a flag that the chick is past the egg/hatch path; the
-        // active behavior switch in our JS port keys on the IDLE/WALK/PECK 0x10x
-        // bucket, so we start in IDLE so chicks actually begin wandering.
         this.mState = ChickState.IDLE;
     }
 
-    // FUN_0040344c - Chick::update
-    // From DECOMPILED_MAP.md section 11
+    // FUN_00403a3e (rwg_functions.c:4054) food tier >= 1:
+    //   food >= FUN_00405899()*5 (base 500 lvl<7 / 700).
+    // JS food units are not the original's (JS cap 200*scale vs original
+    // base*33); the JS-scale equivalent threshold used throughout this port
+    // is 100*scale. Exact JS↔original scale: UNKNOWN — not found in decompiled.
+    _isFed() {
+        return this.mFoodCounter >= 100 * this.mScale;
+    }
+
+    // vt[2] FUN_00403ac8 (rwg_functions.c:4133): sick (+0x44) AND the seed
+    // list (world+0x1c) is empty. MagicChick overrides with FUN_0040e36f → 0.
+    showsHungryIcon(field) {
+        if (!this.mIsSick) return false;
+        if (!field || !field.mSeeds) return false;
+        return !field.mSeeds.some(s => s.hasFood && s.hasFood());
+    }
+
+    // FUN_0040344c (rwg_functions.c:3560) Chick::Update
     update(field) {
         if (!this.mIsAlive) {
             this.mDeathTimer++;
             this.mAnimTimer++;
             return;
         }
-        // Carried by a raven — position/state is owned by the Raven; skip AI
-        // (matches FUN_00402342 returning 0 for carried/stunned chicks).
+        // Carried by a raven — position/state is owned by the Raven.
         if (this.mIsCarried) {
             this.mAnimTimer++;
             return;
         }
 
-        // Visual growth (JS-port enhancement — original treats chicks as adult on
-        // construction with only cosmetic +0x18 scale-x jitter every 1000 ticks
-        // per FUN_0040344c:3622-3623). We keep a small juvenile period for nicer
-        // visuals — chicks start small and grow to 1.0 over ~800 ticks.
+        // Juvenile growth. UNKNOWN — not found in decompiled (the 0x70-byte
+        // Chick struct has no growth field), but level texts 43/44 mention
+        // chickens "growing", so the JS growth phase is left as is.
         if (!this.mIsAdult) {
-            // Sick juvenile chicks grow at half rate per L43/L44 description:
-            // "Your chickens are sick and growing very slowly." The threshold
-            // factor is UNKNOWN-exact in decompiled; 0.5× matches the brood
-            // slowdown we apply to sick broodies (consistent treatment for
-            // all "sick → slower" mechanics).
             const inc = this.mIsSick ? (this.mAnimTimer % 2 === 0 ? 1 : 0) : 1;
             this.mGrowTimer = (this.mGrowTimer || 0) + inc;
             this.mScale = 0.5 + Math.max(0, Math.min(1, this.mGrowTimer / 800)) * 0.5;
@@ -180,95 +198,66 @@ export class Chick {
             }
         }
 
-        // Per rwg_functions.c:3627-3634:
-        //   if vtable[5] (isActive: not death/newborn/stunned) → age (+0x1C)--
-        //   AND if walking (FUN_00402342: action 3 or 4)        → hunger (+0x38)--
-        // FUN_0040327c (vtable[5]) checks: state != DEATH && state != NEWBORN
-        // && stun == 0. Sick chicks ARE active and continue to age — if not
-        // cured they die naturally. We gate on mIsAdult to match the NEWBORN
-        // semantics (juveniles freeze until they grow into ADULT).
+        // FUN_0040344c:3586-3596 — hungry-icon timer +0x64: while vt[2] is
+        // true it grows by 0.01/tick (_DAT_004e9150) and saturates at 0.999
+        // (_DAT_004e9408/_DAT_004e9400); otherwise it is reset to 0.
+        this._hungryIcon = this.showsHungryIcon(field);
+        if (this._hungryIcon) {
+            this.mHungryAnim += 0.01;
+            if (!(this.mHungryAnim < 0.999)) this.mHungryAnim = 0.999;
+        } else {
+            this.mHungryAnim = 0;
+        }
+
+        // FUN_0040344c:3601-3603 — dig cooldown (+0x48) decrements every tick.
+        if (this.mPeckCooldown > 0) this.mPeckCooldown--;
+        // FUN_0040344c:3604-3607 — lay cooldown (+0x40) decrements only while
+        // the chick is fed (FUN_00403a3e != 0).
+        if (this.mLayCooldown > 0 && this._isFed()) this.mLayCooldown--;
+
+        // FUN_0040344c:3626-3640 — if vt[5] isActive: age (+0x1c)--, and if
+        // in action 3/4 (FUN_00402342, = SICK_START/SICK_IDLE here) hunger
+        // (+0x38)--. Death when age < 1 or hunger < 1 → FUN_0040342b + death
+        // sound DAT_004fed94.
+        // BroodyChick vt[5] = FUN_00403dec returns 0 while state == 0x14
+        // (brooding), so a brooding broody does not age (rwg_functions.c:4493).
         const isActive = this.mState !== ChickState.DEATH;
-        const isWalking = this.mState === ChickState.WALK;
-        // A broody actively sitting on a nest doesn't age — JS-port UX
-        // enhancement that diverges from the original (FUN_0040327c returns
-        // 1 for BROODING state, so the original DOES age sitting broodies).
-        // The original cap-related concern is moot now (cap-check at hatch
-        // was removed in an earlier iteration), but the gate still helps:
-        // a broody with low starting mAge (e.g. ~4000) would otherwise drop
-        // to <0 over a 30-tick × 100-tps brood cycle, dying mid-hatch and
-        // forcing the player to lose the broody + egg combo with no
-        // recourse. The matching Egg.update pause keeps the egg+broody
-        // pair frozen in time as a unit.
+        const inHungerAction = this.mState === ChickState.SICK_START
+            || this.mState === ChickState.SICK_IDLE;
         const isBrooding = this.mBroodActive === true;
         if (isActive && this.mIsAdult && !isBrooding) {
             this.mAge--;
-            if (isWalking) this.mHunger--;
-        }
-        // Peck/coin cooldown +0x48 decrements every tick (rwg_functions.c:3605-3607)
-        if (this.mPeckCooldown > 0) this.mPeckCooldown--;
-        // Egg-lay cooldown +0x48 also decrements every tick per chick — verified
-        // via FUN_004015f8:716-718, which iterates all chicks and decrements
-        // *(chick+0x48) regardless of state. Previously this was decremented
-        // only inside _updatePeck, making chicks lay ~20× slower than original.
-        if (this.mLayCooldown > 0) this.mLayCooldown--;
-        if (this.mEmoteTimer > 0) this.mEmoteTimer--;
-
-        // Death conditions (rwg_functions.c:3635-3638):
-        // age (+0x1C) ≤ 0 OR hunger (+0x38) ≤ 0 → death
-        if (this.mAge <= 0 || this.mHunger <= 0) {
-            this.die();
-            return;
+            if (inHungerAction) this.mHunger--;
+            if (this.mAge < 1 || this.mHunger < 1) {
+                this.die(true);
+                return;
+            }
         }
 
-        // Sickness — deterministic via age timer thresholds (FUN_00403a9a:4111-4117)
-        // Becomes sick when age timer < 3000; recovers when age timer >= 5000.
-        // Age starts at 3300-3700 and decrements every active-adult tick, so a
-        // healthy adult chick becomes sick after ~3-7 seconds at 100fps if not
-        // cured. Cure (FUN_0040490a) bumps age to 5200, breaking the cycle.
-        //
-        // Sync-state branch covers TWO triggers: the natural age-out path
-        // (`!mIsSick && mAge < 3000`) AND the force-sick path used by
-        // RiskCaseChickFlu / mSicknessFactor (which set `mIsSick = true`
-        // directly without state transition). Both should converge on
-        // SICK_START + ✗ emote. Previously only the age path transitioned
-        // state, so a force-sickened chick at mAge>=3000 stayed in IDLE/WALK
-        // with just the "!" overlay — no slumped pose, no cough emote.
+        // FUN_00403a9a (rwg_functions.c:4103): sick flag (+0x44) =
+        //   not sick: age < 3000; sick: age < (lvl<7 ? 4500 : 5000).
+        // JS keeps its sick pose (SICK_START → SICK_IDLE) for chicks that
+        // enterSickPose(); see report — the original's sick pose belongs to a
+        // separate world-driven event (FUN_004043fd → FUN_00404d00).
         const justSickened = this.mIsSick
             && this.mState !== ChickState.SICK_START
             && this.mState !== ChickState.SICK_IDLE;
-        if ((!this.mIsSick && this.mAge < 3000) || justSickened) {
+        if ((!this.mIsSick && this.mAge < 3000) || (justSickened && this.entersSickPose())) {
             this.mIsSick = true;
-            this.setState(ChickState.SICK_START);
-            // Mood cue — the slump-pose change is subtle especially when the
-            // chick is far from the player's gaze. A short coughing emote
-            // catches attention so the player can click to cure before death.
-            this._emote('✗', '#ff4040', 80);
+            if (this.entersSickPose()) this.setState(ChickState.SICK_START);
         }
-        // Auto-recovery — FUN_00403a9a:4115-4121. Threshold is level-conditional
-        // (FUN_00405886 returns 1 for level<7): age >= 4500 for early levels,
-        // age >= 5000 for level>=7. Reachable via MagicChick eating a magic
-        // egg (line 961) which can push age up to 5000. Without this, a sick
-        // magic chick that eats a magic egg stays sick despite the age refresh.
         const lvl = (field && field.mFieldController) ? field.mFieldController.mCurrentLevel : 7;
         const recoverThreshold = lvl < 7 ? 4500 : 5000;
         if (this.mIsSick && this.mAge >= recoverThreshold) {
             this.mIsSick = false;
             if (this.mState === ChickState.SICK_START || this.mState === ChickState.SICK_IDLE) {
-                // Same broody-aware transition as cure() — sick broody on
-                // nest naturally recovering should return to BROOD_IDLE, not
-                // IDLE, since the brooding (mBroodActive) is still active.
                 const nextState = this.mBroodActive
                     ? ChickState.BROOD_IDLE
                     : ChickState.IDLE;
                 this.setState(nextState);
             }
-            // Visible cured cue — same emote the manual cure() uses, so the
-            // player sees natural age-based recovery happened (otherwise the
-            // chick silently flips from sick to healthy with no indication).
-            this._emote('✓', '#5cff5c', 60);
         }
 
-        // State machine - FUN_004032ca
         this.mStateTimer++;
         this.mAnimTimer++;
 
@@ -282,18 +271,18 @@ export class Chick {
             case ChickState.PECK:
                 this._updatePeck(field);
                 break;
+            case ChickState.DIG:
+                this._updateDig(field);
+                break;
             case ChickState.SICK_START:
-                // sick_start.jpg is 858x78 → 11 frames × 6 = 66 tick animation.
-                // `>= 66` (not `> 66`) so we transition exactly when the
-                // (mAnimTimer/6) % 11 frame index would wrap from 10 back to 0,
-                // avoiding a 1-tick flash of frame 0 of sick_start before the
-                // chick settles into SICK_IDLE.
-                if (this.mStateTimer >= 66) {
+                // Action 3 → action 4 (FUN_0040386a:3876-3884): 50-tick
+                // start, then SICK_IDLE (100-tick loop).
+                if (this.mStateTimer >= 50) {
                     this.setState(ChickState.SICK_IDLE);
                 }
                 break;
             case ChickState.SICK_IDLE:
-                // Stays sick until cured
+                // Action 4 loops until cured or hunger runs out.
                 break;
             case ChickState.LAYING:
                 this._updateLaying(field);
@@ -307,113 +296,138 @@ export class Chick {
             case ChickState.DEATH:
                 break;
             case ChickState.HOLY_SPELL:
-                // spell.jpg is 15 frames × 6 ticks/frame = 90-tick cycle.
-                // `>= 90` so we transition right at the wrap point (where
-                // (mAnimTimer/6) % 15 = 0 again) — without this the spell
-                // flash anim restarts from frame 0 for 1 tick before fading out.
-                if (this.mStateTimer >= 90) {
-                    this.setState(ChickState.IDLE);
+                // Action 12 lasts 100 (_DAT_004e9398); at its end vt[10]
+                // (HolyChick FUN_0040d922) performs the spell.
+                if (this.mStateTimer >= DUR_SPELL) {
+                    this._onSpellEnd(field);
+                    if (this.mIsAlive) this._chooseNextAction(field);
                 }
                 break;
         }
-
-        // Egg laying — FUN_00403e3c (LayerChick) line 4550.
-        // Original gates on FUN_00403a3e returning ≥1 i.e. foodCounter ≥ base*5
-        // where base = FUN_00405899 ≈ 700. Our food scale uses 30 per peck and
-        // a cap/threshold ratio matching the decompiled 33:5 (cap 0x21, lay 5):
-        //   cap   = 200*scale (~7 pecks)
-        //   lay   = 100*scale (~4 pecks)  — must be < cap so chicks can lay
-        // mLayCooldown decrement moved to main update() — FUN_004015f8 ticks
-        // it every frame per chick, not just during PECK.
-        //
-        // mIsAdult gate (not mScale) matches FUN_00403e3c:4563 which calls
-        // vtable[5] = FUN_0040327c — returns 0 for state == NEWBORN. Our
-        // earlier mScale >= 0.85 cutoff let sub-adult chicks lay during their
-        // final 240 growth ticks (mGrowTimer 560-800), which the original
-        // disallows entirely.
-        if (this.mIsAdult && !this.mIsSick
-            && this.mLayCooldown === 0
-            && this.mFoodCounter >= 100 * this.mScale
-            && this.canLayEggs()) {
-            this.layEgg(field);
-        }
     }
 
-    // Subclasses override — Chick base, Simple, Rooster, Holy: false. Layer/Magic: true.
+    // Whether this chick shows the SICK_START/SICK_IDLE pose when its sick
+    // flag is set. The pose images (actions 3/4/5) exist only for LAYER
+    // (loader rwg_functions.c:31072-31125 loads them for type 0 only) and
+    // only LayerChick passes vt[3] FUN_00403e3c, the filter used by the
+    // sick-event picker FUN_004043fd:5118/5172. Other types handle +0x44 by
+    // seeking food (vt[13]).
+    entersSickPose() {
+        return this.mType === ChickType.LAYER;
+    }
+
+    // Subclasses override — only LayerChick lays (vt[3] FUN_00403e3c).
     canLayEggs() {
         return false;
     }
 
-    // FUN_004032ca sub-states
+    // vt[7] FUN_004037e8 (rwg_functions.c:3813) + vt[8] FUN_0040386a
+    // (rwg_functions.c:3867): decide the next action at the end of the
+    // current one.
+    //   sick (+0x44)                    → state 2 → vt[13] seekFood
+    //   lay cooldown 0 and lay spot     → state 3 → walk/lay (action 9)
+    //   otherwise                       → state 4 → FUN_0040392e wander/dig
+    _chooseNextAction(field) {
+        if (this.mIsSick) {
+            this._wanderTarget = null;   // state != 4 clears it (3591-3594)
+            this._seekFood(field);
+            return;
+        }
+        // State 3: the original also requires a lay spot reserved for this
+        // chick (FUN_004075da:3843); that reservation system is UNKNOWN in
+        // JS, so the lay starts in place.
+        if (this.canLayEggs() && this.mIsAdult && this.mLayCooldown === 0 && this._isFed()) {
+            this._wanderTarget = null;
+            this.setState(ChickState.LAYING);
+            return;
+        }
+        this._wander(field);
+    }
+
+    // FUN_0040392e (rwg_functions.c:3930): state-4 wander. If no wander
+    // target, with 50% (rand & 1) pick one via FUN_004046aa; if a target
+    // exists walk to it (action 11), else FUN_004039f5.
+    _wander(field) {
+        if (!this._wanderTarget && (Math.floor(Math.random() * 0x7fffffff) & 1)) {
+            if (field && field.pickRandomTarget) {
+                this._wanderTarget = field.pickRandomTarget(this.mX, this.mY);
+            }
+        }
+        if (this._wanderTarget) {
+            this.mTargetX = this._wanderTarget.x;
+            this.mTargetY = this._wanderTarget.y;
+            this._targetSeeds = null;
+            this.setState(ChickState.WALK);
+            return;
+        }
+        this._digOrIdle();
+    }
+
+    // FUN_004039f5 (rwg_functions.c:4019): if dig cooldown (+0x48) is 0 and
+    // the chick is on the field → dig (action 2, 120). Otherwise action
+    // rand%2+1 (1 = idle 150, 2 = dig 120).
+    _digOrIdle() {
+        if (this.mPeckCooldown === 0 && !this.mIsCarried) {
+            this.setState(ChickState.DIG);
+            this.mActionDur = DUR_DIG;
+            return;
+        }
+        if (Math.floor(Math.random() * 0x7fffffff) % 2 === 0) {
+            this.setState(ChickState.IDLE);
+            this.mActionDur = DUR_IDLE;
+        } else {
+            this.setState(ChickState.DIG);
+            this.mActionDur = DUR_DIG;
+        }
+    }
+
+    // vt[13] SimpleChick FUN_0042013e (rwg_functions.c:39664): if the seed
+    // list is empty → FUN_004039f5; else walk (action 11) to the nearest seed
+    // cluster (FUN_0041c11f).
+    _seekFood(field) {
+        const seeds = field ? field.getNearestSeeds(this.mX, this.mY) : null;
+        if (!seeds) {
+            this._digOrIdle();
+            return;
+        }
+        this.mTargetX = seeds.mX;
+        this.mTargetY = seeds.mY;
+        this._targetSeeds = seeds;
+        this.setState(ChickState.WALK);
+    }
+
+    // Action 1 (idle). The JS seed-seeking trigger below (hungry/near
+    // seeds while healthy) is UNKNOWN — not found in decompiled: the
+    // original only seeks seeds when sick (state 2 → vt[13]).
     _updateIdle(field) {
-        // Eat seeds when hungry, or if there's a nearby cluster while idle.
-        // FUN_00403a3e: returns 0 if food < base*5 (very hungry), 1 if < base*11,
-        // 2 otherwise. We use scaled thresholds for our smaller food cap.
         const urgent = this.mFoodCounter < (this.mScale || 1) * 50;
-        if (field) {
+        if (field && this.mFoodSeeker !== false) {
             const seeds = field.getNearestSeeds(this.mX, this.mY);
             if (seeds) {
                 const dx = seeds.mX - this.mX;
                 const dy = seeds.mY - this.mY;
                 const near = (dx * dx + dy * dy) < 80 * 80;
-                if (urgent || this.mHunger < 1100 || near) {
+                if (this.mIsSick || urgent || near) {
                     this.mTargetX = seeds.mX + (Math.random() - 0.5) * 20;
                     this.mTargetY = seeds.mY + (Math.random() - 0.5) * 10;
                     this._targetSeeds = seeds;
+                    this._wanderTarget = null;
                     this.setState(ChickState.WALK);
                     return;
                 }
             }
         }
-
-        // Deterministic idle-wait threshold — refreshed on every IDLE entry
-        // so the wait time is fixed-per-IDLE-period rather than re-rolled
-        // each frame (which made the wait depend on moment-by-moment RNG
-        // and produced a non-uniform transition distribution).
-        //
-        // Chick.update increments mStateTimer BEFORE running the state
-        // machine, so `mStateTimer === 1` is the first IDLE tick after a
-        // fresh setState(IDLE). Previously checked `=== 0` which never
-        // fired (timer was already 1) — _idleWait stayed at its constructor
-        // init value across consecutive IDLE entries, so the wait period
-        // could already be expired when re-entering IDLE → instant
-        // transition flicker.
-        if (this.mStateTimer === 1) {
-            this._idleWait = 60 + Math.floor(Math.random() * 120);
-        }
-        if (this.mStateTimer > this._idleWait) {
-            const r = Math.random();
-            if (r < 0.4) {
-                // Use the cell-occupancy picker (FUN_004046aa)
-                if (field && field.pickRandomTarget) {
-                    const t = field.pickRandomTarget(this.mX, this.mY);
-                    this.mTargetX = t.x;
-                    this.mTargetY = t.y;
-                } else {
-                    this.mTargetX = 100 + Math.random() * 600;
-                    this.mTargetY = 380 + Math.random() * 180;
-                }
-                this._targetSeeds = null;
-                this.setState(ChickState.WALK);
-            } else if (r < 0.7) {
-                this.setState(ChickState.PECK);
-            } else {
-                // Stay idle — reset mStateTimer to 0 so we re-enter IDLE
-                // cleanly. The mStateTimer===1 check above re-rolls
-                // _idleWait on the next tick, so we don't need to roll it
-                // here too (previously did both, but the explicit roll was
-                // overwritten by the entry-check roll next tick anyway).
-                this.mStateTimer = 0;
-            }
+        if (this.mStateTimer >= this.mActionDur) {
+            this._chooseNextAction(field);
         }
     }
 
+    // Action 11 (walk). FUN_00403602:3667-3700 moves toward +0x54 via
+    // FUN_00403af3 until arrival, then vt[9]/next decision.
     _updateWalk(field) {
-        // If we were heading for seeds that are now empty/dead, drop target
-        // and let _updateIdle re-evaluate (seek other seeds or just wander).
         if (this._targetSeeds && (!this._targetSeeds.mIsAlive || !this._targetSeeds.hasFood())) {
             this._targetSeeds = null;
-            this.setState(ChickState.IDLE);
+            this._chooseNextAction(field);
             return;
         }
         const dx = this.mTargetX - this.mX;
@@ -421,165 +435,103 @@ export class Chick {
         const dist = Math.sqrt(dx * dx + dy * dy);
 
         if (dist < 5) {
-            // Arrived at target — if walking to seeds, start pecking/eating
+            // Arrived at seeds → action 10 (peck, FUN_00420069:39651-39655).
             if (this._targetSeeds && this._targetSeeds.hasFood()) {
                 this.setState(ChickState.PECK);
                 return;
             }
-            this.setState(ChickState.IDLE);
+            // Arrived at wander target → FUN_0040392e:3966-3972 clears it
+            // and calls FUN_004039f5.
+            if (this._wanderTarget) {
+                this._wanderTarget = null;
+                this._digOrIdle();
+                return;
+            }
+            this._chooseNextAction(field);
             return;
         }
-        // Safety timeout — if walking too long without arriving (e.g. target
-        // clipped against the field clamp), give up and re-idle.
+        // JS-only safety timeout (target clipped by the field clamp).
         if (this.mStateTimer > 600) {
             this._targetSeeds = null;
-            this.setState(ChickState.IDLE);
+            this._wanderTarget = null;
+            this._chooseNextAction(field);
             return;
         }
 
         this.mDirection = dx > 0 ? 0 : 1; // 0=right(flip needed), 1=left(natural)
         this.mX += (dx / dist) * this.mSpeed;
         this.mY += (dy / dist) * this.mSpeed;
-        // Clamp to field bounds — keep chickens out of HUD and off-screen
+        // JS field clamp (screen coords). Original clamps the logical field
+        // to 0..128 x 0..57 (FUN_004046aa:5300-5311).
         this.mX = Math.max(80, Math.min(720, this.mX));
         this.mY = Math.max(370, Math.min(580, this.mY));
-        // Dust puff every ~30 ticks (about every footstep) — only adults
-        // make visible dust to avoid spam from juveniles. mStateTimer is
-        // always ≥ 1 here (Chick.update increments before the state machine
-        // and setState resets to 0 → next tick is 1), so the previous
-        // `mStateTimer > 0` guard was always true — dropped it.
-        if (this.mIsAdult && this.mStateTimer % 30 === 0
-            && field && field.mFieldController
-            && field.mFieldController.addParticleBurst) {
-            const fc = field.mFieldController;
-            for (let i = 0; i < 3; i++) {
-                fc.mParticles.push({
-                    x: this.mX + (Math.random() - 0.5) * 12,
-                    y: this.mY - 2,
-                    vx: -((dx / dist) * 0.4) + (Math.random() - 0.5) * 0.3,
-                    vy: -0.2 - Math.random() * 0.3,
-                    color: '#cdb98a',
-                    t: 0, life: 18, gravity: 0.04,
-                    size: 1.5 + Math.random() * 1.5,
-                });
-            }
-        }
     }
 
+    // Action 10 (peck, 30 ticks). At its end vt[11] SimpleChick
+    // FUN_0041ff9a (rwg_functions.c:39547) eats one grain of the target
+    // cluster. No coin is produced here — coins come only from action 2.
     _updatePeck(field) {
-        // If there are seeds nearby, eat them
-        if (this._targetSeeds && this._targetSeeds.hasFood() && this.mStateTimer % 12 === 0) {
-            const cal = this._targetSeeds.eatOne();
-            if (cal > 0) this.feed(cal);
-        }
-        // Peck cooldown is decremented in update() once per tick.
-
-        // peck.jpg is 624x78 → 8 frames at 6 ticks each = 48-tick cycle.
-        if (this.mStateTimer > 48) {
-            this._targetSeeds = null;
-            // Spawn a coin/gem from the peck per FUN_0040c4d9 (rwg_functions.c:3769-3779).
-            // Original: when EAT_PECK fires AND cooldown +0x48 == 0 AND not sick,
-            // spawn a gem and reset cooldown to 800-1000 ticks. Per FUN_00405886
-            // + formula at 3779: level<7 → 800 ticks, level>=7 → 1000 ticks.
-            // Level-config gate: noPeckCoins disables coin drops entirely.
-            // Per L37 description: "Your chickens won't find any coins for
-            // you" — set via FUN_00423e5a:43988 (`*(*(this+0x28)+0x1c) = 1`).
-            // mIsAdult gate matches original NEWBORN exclusion: the peck-coin
-            // path in FUN_0040344c:3769 only fires when the chick's action is 2
-            // (a state reached only after NEWBORN→ADULT transition). Without
-            // this gate, juvenile chicks (mScale<1) drop coins at lower food
-            // thresholds than adults due to mScale-scaled getCoinType cap —
-            // an exploit where rapid hatching pre-adulthood out-earned adult
-            // labor.
-            const fcCfg = field.mFieldController && field.mFieldController.mLevelConfig;
-            const peckCoinsDisabled = fcCfg && fcCfg.noPeckCoins;
-            if (this.mIsAdult && this.mPeckCooldown === 0 && !this.mIsSick
-                && field && !peckCoinsDisabled) {
-                const type = this.getCoinType();
-                field.spawnGem(type, this.mX, this.mY - 20);
-                const lvl = field.mFieldController
-                    ? field.mFieldController.mCurrentLevel : 1;
-                // Coin-dig cooldown (+0x48), independent of the egg-lay
-                // cooldown (+0x40). 800 ticks (lvl<7) / 1000 — per
-                // rwg_functions.c:3778-3779. Do NOT touch mLayCooldown here:
-                // digging a coin and laying an egg are separate actions with
-                // separate timers in the original.
-                this.mPeckCooldown = lvl < 7 ? 800 : 1000;
+        if (this.mStateTimer >= DUR_PECK) {
+            if (this._targetSeeds && this._targetSeeds.hasFood()) {
+                const cal = this._targetSeeds.eatOne();
+                if (cal > 0) this.feed(cal);
             }
-            this.setState(ChickState.IDLE);
+            this._targetSeeds = null;
+            this._chooseNextAction(field);
         }
     }
 
-    // Per-type gem dropped from a peck. FUN_0040c4d9 type-id mapping
-    // (rwg_vtables.txt: CoinGold=0, CoinSilver=1, DiamondBlue=2, DiamondRed=3).
-    // Default vtable[15] = FUN_004201a0: returns 0 when food ratio > threshold
-    // (well-fed → gold), else 1 (silver). MagicChick overrides to return 2.
+    // Action 2 (dig, 120 ticks). FUN_00403602:3714-3727 at its end: if dig
+    // cooldown (+0x48) == 0 and the chick is on the field (FUN_00403bbf),
+    // spawn gem vt[15] via FUN_0040c4d9 and set the cooldown to
+    // (lvl<7 ? 800 : 1000). FUN_0040c4d9:15152 skips the spawn when the
+    // level's no-coins flag is set (L37 — JS mLevelConfig.noPeckCoins).
+    _updateDig(field) {
+        if (this.mStateTimer < this.mActionDur) return;
+        if (this.mPeckCooldown === 0 && !this.mIsCarried && field) {
+            const fcCfg = field.mFieldController && field.mFieldController.mLevelConfig;
+            const noCoins = fcCfg && fcCfg.noPeckCoins;
+            // mIsAdult gate: JS growth phase (UNKNOWN in decompiled).
+            if (this.mIsAdult && !noCoins) {
+                field.spawnGem(this.getCoinType(), this.mX, this.mY - 20);
+            }
+            this.mPeckCooldown = levelOf(field) < 7 ? 800 : 1000;
+        }
+        this._chooseNextAction(field);
+    }
+
+    // vt[15] FUN_004201a0 (rwg_functions.c:39698): 0 (gold) when
+    // FUN_00403a65 > 1.0 (_DAT_004dc7e0), else 1 (silver). FUN_00403a65 =
+    // 2*food/(base*11) → gold iff food > base*5.5. JS food scale differs
+    // (see _isFed); the JS ratio test below is kept. Exact JS threshold:
+    // UNKNOWN — not found in decompiled.
     getCoinType() {
         const cap = Math.max(1, Math.floor(200 * (this.mScale || 1)));
         const ratio = this.mFoodCounter / cap;
         return ratio > 0.5 ? 0 : 1;
     }
 
-    // Egg-lay (action 9) — enter lay state, choose type, spawn egg.
-    // Egg-lay cooldown (+0x40) reset to 1500 (lvl<7) / 2000 per
-    // rwg_functions.c:3764 (`(-(uint)(lvl<7) & 0xfffffe0c) + 2000` →
-    // 2000-500=1500 early, 2000 late). This is SEPARATE from the coin-dig
-    // cooldown (+0x48 / mPeckCooldown) — laying an egg must NOT block
-    // digging a coin, otherwise fed layer chicks never produce coins and the
-    // L1 coin task is unwinnable.
+    // Kept for API compatibility: start laying (action 9).
     layEgg(field) {
-        if (!field) return;
         this.setState(ChickState.LAYING);
-        const lvl = field.mFieldController ? field.mFieldController.mCurrentLevel : 1;
-        this.mLayCooldown = lvl < 7 ? 1500 : 2000;
-        this.mFoodCounter = 0;             // food consumed by laying
-        // Re-roll up to 31 times if the chosen egg type isn't allowed on this
-        // level — matches the FUN_0040dba2 retry loop. Levels without
-        // hasMagicHoly should never produce blue (magic) or red (holy) eggs,
-        // and only ravens-active levels surface black (rooster) eggs.
-        const cfg = field.mFieldController && field.mFieldController.mLevelConfig;
-        let type = this.getEggType();
-        if (cfg) {
-            const blocked = (t) => {
-                if ((t === EggType.BLUE || t === EggType.RED) && !cfg.hasMagicHoly) return true;
-                if (t === EggType.BLACK && !cfg.hasRavens) return true;
-                return false;
-            };
-            for (let i = 0; i < 31 && blocked(type); i++) {
-                type = this.getEggType();
-            }
-            if (blocked(type)) type = EggType.WHITE; // last-resort fallback
-        }
-        field.spawnEgg(this.mX, this.mY, type);
-        this._emote('♪', '#ffd700', 80);
-        // Throttle egg-lay chime — late-game with 10+ laying chicks could
-        // produce multiple simultaneous plays on the same tick, drowning the
-        // soundscape in chirps. Per-field cooldown matches the sick-sound
-        // throttle pattern in FieldController.update.
-        const fc = field.mFieldController;
-        if (SOUNDS.SOUND_EGG_LAYERED1 && (!fc || !fc.mLaySoundCd || fc.mLaySoundCd <= 0)) {
-            (Math.random() < 0.5 ? SOUNDS.SOUND_EGG_LAYERED1 : SOUNDS.SOUND_EGG_LAYERED2).play();
-            if (fc) fc.mLaySoundCd = 25; // ~0.25s
-        }
     }
 
-    _emote(symbol, color, duration) {
-        // Store the duration so draw() can compute a normalized fade-out
-        // alpha. Previous draw hardcoded `/80` which over-faded short
-        // emotes (60-tick feed/cure ones) — alpha clamped to 1 for half
-        // their life then linearly to 0.
-        this.mEmote = { symbol, color, max: duration };
-        this.mEmoteTimer = duration;
-    }
-
+    // Action 9 (lay egg, 100 ticks). FUN_00403602:3729-3739 at its end:
+    // lay cooldown (+0x40) = (lvl<7 ? 1500 : 2000); egg type = vt[14];
+    // FUN_00407038 spawns the egg at the chick position and plays a random
+    // DAT_00500624 sound (SOUND_EGG_LAYERED1/2, rand()%2 — rwg_functions.c:8748-8760).
+    // The food counter is not touched by laying.
     _updateLaying(field) {
-        // layer.jpg is 1560x78 → 20 frames at 6 ticks each = 120-tick cycle.
-        // `>= 120` transitions out at the wrap point ((mAnimTimer/6) % 20 = 0)
-        // so the lay anim ends cleanly on frame 19 rather than flashing frame 0
-        // again for one tick.
-        if (this.mStateTimer >= 120) {
-            this.setState(ChickState.IDLE);
+        if (this.mStateTimer < DUR_LAY) return;
+        if (field) {
+            this.mLayCooldown = levelOf(field) < 7 ? 1500 : 2000;
+            const type = this.getEggType(field);
+            field.spawnEgg(this.mX, this.mY, type);
+            const snd = Math.floor(Math.random() * 2) === 0
+                ? SOUNDS.SOUND_EGG_LAYERED1 : SOUNDS.SOUND_EGG_LAYERED2;
+            if (snd) snd.play();
         }
+        this._chooseNextAction(field);
     }
 
     _updateBrooding(field) {
@@ -590,125 +542,84 @@ export class Chick {
         // Broody sitting on egg
     }
 
-    // Override in subclass
+    // vt[10] default FUN_0044a036 is a no-op; HolyChick overrides.
+    _onSpellEnd(field) {
+    }
+
+    // vt[14] FUN_00465f98 (rwg_functions.c:107231): returns own type
+    // (+0x04) → the egg type this chick produces.
     getEggType() {
-        return EggType.WHITE;
+        return CHICK_TO_EGG[this.mType] !== undefined ? CHICK_TO_EGG[this.mType] : EggType.WHITE;
     }
 
     setState(state) {
         this.mState = state;
         this.mStateTimer = 0;
-        // Reset mAnimTimer for state-bound one-shot animations so they start
-        // at frame 0 rather than wherever the continuous timer happened to
-        // land. Continuous-loop states (IDLE/WALK/PECK/SICK_IDLE/BROOD_IDLE)
-        // keep their existing timer so the animation doesn't visibly judder
-        // each time the chick transitions back into them.
+        this.mActionDur = 0;
         if (state === ChickState.SICK_START
             || state === ChickState.LAYING
             || state === ChickState.HOLY_SPELL
             || state === ChickState.DEATH
             || state === ChickState.BROODING
-            || state === ChickState.BROOD_IDLE) {
-            // One-shot states reset the timer so animations start fresh.
-            // BROOD_IDLE included so the on_nest breathing loop starts at
-            // frame 0 after the sit_down → settled transition (rather than
-            // continuing from mAnimTimer=60+ which started on a mid-loop frame).
+            || state === ChickState.BROOD_IDLE
+            || state === ChickState.DIG) {
             this.mAnimTimer = 0;
         }
     }
 
     // ravenAttack — fired when a raven escapes off-screen carrying this chick.
-    // Per-chick proximity protection was a JS-only experiment; the original
-    // uses GLOBAL rooster headcount via raven-spawn-rate scaling instead.
     ravenAttack() {
         this.die();
         return true;
     }
 
-    die() {
-        // Idempotent — guard against double-call (e.g. age + hunger both
-        // triggering on the same tick, or ravenAttack + age-out racing).
-        // Without this, the death sound would double-play and mDeathTimer
-        // would reset, extending the corpse's visible time on screen.
+    // FUN_0040342b (rwg_functions.c:3530): state 6, action 13 (death, 200).
+    // The death sound DAT_004fed94 is played by the caller in
+    // FUN_0040344c:3637-3638 (age/hunger death), not by FUN_0040342b itself;
+    // FUN_00420e2e (holy spell) kills without it. playSound defaults to true
+    // for external callers (raven/wolf/risk — their sound behaviour is
+    // outside this file's scope).
+    die(playSound = true) {
         if (!this.mIsAlive) return;
         this.mIsAlive = false;
-        // Use setState (not direct assignment) so the death animation timer
-        // resets to 0. Direct mState assignment bypassed the centralized
-        // mAnimTimer reset, making death animations start mid-cycle on
-        // whatever frame the chick's mAnimTimer happened to land on (often
-        // frame 10+ after long walks → only the tail end of the death anim
-        // was visible).
         this.setState(ChickState.DEATH);
         this.mDeathTimer = 0;
-        // Module-level throttle on the death sound — mass-death events
-        // (RiskCaseChickFlu sick wave, raven wave, wolf pack) could stack
-        // many SOUND_CHICK_DEATH plays into a clipped overlap. Gate via a
-        // shared timestamp so any death within 300ms of a prior plays once.
-        const now = Date.now();
-        if (SOUNDS.SOUND_CHICK_DEATH && (now - _lastDeathSoundT) > 300) {
-            SOUNDS.SOUND_CHICK_DEATH.play();
-            _lastDeathSoundT = now;
-        }
+        if (playSound && SOUNDS.SOUND_CHICK_DEATH) SOUNDS.SOUND_CHICK_DEATH.play();
     }
 
-    // FUN_0041ff9a:39571 — eating credits food counter and resets hunger.
-    // FUN_00403403:3521 — hunger reset to 2000 post-eat.
-    // Original adds (calories * 3) / 2 (rwg_functions.c:17657).
+    // vt[11] SimpleChick FUN_0041ff9a (rwg_functions.c:39547): eating one
+    // grain: age (+0x1c) += cluster calories (+0x24); food (+0x34) += an
+    // amount computed by FUN_004bed40 (UNKNOWN — not found in decompiled;
+    // JS keeps calories*1.5); food capped at FUN_004058af (JS cap 200*scale).
+    // Hunger (+0x38) is NOT touched by eating (only FUN_00403403, via cure).
     feed(calories) {
-        // Guard against zero/negative calories — defensive, symmetric with
-        // addMoney/spendMoney guards. A bug elsewhere passing 0 cal would
-        // play the heart emote + reset hunger without actually feeding.
         if (!(calories > 0)) return;
         this.mFoodCounter += Math.floor(calories * 1.5);
-        // Cap = base * 0x21 (=200*scale in our normalised scale).
         const cap = Math.floor(200 * this.mScale);
         if (this.mFoodCounter > cap) this.mFoodCounter = cap;
-        // Lifespan bump — FUN_0041ff9a:39569 adds the seed cluster's calories
-        // to the chick's age timer (+0x1c). Previously we only refilled
-        // hunger and food counter, so eating didn't extend lifespan and
-        // chicks died from age (~33-37s at default mAge=3300-3698) regardless
-        // of feeding. Per the decompiled, each grain eaten extends mAge by
-        // the cluster's calories value (mSeedCalories: 30 base, 50/80 with
-        // seeds upgrades). With seed eating, lifespan can grow well beyond
-        // the 5000 recovery threshold, keeping chicks healthy.
         this.mAge += calories;
-        // Only refresh the heart emote if it's NOT already showing — avoids
-        // resetting the 60-tick timer on every grain (4 grains per peck cycle
-        // would otherwise keep the heart visible indefinitely; one heart per
-        // peck cycle is the intended cue).
-        if (!(this.mEmoteTimer > 0 && this.mEmote && this.mEmote.symbol === '♥')) {
-            this._emote('♥', '#ff66aa', 60);
-        }
-        // Hunger fully reset to 2000 (line 3521)
-        this.mHunger = 2000;
     }
 
-    // Cure sickness — clears the flag and bumps age above the recovery
-    // threshold (FUN_00403a9a:4111-4121: sick clears when age ≥ 5000).
+    // Cure — FUN_0040490a (rwg_functions.c:5440, $50, SOUND_CURED
+    // DAT_004fed6c) → FUN_00403403 (rwg_functions.c:3510): if in action 3/4
+    // → action 5 (50) and hunger (+0x38) = 2000. The original does not touch
+    // age; JS additionally lifts age to 5200 and clears the sick flag
+    // because JS conflates the age-based +0x44 flag with the sick event.
     cure() {
         if (this.mIsSick) {
             this.mIsSick = false;
             this.mAge = Math.max(this.mAge, 5200);
-            // Pick the post-cure state based on what the chick was doing
-            // BEFORE getting sick. Sick broodies stay anchored to their egg
-            // (BroodyChick.update is gated on mBroodActive, not state), so
-            // unconditionally transitioning to IDLE would show the broody in
-            // a standing pose while still magically anchored to the egg —
-            // visually confusing. BROOD_IDLE keeps the on-nest sprite.
+            this.mHunger = 2000;
             const nextState = this.mBroodActive
                 ? ChickState.BROOD_IDLE
                 : ChickState.IDLE;
             this.setState(nextState);
-            this._emote('✓', '#5cff5c', 60);
             if (SOUNDS.SOUND_CURED) SOUNDS.SOUND_CURED.play();
         }
     }
 
-    // Sell pricing lives in ShopDialogs.sellPrice (uses verified DAT_0050035c
-    // SELL_BASE + DAT_0050033c BUY_MID per FUN_00403bd6:4245). No Chick-side
-    // helper — keeping a duplicate here drifted from the real table.
+    // Sell pricing lives in ShopDialogs.sellPrice (FUN_00403bd6:4245).
 
-    // Get the image set for this chick type
     getImagePrefix() {
         const prefixes = {
             [ChickType.LAYER]: 'LAYER',
@@ -720,18 +631,10 @@ export class Chick {
         return prefixes[this.mType] || 'LAYER';
     }
 
-    // Draw — verified per chick image research (2026-05-06).
-    // Action→image mapping from FUN_0040a166 (rwg_functions.c:12962-13030):
-    //   default → IDLE0 per type
-    //   action 2 → IDLE1 per type
-    //   action 3,5 → IMAGE_CHICK_LAYER_LAYER (singleton, not per-type)
-    //   action 4 → IMAGE_CHICK_PREVIEW_LAYER (singleton)
-    //   action 9 → IMAGE_CHICK_DEATH_LAYER (singleton, no per-type variants exist)
-    //   action 10 → PECK per type
-    //   action 0xb → WALK per type
-    //   action 0xc → IMAGE_CHICK_HOLY_SPELL (singleton)
-    //   action 0xd → SICK_IDLE per type
-    //   SICK_START is per-type (DAT_00500604[type])
+    // Chick drawing — FUN_0040a3d6 chick loop (rwg_functions.c:13385-13440)
+    // with image choice FUN_0040a166 (rwg_functions.c:12962). Exact sprite
+    // anchor/shadow offsets use FUN_00409779/FUN_004bed40 results that are
+    // UNKNOWN in decompiled; JS anchors the cel's bottom-centre at (mX, mY).
     draw(g) {
         const prefix = this.getImagePrefix();
         let img = null;
@@ -740,6 +643,10 @@ export class Chick {
             case ChickState.IDLE:
                 img = IMAGES[`IMAGE_CHICK_IDLE0_${prefix}`];
                 break;
+            case ChickState.DIG:
+                // action 2 → IDLE1 (dig.jpg)
+                img = IMAGES[`IMAGE_CHICK_IDLE1_${prefix}`];
+                break;
             case ChickState.WALK:
                 img = IMAGES[`IMAGE_CHICK_WALK_${prefix}`];
                 break;
@@ -747,12 +654,6 @@ export class Chick {
                 img = IMAGES[`IMAGE_CHICK_PECK_${prefix}`];
                 break;
             case ChickState.SICK_START:
-                // SICK_START is per-type (DAT_00500604[type]) in the decompiled,
-                // but only the LAYER variant ships as an asset in this build.
-                // Fall back to IMAGE_CHICK_SICK_START_LAYER for non-layer sick
-                // chicks so the player sees a clear visual cue (slumped pose +
-                // sickness frames) instead of a regular IDLE0 plus only the
-                // floating '!' marker — the body would look healthy otherwise.
                 img = IMAGES[`IMAGE_CHICK_SICK_START_${prefix}`]
                     || IMAGES.IMAGE_CHICK_SICK_START_LAYER;
                 break;
@@ -761,13 +662,9 @@ export class Chick {
                     || IMAGES.IMAGE_CHICK_SICK_IDLE_LAYER;
                 break;
             case ChickState.LAYING:
-                // Singleton — only LAYER variant exists in original (DAT_00500644).
                 img = IMAGES[`IMAGE_CHICK_LAYER_LAYER`];
                 break;
             case ChickState.BROODING:
-                // Brief "sit down on the egg" transition animation per
-                // FUN_0040a166 action 7 (BROOD-START). Falls back to the
-                // settled-on-nest sprite if sit_down.jpg isn't loaded yet.
                 img = IMAGES[`IMAGE_CHICK_BROOD_START_BROODY`]
                     || IMAGES[`IMAGE_CHICK_BROOD_IDLE_BROODY`];
                 break;
@@ -775,8 +672,6 @@ export class Chick {
                 img = IMAGES[`IMAGE_CHICK_BROOD_IDLE_BROODY`];
                 break;
             case ChickState.DEATH:
-                // Per-type death sprite if available, fallback to LAYER.
-                // (Earlier comment claimed singleton but Res.js loads all 5.)
                 img = IMAGES[`IMAGE_CHICK_DEATH_${prefix}`]
                     || IMAGES.IMAGE_CHICK_DEATH_LAYER;
                 break;
@@ -784,38 +679,32 @@ export class Chick {
                 img = IMAGES[`IMAGE_CHICK_HOLY_SPELL`];
                 break;
         }
-        // Fallback to LAYER when per-type asset missing for this type
         if (!img) img = IMAGES[`IMAGE_CHICK_IDLE0_${prefix}`] || IMAGES.IMAGE_CHICK_IDLE0_LAYER;
 
         if (img && img.img) {
             const celW = img.getCelWidth();
             const celH = img.getCelHeight();
             const numFrames = img.mNumCols * img.mNumRows;
-            // Death animation is a one-shot: hold the final frame after the
-            // 84-tick cycle rather than looping back to frame 0. Without this
-            // the dead chick would briefly come back to life visually during
-            // ticks 85-90 (frame 0 reappearing as anim wraps).
+            // Frame timing: UNKNOWN — not found in decompiled (JS 6 ticks/frame).
+            // One-shot actions hold their last frame instead of wrapping
+            // (their table durations — 70 sit, 100 spell, 200 death — can
+            // exceed the JS 6-ticks/frame cycle).
             let frame;
-            if (this.mState === ChickState.DEATH && numFrames > 1) {
+            const oneShot = this.mState === ChickState.DEATH
+                || this.mState === ChickState.BROODING
+                || this.mState === ChickState.HOLY_SPELL;
+            if (oneShot && numFrames > 1) {
                 frame = Math.min(numFrames - 1, Math.floor(this.mAnimTimer / 6));
             } else {
                 frame = numFrames > 1 ? Math.floor(this.mAnimTimer / 6) % numFrames : 0;
             }
 
-            // Draw shadow UNDER the chicken (at feet level)
-            // From decompiled: y = chickenY - shadow.height/2, centered horizontally
-            // Only when alive and not in death state (piVar13[2] != 6).
-            // Skip when carried by a raven — the chick is in mid-air; drawing
-            // the shadow at the chick's airborne mY made it appear as a giant
-            // ground shadow flying along with the chick (broken depth cue).
+            // Shadow (DAT_00500010 IMAGE_SHADOW) — FUN_0040a3d6:13431-13438
+            // draws it when height (+0x28) == 0 and state != 6.
             const shadowImg = IMAGES.IMAGE_SHADOW;
             if (this.mIsAlive && !this.mIsCarried
                 && this.mState !== ChickState.DEATH
                 && shadowImg && shadowImg.img) {
-                // Scale shadow with chick size — juveniles (mScale=0.5..1.0)
-                // get a proportionally smaller shadow so their footprint
-                // visually matches their body. Previously full-size shadow
-                // under tiny juvenile = "floating" appearance.
                 const baseW = shadowImg.mWidth || 64;
                 const baseH = shadowImg.mHeight || 34;
                 const sw = baseW * this.mScale;
@@ -823,18 +712,11 @@ export class Chick {
                 g.ctx.drawImage(shadowImg.img, this.mX - sw / 2, this.mY - sh / 2, sw, sh);
             }
 
-            // Draw the chicken sprite. Use a clean canvas matrix transform:
-            //   translate to chick anchor (feet centered on mX, mY)
-            //   apply horizontal flip if facing right (mDirection=0)
-            //   scale to mScale (juveniles draw smaller)
-            //   draw the cell at (0, 0) so the matrix handles positioning.
             const ctx = g.ctx;
             ctx.save();
             const sx = this.mDirection === 0 ? -this.mScale : this.mScale;
             ctx.translate(this.mX, this.mY);
             ctx.scale(sx, this.mScale);
-            // After flip, +X is to the chick's left in image coords, so center
-            // the cell at (-celW/2, -celH) so its feet sit at (mX, mY).
             const cols = img.mNumCols || 1;
             const srcX = (frame % cols) * celW;
             const srcY = Math.floor(frame / cols) * celH;
@@ -842,144 +724,118 @@ export class Chick {
                 -celW / 2, -celH, celW, celH);
             ctx.restore();
 
-            // Hunger indicator (FUN_00422802). Original threshold: foodCounter
-            // shortage; here approximated by hunger timer < 600 (severe).
-            if (this.mHunger < 600 && this.mIsAlive) {
+            // Hungry icon (DAT_00500020 IMAGE_CHICK_HUNGRY) —
+            // FUN_0040a3d6:13414-13430: drawn when vt[2] is true, frame =
+            // ftol(+0x64 * numFrames), x = spriteLeft + (spriteW - celW)/2
+            // + 0x14, y = spriteTop - image height. The original also caps
+            // the icon at 5 chicks per frame (piStack_118 < 5) — not
+            // enforced here (needs Field's draw loop).
+            if (this._hungryIcon && this.mIsAlive) {
                 const hungryImg = IMAGES.IMAGE_CHICK_HUNGRY;
                 if (hungryImg && hungryImg.img) {
-                    const hFrame = Math.floor(this.mAnimTimer / 10) % (hungryImg.mNumCols || 1);
-                    g.drawImageCell(hungryImg, this.mX - hungryImg.getCelWidth() / 2,
-                        this.mY - celH * this.mScale - hungryImg.getCelHeight() - 4, hFrame);
+                    const hFrames = (hungryImg.mNumCols || 1) * (hungryImg.mNumRows || 1);
+                    const hFrame = Math.min(hFrames - 1, Math.floor(this.mHungryAnim * hFrames));
+                    const spriteW = celW * this.mScale;
+                    const spriteLeft = this.mX - spriteW / 2;
+                    const spriteTop = this.mY - celH * this.mScale;
+                    g.drawImageCell(hungryImg,
+                        spriteLeft + (spriteW - hungryImg.getCelWidth()) / 2 + 0x14,
+                        spriteTop - hungryImg.getCelHeight(), hFrame);
                 }
-            }
-
-            // Sick indicator — small red exclamation above the chick when sick.
-            // Helps the player spot sick chicks at a glance.
-            if (this.mIsSick && this.mIsAlive) {
-                const ctx = g.ctx;
-                const blink = (Math.floor(this.mAnimTimer / 15) % 2 === 0);
-                if (blink) {
-                    ctx.fillStyle = '#ff2222';
-                    ctx.font = 'bold 18px Arial Black, Arial, sans-serif';
-                    ctx.textAlign = 'center';
-                    ctx.fillText('!', this.mX, this.mY - celH * this.mScale - 6);
-                    ctx.textAlign = 'left';
-                }
-            }
-
-            // Mood emote — bobs and fades over its lifetime.
-            if (this.mEmoteTimer > 0 && this.mEmote && this.mIsAlive) {
-                const ctx = g.ctx;
-                // Fade based on this emote's own duration, not a hardcoded 80.
-                const lifeFrac = this.mEmoteTimer / (this.mEmote.max || 80);
-                const alpha = Math.min(1, lifeFrac * 2);
-                const bob = Math.sin(this.mAnimTimer / 8) * 2;
-                ctx.globalAlpha = alpha;
-                ctx.fillStyle = this.mEmote.color;
-                ctx.font = 'bold 16px Arial, sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText(this.mEmote.symbol, this.mX,
-                    this.mY - celH * this.mScale - 14 + bob);
-                ctx.globalAlpha = 1;
-                ctx.textAlign = 'left';
             }
         }
     }
 }
 
-// FUN_00403ec2 - Chick subclass factory
+// SimpleChick — vtable 004dc8dc, ctor FUN_0041ff68 (rwg_functions.c:39518).
 export class SimpleChick extends Chick {
-    // vtable at 004dc8dc
     constructor(x, y) {
         super(ChickType.LAYER, x, y);
     }
+}
 
-    getEggType() {
+// LayerChick — vtable 004dc96c, built by FUN_00403ec2:4645-4659.
+export class LayerChick extends SimpleChick {
+    // vt[3] FUN_00403e3c (rwg_functions.c:4550): can be picked for the sick
+    // event / laying when fed, active and on the field.
+    canLayEggs() { return true; }
+
+    // vt[14] FUN_0040dba2 (rwg_functions.c:16958) — egg type. Up to 31
+    // tries: r = rand()/2147483647.0 (_DAT_004e9368); subtract the weights
+    // {0.35, 0.24, 0.14, 0.15, 1.0} (_DAT_004e9388/80/78/70) and take the
+    // first index where r <= 0 → chick type 0..4 (Layer 35%, Broody 24%,
+    // Rooster 14%, Magic 15%, Holy 12%). Accept if the level allows that
+    // type (FUN_00404a71); Broody additionally needs world+0x274 (broody
+    // count below the level's broody cap, FUN_004043fd:5084-5088). After 31
+    // failed tries return 0 (Layer).
+    // The level allow-mask (FUN_00404a71 / FUN_00423c04) and the broody cap
+    // are not modelled in JS: the gate below (BLUE/RED need hasMagicHoly,
+    // BLACK needs hasRavens) is the earlier JS approximation — UNKNOWN.
+    getEggType(field) {
+        const weights = [0.35, 0.24, 0.14, 0.15, 1.0];
+        const cfg = field && field.mFieldController && field.mFieldController.mLevelConfig;
+        const blocked = (t) => {
+            if (!cfg) return false;
+            if ((t === EggType.BLUE || t === EggType.RED) && !cfg.hasMagicHoly) return true;
+            if (t === EggType.BLACK && !cfg.hasRavens) return true;
+            return false;
+        };
+        for (let tries = 0; tries <= 0x1e; tries++) {
+            let r = Math.floor(Math.random() * 0x7fffffff) / 2147483647.0;
+            let chickType = 0;
+            for (let i = 0; i < 5; i++) {
+                r -= weights[i];
+                if (r <= 0) { chickType = i; break; }
+            }
+            const eggType = CHICK_TO_EGG[chickType];
+            if (!blocked(eggType)) return eggType;
+        }
         return EggType.WHITE;
     }
 }
 
-export class LayerChick extends SimpleChick {
-    // vtable at 0x004dc96c. Lays eggs via FUN_00403e3c (vt[3]) — DECOMPILED_MAP.md.
-    // No explicit constructor — `extends SimpleChick` inherits the default
-    // ctor which forwards (x, y) to super(). Previously had a no-op
-    // `constructor(x, y) { super(x, y); }` that mirrored exactly that.
-
-    canLayEggs() { return true; }
-
-    // Egg-type chooser FUN_0040dba2 (vt[14], line 16958) — weighted random
-    // across 5 buckets. Per the decompiled body the buckets are
-    //   local_30[0]=_DAT_004e9388, local_30[1]=_DAT_004e9380,
-    //   local_30[2]=_DAT_004e9378, local_30[3]=_DAT_004e9370, local_30[4]=1.0
-    // and the random divisor is _DAT_004e9368. Exact threshold VALUES are
-    // UNKNOWN in decompiled (only addresses, not contents). Index 1 (magic)
-    // is re-rolled when iVar1[0x274] is 0 — gated by hasMagicHoly in our
-    // blocked() helper. Up to 31 retries before falling through.
-    getEggType() {
-        // 5-tier rarity weights are JS-port estimates matching the spirit:
-        // most eggs are layer (white), rare special types. Mapping per
-        // Field.hatchEgg: WHITE→Layer, BLUE→Magic, RED→Holy,
-        // BLACK→Rooster, GOLDEN→Broody.
-        const r = Math.random();
-        if (r < 0.7)  return EggType.WHITE;     // 70% — Layer (most common)
-        if (r < 0.88) return EggType.BLUE;      // 18% — Magic
-        if (r < 0.95) return EggType.BLACK;     //  7% — Rooster
-        if (r < 0.99) return EggType.RED;       //  4% — Holy
-        return EggType.GOLDEN;                  //  1% — Broody (rarest)
-    }
-}
-
 export class BroodyChick extends Chick {
-    // Sexy::BroodyChick vtable at 0x004dc924. Alloc 0x80 bytes (FUN_00403ec2:4670).
-    // Subclass-specific fields:
-    //   +0x70 smart-ptr to target egg (line 2090, init line 4671)
-    //   +0x74 brooding flag (tested 2323)
-    //   +0x78 brood-progress timer start
-    //   +0x7C brood-progress timer current (bumped by FUN_00403de4:4474)
+    // Sexy::BroodyChick vtable 0x004dc924. Alloc 0x80 (FUN_00403ec2:4661-4677).
+    //   +0x70 smart-ptr to target egg, +0x74 brooding flag,
+    //   +0x78 brood start tick, +0x7C tick counter (FUN_00403de4:4474).
+    // Original brood sequence (FUN_00402369/FUN_0040241b/FUN_004024b1/
+    // FUN_0040258b, rwg_functions.c:2102-2340): walk to egg (action 11,
+    // target y + 0.5), sit (action 6, 70), on nest (action 7, 400, repeated
+    // while +0x74 set and the egg is still waiting), get up (action 8, 70).
+    // Hatch timing lives on the egg (egg+0x1c, set to 0.001 at get-up);
+    // the JS 3000-tick brood duration below is UNKNOWN — not found in decompiled.
     constructor(x, y) {
         super(ChickType.BROODY, x, y);
         this.mBroodingEgg = null;       // +0x70
         this.mBroodActive = false;      // +0x74
-        this.mBroodProgress = 0;        // +0x7C — increments while sitting
-        this.mBroodDuration = 3000;     // ticks to hatch — UNKNOWN exact constant
-        this.mWalkingToEgg = false;     // walking-to-target state
+        this.mBroodProgress = 0;
+        this.mBroodDuration = 3000;     // UNKNOWN — not found in decompiled
+        this.mWalkingToEgg = false;
+        this._broodTicks = 0;           // +0x7c - +0x78
     }
 
     canLayEggs() { return false; }
 
-    // Returns true if this broody is currently sitting on an egg.
     isBroody() { return this.mBroodActive && !!this.mBroodingEgg; }
 
+    // vt[1] FUN_00403de4 (rwg_functions.c:4471): +0x7c++ then FUN_0040344c.
     update(field) {
         super.update(field);
         if (!field || !this.mIsAlive || this.mIsCarried) return;
 
-        // Active brooding: progress timer increments
         if (this.mBroodActive && this.mBroodingEgg) {
-            // Validate target still exists
             if (!this.mBroodingEgg.mIsAlive || this.mBroodingEgg.mCollected) {
                 this._endBrooding();
                 return;
             }
-            // Sit-down → settled transition (BROODING → BROOD_IDLE). The
-            // sit_down.jpg animation is 780×78 = 10 frames × 6 ticks/frame
-            // = 60 ticks; switch to on_nest (1170×78 = 15 frames) after the
-            // sit-down anim completes one pass.
-            if (this.mState === ChickState.BROODING && this.mBroodProgress >= 60) {
-                // `>= 60` (not `> 60`) so the sit_down one-shot (10 frames × 6
-                // ticks = 60 ticks) transitions to BROOD_IDLE at the wrap point,
-                // rather than flashing frame 0 of sit_down for 1 tick before
-                // switching sprites.
+            this._broodTicks++;
+            // Sit (action 6, 70 ticks — PTR_004d01f0[6]) → on nest (action 7).
+            if (this.mState === ChickState.BROODING && this.mBroodProgress >= 70) {
                 this.setState(ChickState.BROOD_IDLE);
             }
-            // Stay anchored on the egg — even when sick, the broody doesn't
-            // abandon the nest. L31 description: "it takes sick birds longer
-            // to hatch their eggs" implies slower progress, not zero progress.
             this.mX = this.mBroodingEgg.mX;
             this.mY = this.mBroodingEgg.mY;
-            // Increment brood progress (FUN_00403de4:4474). Sick broody
-            // progresses at half rate (UNKNOWN exact factor — the description
-            // says "longer" without a number, 0.5× is a reasonable middle).
+            // Sick slow-down: UNKNOWN — not found in decompiled (L31 text).
             if (this.mIsSick) {
                 if (this.mAnimTimer % 2 === 0) this.mBroodProgress++;
             } else {
@@ -989,17 +845,6 @@ export class BroodyChick extends Chick {
                 this.mBroodingEgg.mBroodProgress = this.mBroodProgress / this.mBroodDuration;
             }
             if (this.mBroodProgress >= this.mBroodDuration) {
-                // Hatch unconditionally — the cap (DAT_0050034c = {5,9,12} per
-                // rwg_functions.c:6677-6685) is consulted ONLY at buy time
-                // (FUN_xxx:34313-34329 — FUN_00403e23 gates the buy loop on
-                // cap). The original brood/hatch path has no cap check, so the
-                // farm can briefly exceed cap via hatching; this is intended.
-                // Previously we deferred hatch by rewinding mBroodProgress by
-                // 30 ticks when aliveCount >= cap — on levels where starter
-                // count already equals cap (L4-5: 4 layers + 1 broody = 5,
-                // cap=5), this looped forever, so the progress bar filled but
-                // never hatched.
-                // Hatch into the egg's type
                 const ex = this.mBroodingEgg.mX;
                 const ey = this.mBroodingEgg.mY;
                 const eggType = this.mBroodingEgg.mEggType;
@@ -1013,34 +858,29 @@ export class BroodyChick extends Chick {
                         case EggType.BLUE: chickType = ChickType.MAGIC; break;
                         case EggType.RED: chickType = ChickType.HOLY; break;
                         case EggType.BLACK: chickType = ChickType.ROOSTER; break;
+                        case EggType.GOLDEN: chickType = ChickType.BROODY; break;
                         default: chickType = ChickType.LAYER;
                     }
                     field.addChick(createChick(chickType, ex, ey));
                 }
+                // SOUND_EGG_BROODED (DAT_004fedb4) trigger site: UNKNOWN in
+                // decompiled; kept at hatch.
                 if (SOUNDS.SOUND_EGG_BROODED) SOUNDS.SOUND_EGG_BROODED.play();
-                // Celebration emote on the broody — adds a moment of "I did
-                // it" payoff before the broody returns to wandering. Same
-                // sparkle palette as the Field.hatchEgg floating text so the
-                // two cues feel like one event.
-                this._emote('✨', '#ffe07f', 60);
+                // FUN_0040258b:2318-2323 — at get-up the broody's age gets
+                // the brooding time back: age += (+0x7c - +0x78), min 0x5db.
+                this.mAge += this._broodTicks;
+                if (this.mAge < 0x5db) this.mAge = 0x5db;
                 this._endBrooding();
             }
             return;
         }
 
-        // Walking-to-target: super._updateWalk handles movement via mTargetX/Y;
-        // we keep the target locked on the egg and watch for arrival.
         if (this.mWalkingToEgg && this.mBroodingEgg) {
             if (!this.mBroodingEgg.mIsAlive) {
                 this.mBroodingEgg._claimedBy = null;
                 this.mBroodingEgg = null;
                 this.mWalkingToEgg = false;
-                // Snap to IDLE so the broody can re-evaluate and pick a new
-                // egg next tick. Without this, the chick stays in WALK heading
-                // to the dead egg's old position for up to 600 ticks (the
-                // _updateWalk safety timeout) — visually weird and during that
-                // window the broody ignores newly-laid eggs.
-                this.setState(ChickState.IDLE);
+                this._chooseNextAction(field);
                 return;
             }
             this.mTargetX = this.mBroodingEgg.mX;
@@ -1049,48 +889,26 @@ export class BroodyChick extends Chick {
             const dy = this.mBroodingEgg.mY - this.mY;
             const d2 = dx * dx + dy * dy;
             if (d2 < 144) {
-                // Sit on it — start with the brief BROODING (sit_down) anim
-                // before settling into BROOD_IDLE (on_nest sprite). Matches
-                // the original's BROOD-START → BROOD-SIT progression in
-                // FUN_0040a166 actions 7 → 6. SOUND_EGG_BROODED is reserved
-                // for the actual hatch event (~10 sec later) — the sit-down
-                // moment is silent. The name ("brooded" = past-participle
-                // of brood) implies completion.
+                // vt[9] FUN_004024b1 (rwg_functions.c:2216): on arrival
+                // action 6 (sit, 70).
                 this.mBroodActive = true;
                 this.mBroodProgress = 0;
+                this._broodTicks = 0;
                 this.mWalkingToEgg = false;
                 this.setState(ChickState.BROODING);
-                // setState(BROODING) now resets mAnimTimer centrally, so the
-                // sit_down animation starts at frame 0.
                 if (this.mBroodingEgg.mBrooding !== undefined) {
                     this.mBroodingEgg.mBrooding = true;
                 }
+            } else if (this.mState !== ChickState.WALK) {
+                this.setState(ChickState.WALK);
             }
             return;
         }
 
-        // Idle: pick the NEAREST egg flagged for brooding. Original iteration
-        // order in FUN_004046aa-style scans isn't pinpointed in decompiled,
-        // but a nearest-egg pick matches player expectation ("hatch eggs one
-        // by one, starting with the closest") and avoids the broody walking
-        // past nearer eggs to grab a far one that happened to be earlier in
-        // the gem list.
-        //
-        // Skip juveniles — matches FieldController.startEggBrooding's
-        // mIsAdult filter (FC.js:770 in current revision). Without this, a
-        // juvenile broody could
-        // auto-claim an egg whose adult broody died (cleanup clears
-        // _claimedBy but leaves mBrooding=true), bypassing the adult-only
-        // gate. The juvenile would eventually grow up before hatch, but the
-        // visual of a half-scale chick sitting on an egg is wrong, and the
-        // claim-from-juveniles path circumvents the player's intent.
+        // Claiming an egg: the original target is set by the egg-box
+        // (smart-ptr +0x70); auto-claim of the nearest waiting egg is a JS
+        // approximation — UNKNOWN.
         if (!this.mIsAdult) return;
-        // Skip sick broodies — they can't walk to the egg. If a sick broody
-        // claims an egg here (sets _claimedBy = this), the next tick's
-        // setState(WALK) gets immediately overridden back to SICK_START by
-        // the justSickened branch in Chick.update. The egg ends up claimed
-        // but never reached, blocking other broodies until the egg expires
-        // (40s lifetime). Wait for cure before claiming.
         if (this.mIsSick) return;
         let nearest = null;
         let nearestD2 = Infinity;
@@ -1111,6 +929,7 @@ export class BroodyChick extends Chick {
             this.mTargetX = nearest.mX;
             this.mTargetY = nearest.mY;
             this._targetSeeds = null;
+            this._wanderTarget = null;
             this.setState(ChickState.WALK);
         }
     }
@@ -1120,11 +939,9 @@ export class BroodyChick extends Chick {
         if (this.mBroodingEgg && this.mBroodingEgg !== egg) return;
         this.mBroodingEgg = egg;
         this.mWalkingToEgg = true;
-        this.mBroodProgress = 0;  // explicit reset for clarity (_endBrooding
-                                  // already zeroes this, but a redundant guard
-                                  // protects against any future path that
-                                  // calls startBrooding without prior end).
+        this.mBroodProgress = 0;
         this.mBroodActive = false;
+        this._wanderTarget = null;
         this.setState(ChickState.WALK);
         if (egg) {
             egg._claimedBy = this;
@@ -1135,10 +952,6 @@ export class BroodyChick extends Chick {
     }
 
     _endBrooding() {
-        // Release the claim AND reset the egg's visible brood progress so a
-        // new broody (or replay of the same egg) starts from a clean bar.
-        // Without this the HUD shows stale progress on an unclaimed egg until
-        // another broody takes over.
         if (this.mBroodingEgg) {
             this.mBroodingEgg._claimedBy = null;
             if (this.mBroodingEgg.mBroodProgress !== undefined) {
@@ -1148,250 +961,258 @@ export class BroodyChick extends Chick {
         this.mBroodingEgg = null;
         this.mBroodActive = false;
         this.mBroodProgress = 0;
+        this._broodTicks = 0;
         this.mWalkingToEgg = false;
         if (this.mState === ChickState.BROOD_IDLE || this.mState === ChickState.BROODING) {
             this.setState(ChickState.IDLE);
         }
     }
 
-    getEggType() {
-        return EggType.GOLDEN;
+    // While walking to its egg the broody must not re-decide (state 0x14).
+    _chooseNextAction(field) {
+        if (this.mWalkingToEgg && this.mBroodingEgg) {
+            this.setState(ChickState.WALK);
+            return;
+        }
+        super._chooseNextAction(field);
     }
 }
 
+// RoosterChick — vtable 004dc9b4, built by FUN_00403ec2:4679-4691. No
+// overrides besides the destructor. Raven protection is global
+// (FUN_0040134a:446-461, handled in FieldController).
 export class RoosterChick extends Chick {
-    // vtable at 004dc9b4
     constructor(x, y) {
         super(ChickType.ROOSTER, x, y);
     }
-
-    // Rooster protection in the original is GLOBAL via FUN_0040134a:446-461 —
-    // it adjusts the raven-spawn probability based on rooster count vs needed
-    // (FieldController.update handles this). No per-rooster proximity protection.
-    // RoosterChick has no per-tick override here.
-
-    getEggType() {
-        return EggType.BLACK;
-    }
 }
 
+// MagicChick — vtable 004dd62c, built by FUN_00403ec2:4693-4707 with
+// FUN_004032ca(pos, 0) (lay cooldown -1: never lays) and +0x68/+0x6c = 0.
 export class MagicChick extends Chick {
-    // vtable at 0x004dd62c. Egg-type chooser FUN_0040e372 returns 2 (line 17603).
-    // Magic chicks consume magic eggs (egg type 1, BLUE) to gain food
-    // (FUN_0041ff9a:39566-39590 — adds +0x24 to +0x1c, +0x34 *= 1.5, capped).
-    // Lays magic (BLUE) eggs.
     constructor(x, y) {
         super(ChickType.MAGIC, x, y);
-        this.mTargetMagicEgg = null;       // +0x68 — magic-egg target (line 39533)
+        this.mTargetMagicEgg = null;       // +0x68/+0x6c target egg
+        // Magic chicks never eat seeds (vt[11..13] are egg versions).
+        this.mFoodSeeker = false;
     }
 
-    // MagicChick vtable[3] = FUN_0040e36f returns 0 — magic chicks DO NOT lay
-    // eggs. New magic chicks come only from rare blue eggs laid by LayerChick
-    // (FUN_0040dba2 randomly picks blue ~18% of layer's eggs). Magic chicks
-    // exist only to consume blue eggs (food + sat) and drop blue diamonds on
-    // peck (vtable[15] = FUN_0040e372 returns 2).
+    // vt[3] = FUN_0040e36f → 0.
     canLayEggs() { return false; }
 
-    // MagicChick vtable[15] = FUN_0040e372 returns 2 (DiamondBlue) — every peck
-    // drops a blue diamond instead of a coin (rwg_vtables.txt: 004dd62c[15]).
+    // vt[2] = FUN_0040e36f → 0: never shows the hungry icon.
+    showsHungryIcon() { return false; }
+
+    // vt[15] FUN_0040e372 (rwg_functions.c:17603) → 2 (DiamondBlue).
     getCoinType() { return 2; }
 
-    // FUN_0040e372 (line 17603) returns 2 — magic-egg type id.
-    getEggType() {
-        return EggType.BLUE;
+    // vt[13] FUN_0040e51f (rwg_functions.c:17749): if the egg list
+    // (world+0x24) has no un-picked egg (FUN_004077fa) → FUN_004039f5; else
+    // walk (action 11, 60) to the target chosen by FUN_004071b2.
+    _seekFood(field) {
+        const egg = this._pickEgg(field);
+        if (!egg) {
+            this.mTargetMagicEgg = null;
+            this._digOrIdle();
+            return;
+        }
+        this.mTargetMagicEgg = egg;
+        egg._magicClaim = this;
+        this.mTargetX = egg.mX;
+        this.mTargetY = egg.mY;
+        this._targetSeeds = null;
+        this.setState(ChickState.WALK);
     }
 
-    update(field) {
-        super.update(field);
-        if (!field || !this.mIsAlive || this.mIsSick || this.mIsCarried) return;
-        // Juveniles can't eat eggs — matches the NEWBORN exclusion pattern
-        // used across raven/wolf targeting, lay-egg, peck-coin spawn, and
-        // broody-claim. The original's magic-egg eat path (specific function
-        // UNKNOWN — `FUN_0041ff9a` cited previously is the SEED-eat helper,
-        // not magic-egg) is gated by vtable[5] = FUN_0040327c, which returns
-        // 0 for NEWBORN (rwg_functions.c:3371). So juvenile magic chicks
-        // never enter the eat path in the original.
-        if (!this.mIsAdult) return;
-        // Find the NEAREST magic egg to consume (FUN_0041ff9a:39566). First-
-        // match-in-list would have the magic chick passively eating only the
-        // egg that happens to be earliest in mGems, even when a closer one
-        // is right next to it. Nearest-pick mirrors the BroodyChick/Wolf
-        // nearest-target fixes earlier in the session.
-        if (!this.mTargetMagicEgg || !this.mTargetMagicEgg.mIsAlive) {
-            this.mTargetMagicEgg = null;
-            let nearestD2 = Infinity;
-            for (const g of field.mGems) {
-                if (!g.mIsAlive || g.mCollected) continue;
-                if (g.mType !== 4 /* EGG */) continue;
-                if (g.mEggType !== EggType.BLUE) continue;
-                // Don't eat an egg the player has committed to brooding —
-                // otherwise a magic chick can race a broody for the same egg
-                // and the player loses their brood progress without warning.
-                if (g.mBrooding) continue;
-                const dx = g.mX - this.mX;
-                const dy = g.mY - this.mY;
-                const d2 = dx * dx + dy * dy;
-                if (d2 < nearestD2) {
-                    nearestD2 = d2;
-                    this.mTargetMagicEgg = g;
-                }
+    // FUN_004071b2 (rwg_functions.c:8826): nearest egg by Chebyshev
+    // distance (FUN_00403c97) within 1e6 (_DAT_004e9280), not picked up
+    // (+0x20), not reserved by another chick; eggs of type 3/4 (Magic/Holy
+    // → BLUE/RED) are taken only if no other egg was found.
+    // JS also skips eggs committed to brooding (FUN_00406ab6 busy test is on
+    // egg+0x1c, whose JS equivalent is UNKNOWN).
+    _pickEgg(field) {
+        if (!field || !field.mGems) return null;
+        let best = null;
+        let bestD = 1000000;
+        for (const g of field.mGems) {
+            if (g.mType !== 4 /* EGG */ || !g.mIsAlive || g.mCollected) continue;
+            if (g.mBrooding) continue;
+            if (g._magicClaim && g._magicClaim !== this && g._magicClaim.mIsAlive
+                && g._magicClaim.mTargetMagicEgg === g) continue;
+            const d = Math.max(Math.abs(this.mX - g.mX), Math.abs(this.mY - g.mY));
+            if (d >= bestD) continue;
+            const special = g.mEggType === EggType.BLUE || g.mEggType === EggType.RED;
+            if (!special) {
+                bestD = d;
+                best = g;
+            } else if (!best) {
+                best = g;   // bestD unchanged (FUN_004071b2:8866-8869)
             }
         }
-        // Walk toward and consume. Drop the target if it became brooding
-        // between when it was cached and now (player clicked brood-it on
-        // the egg-box mid-approach).
-        if (this.mTargetMagicEgg && this.mTargetMagicEgg.mBrooding) {
-            this.mTargetMagicEgg = null;
-        }
+        return best;
+    }
+
+    // Walking to the target egg: vt[12] FUN_0040e44d (rwg_functions.c:17686)
+    // — on arrival action 10 (peck, 30).
+    _updateWalk(field) {
         if (this.mTargetMagicEgg) {
-            const dx = this.mTargetMagicEgg.mX - this.mX;
-            const dy = this.mTargetMagicEgg.mY - this.mY;
-            const d = dx * dx + dy * dy;
-            if (d < 400) {
-                // Consume — credit food and reset hunger. The original
-                // magic-chick-eat-egg path goes through FUN_0041ff9a (seed
-                // eat) with the egg substituted as the cluster — calories
-                // come from egg[+0x24]. UNKNOWN exact value in decompiled;
-                // 36 (0x24) was a JS-port guess from confusing the offset
-                // with the value. The 5000 cap keeps a freshly-cured chick
-                // (mAge=5200) from being clamped down — eating shouldn't
-                // shorten life. The Math.max guard preserves that property.
-                this.mTargetMagicEgg.mIsAlive = false;
-                this.mTargetMagicEgg.mCollected = true;
-                this.mAge = Math.max(this.mAge, Math.min(this.mAge + 36, 5000));
-                // food counter *= 1.5
-                const cap = Math.floor(200 * this.mScale);
-                this.mFoodCounter = Math.min(cap, Math.floor(this.mFoodCounter * 1.5));
-                this.mHunger = 2000;
+            const egg = this.mTargetMagicEgg;
+            if (!egg.mIsAlive || egg.mCollected || egg.mBrooding) {
                 this.mTargetMagicEgg = null;
-                // Audible cue — SOUND_EAT_EGG asset was previously unused
-                // despite being loaded. Magic-chick eating a magic egg is the
-                // natural fit per the asset's name and the only egg-eating
-                // behavior in the game.
-                if (SOUNDS.SOUND_EAT_EGG) SOUNDS.SOUND_EAT_EGG.play();
+                this._chooseNextAction(field);
+                return;
+            }
+            this.mTargetX = egg.mX;
+            this.mTargetY = egg.mY;
+            const dx = egg.mX - this.mX;
+            const dy = egg.mY - this.mY;
+            if (dx * dx + dy * dy < 25) {
+                this.setState(ChickState.PECK);
+                return;
             }
         }
+        super._updateWalk(field);
+    }
+
+    // vt[11] FUN_0040e392 (rwg_functions.c:17636) at the end of the peck:
+    // age (+0x1c) += cal; food (+0x34) += cal*3/2, capped at FUN_004058af;
+    // the egg is removed (FUN_004077ae). `cal` is read from
+    // `extraout_ECX + 0x14` whose object is ambiguous in the decompile —
+    // UNKNOWN; JS keeps its earlier value 36. Sound: FUN_004077ae plays a
+    // one-shot whose DAT is not visible — SOUND_EAT_EGG kept (UNKNOWN).
+    _updatePeck(field) {
+        if (!this.mTargetMagicEgg) {
+            super._updatePeck(field);
+            return;
+        }
+        if (this.mStateTimer < DUR_PECK) return;
+        const egg = this.mTargetMagicEgg;
+        this.mTargetMagicEgg = null;
+        if (egg.mIsAlive && !egg.mCollected && !egg.mBrooding) {
+            egg.mIsAlive = false;
+            egg.mCollected = true;
+            const cal = 36; // UNKNOWN — not found in decompiled
+            this.mAge += cal;
+            this.mFoodCounter += Math.floor((cal * 3) / 2);
+            const cap = Math.floor(200 * this.mScale);
+            if (this.mFoodCounter >= cap) this.mFoodCounter = cap;
+            if (SOUNDS.SOUND_EAT_EGG) SOUNDS.SOUND_EAT_EGG.play();
+        }
+        this._chooseNextAction(field);
     }
 }
 
+// HolyChick — vtable 004dd11c, alloc 0x74, +0x70 spell cooldown = 6000
+// (FUN_00403ec2:4709-4726).
 export class HolyChick extends Chick {
-    // vtable at 0x004dd11c. Holy spell at vt[8] FUN_0040d8b1 (line 16759).
-    // Spell cooldown +0x70 = 6000 ticks (decremented 1/tick by vt[1]
-    // FUN_0040d912:16794 → ~60s at 100fps).
     constructor(x, y) {
         super(ChickType.HOLY, x, y);
-        this.mSpellCooldown = 6000; // FUN_0040d8b1:16771 sets +0x1c (param[0x1c]) to 6000
-        // Explicit init for the same hidden-class reason as Raven.mScareTimer —
-        // mSpellFlashTimer is referenced unconditionally each tick by update()
-        // (`if (this.mSpellFlashTimer > 0) this.mSpellFlashTimer--;`), set by
-        // castSpell(). Implicit undefined worked because `undefined > 0` is
-        // false, but explicit init keeps the field shape consistent for
-        // V8's optimization.
+        this.mSpellCooldown = 6000; // +0x70, FUN_00403ec2:4722
+        // Spell effect drawn at the converted chick (world+0x38 list entry,
+        // 16-byte {timer, x, y, z} built in FUN_00420e2e:40570-40577).
+        this.mSpellFx = null;
         this.mSpellFlashTimer = 0;
     }
 
+    // vt[1] FUN_0040d912 (rwg_functions.c:16790): +0x70-- (if > 0), then
+    // FUN_0040344c.
     update(field) {
-        super.update(field);
-        // Skip the spell logic for dead or raven-carried chicks — super.update
-        // returns early in those cases but the post-super lines here would
-        // otherwise still tick the cooldown and (when it hits 0) cast a spell
-        // from a dead chick.
-        if (!this.mIsAlive || this.mIsCarried) return;
-        // Spell-flash visual timer ticks in update (100Hz) so duration is
-        // display-fps independent. Previously decremented inside draw().
-        if (this.mSpellFlashTimer > 0) this.mSpellFlashTimer--;
-        // Decremented in vt[1] (FUN_0040d912:16793-16794)
         if (this.mSpellCooldown > 0) this.mSpellCooldown--;
-        // Auto-cast when adult and cooldown expired (FUN_0040d8b1:16770-16775)
-        else if (this.mIsAdult && field) {
-            this.castSpell(field);
+        super.update(field);
+        if (this.mSpellFx) {
+            this.mSpellFx.t++;
+            // Effect lifetime: UNKNOWN — not found in decompiled (JS 30 ticks).
+            if (this.mSpellFx.t >= 30) this.mSpellFx = null;
         }
+        this.mSpellFlashTimer = this.mSpellFx ? 30 - this.mSpellFx.t : 0;
     }
 
-    canLayEggs() { return false; } // Holy chicks don't lay; they cast.
+    canLayEggs() { return false; }
 
-    // FUN_0040d8b1 (line 16773): when state==4 (ADULT) && +0x70==0, cast spell.
-    // Effect (per level 26 description "make red gems / 15 magic chickens"):
-    // turns nearby coins/silver coins/blue diamonds into a RED diamond.
+    // vt[8] FUN_0040d8b1 (rwg_functions.c:16759): if state == 4 and the
+    // cooldown is 0 and FUN_00420f72 finds a target → cooldown = 6000,
+    // action 12 (100). Otherwise FUN_0040386a.
+    _chooseNextAction(field) {
+        if (!this.mIsSick && this.mIsAdult && this.mSpellCooldown === 0
+            && this._pickSpellTarget(field)) {
+            this.mSpellCooldown = 6000;
+            this._wanderTarget = null;
+            this.setState(ChickState.HOLY_SPELL);
+            return;
+        }
+        super._chooseNextAction(field);
+    }
+
+    // Kept for API compatibility: force a cast attempt now.
     castSpell(field) {
         if (this.mSpellCooldown > 0 || !this.mIsAdult) return false;
-        // Find nearest non-egg gem FIRST — if no target in range, skip the
-        // cast entirely so the cooldown isn't wasted. The original FUN_0040d8b1
-        // checks `*(param_1 + 4) != 0` (target field) before setting the
-        // cooldown, so a target-less cast is a no-op there too. Without this,
-        // holy chicks were silently burning 60s of cooldown for nothing
-        // whenever the field was bare of coins/blue diamonds.
-        let nearest = null;
-        if (field && field.mGems) {
-            let bestD = 14400; // 120px squared radius
-            for (const g of field.mGems) {
-                if (!g.mIsAlive || g.mCollected) continue;
-                if (g.mType === 4 /* EGG */) continue;
-                if (g.mType === 3 /* DIAMOND_RED */) continue;
-                const dx = g.mX - this.mX;
-                const dy = g.mY - this.mY;
-                const d = dx * dx + dy * dy;
-                if (d < bestD) { bestD = d; nearest = g; }
-            }
-        }
-        if (!nearest) return false;
-        this.mSpellCooldown = 6000;  // Reset to 6000ms (line 4722)
+        if (!this._pickSpellTarget(field)) return false;
+        this.mSpellCooldown = 6000;
         this.setState(ChickState.HOLY_SPELL);
-        // Visual flash — IMAGE_SPELL (DAT_0050000c)
-        this.mSpellFlashTimer = 30;
-        if (SOUNDS.SOUND_CHICK_TO_RED_DIAMOND) SOUNDS.SOUND_CHICK_TO_RED_DIAMOND.play();
-
-        // Convert nearest gem to RED diamond.
-        if (field && field.spawnGem) {
-            {
-                const gx = nearest.mX, gy = nearest.mY;
-                nearest.mIsAlive = false;
-                nearest.mCollected = true;
-                field.spawnGem(3 /* DIAMOND_RED */, gx, gy);
-            }
-        }
         return true;
     }
 
-    getEggType() {
-        return EggType.RED;
+    // FUN_00420f72 (rwg_functions.c:40611): collect chicks with type 3
+    // (Magic) that are fed (FUN_00403a3e != 0), active (vt[5]) and on the
+    // field (!FUN_00403bbf); stop once more than 10 are collected; return a
+    // random one (rand % count), or null.
+    _pickSpellTarget(field) {
+        if (!field || !field.mChickens) return null;
+        const list = [];
+        for (const c of field.mChickens) {
+            if (c.mType !== ChickType.MAGIC) continue;
+            if (!c.mIsAlive || c.mState === ChickState.DEATH) continue;
+            if (!c.mIsAdult || c.mIsCarried) continue;
+            if (!c._isFed()) continue;
+            list.push(c);
+            if (list.length > 10) break;
+        }
+        if (list.length === 0) return null;
+        return list[Math.floor(Math.random() * 0x7fffffff) % list.length];
     }
 
-    // Override draw to overlay spell flash if active
+    // vt[10] FUN_0040d922 (rwg_functions.c:16808) → FUN_00420e2e
+    // (rwg_functions.c:40526) at the end of action 12: pick a target again
+    // (FUN_00420f72); spawn a gem at its position (FUN_0040c4d9 — red
+    // diamond, matching SOUND_CHICK_TO_RED_DIAMOND; the gem-type argument is
+    // not visible in the decompile), kill it (FUN_0040342b, no death
+    // sound), play DAT_004fed70 SOUND_CHICK_TO_RED_DIAMOND and add the
+    // IMAGE_SPELL effect at its position.
+    _onSpellEnd(field) {
+        const target = this._pickSpellTarget(field);
+        if (!target) return;
+        const tx = target.mX, ty = target.mY;
+        if (field.spawnGem) field.spawnGem(3 /* DIAMOND_RED */, tx, ty - 20);
+        target.die(false);
+        if (SOUNDS.SOUND_CHICK_TO_RED_DIAMOND) SOUNDS.SOUND_CHICK_TO_RED_DIAMOND.play();
+        this.mSpellFx = { x: tx, y: ty, t: 0 };
+    }
+
+    // Spell effect — FUN_0040a3d6:13575-13602: IMAGE_SPELL (DAT_0050000c)
+    // drawn centred on the effect point (x - h/2, y - h/2), frame clamped to
+    // numFrames-1. Frame-advance rate: UNKNOWN (JS spreads 8 frames over 30 ticks).
     draw(g) {
         super.draw(g);
-        if (this.mSpellFlashTimer > 0) {
+        const fx = this.mSpellFx;
+        if (fx) {
             const img = IMAGES.IMAGE_SPELL;
             if (img && img.img) {
                 const fw = img.getCelWidth ? img.getCelWidth() : img.mWidth;
                 const fh = img.getCelHeight ? img.getCelHeight() : img.mHeight;
-                // spell_flash.png is 512x64 = 8 frames at 64x64 (auto-detected
-                // mNumCols=8). Previously the 5-arg drawImage(img, x, y, w, h)
-                // drew the WHOLE 512x64 source squished into one 64x64 cel —
-                // all 8 frames smeared together. Use 9-arg form with a source
-                // rect, and advance the frame as the 30-tick timer ticks down
-                // so the player sees a proper spell-burst animation.
                 const numFrames = (img.mNumCols || 1) * (img.mNumRows || 1);
-                // mSpellFlashTimer: 30 → 0 over 30 ticks. Map to frame 0 → 7.
-                const elapsed = 30 - this.mSpellFlashTimer;
-                const frame = numFrames > 1
-                    ? Math.min(numFrames - 1, Math.floor(elapsed * numFrames / 30))
-                    : 0;
+                const frame = Math.min(numFrames - 1, Math.floor(fx.t * numFrames / 30));
                 const cols = img.mNumCols || 1;
                 const sx = (frame % cols) * fw;
                 const sy = Math.floor(frame / cols) * fh;
-                const alpha = Math.min(1, this.mSpellFlashTimer / 30);
-                g.ctx.globalAlpha = alpha;
                 g.ctx.drawImage(img.img, sx, sy, fw, fh,
-                    this.mX - fw / 2, this.mY - fh - 10, fw, fh);
-                g.ctx.globalAlpha = 1;
+                    fx.x - fh / 2, fx.y - fh / 2, fw, fh);
             }
         }
     }
 }
 
-// Maps ChickType to subclass instance — original FUN_00403ec2 (113 lines)
-// branches on the type id and allocates the right struct size + vtable.
+// FUN_00403ec2 (rwg_functions.c:4623) — chick factory: type 0 Layer (0x70),
+// 1 Broody (0x80), 2 Rooster (0x70), 3 Magic (0x70), 4 Holy (0x74).
 export function createChick(type, x, y) {
     switch (type) {
         case ChickType.LAYER:   return new LayerChick(x, y);

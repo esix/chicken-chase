@@ -81,6 +81,9 @@
    37px (36px art + 1px gap), leaving a 31px bottom inset. */
 .cc-box-options .cc-buttons { gap: 1px; }
 /* Generic quit dialog: screenshot 32 measured rect (250,150,300,300). */
+/* SURPRISE! ask/result (.cc-box-surprise) reuse this box: both are built by
+   the same DoDialog path FUN_00421187 (rwg:40785) as QUIT? — via FUN_0040279c
+   (rwg:33716) and FUN_0040f491 (rwg:33826). No separate rect in decompiled. */
 .cc-box-quit { width: 300px; height: 300px; }
 /* FUN_0040f117 (rwg:18703): NewPlayerDialog rect (250, 200, 300, 200). */
 .cc-box-newplayer    { width: 300px; min-height: 200px; }

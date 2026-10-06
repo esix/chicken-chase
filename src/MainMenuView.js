@@ -1,23 +1,35 @@
 // Sexy::MainMenuView (vftable 0x4dd690 / 0x4dd694).
 // Constructor FUN_0040e5cb (rwg_functions.c:17785).
-// AddedToManager FUN_0040e83a (button positions, line 17961-18014).
-// Draw FUN_0040e75a (line 17916).
-// ButtonDepress FUN_0040ea92 (line 18061).
-// All positions/labels verified per DECOMPILED_MAP.md section 14.
+// Draw FUN_0040e75a (rwg_functions.c:17916; args recovered from the
+//   disassembly of app/chicken_chase.RWG @0x40e75a..0x40e837).
+// AddedToManager FUN_0040e83a (rwg_functions.c:17961-18030).
+// RemovedFromManager FUN_0040ea3b (rwg_functions.c:18040).
+// ButtonDepress FUN_0040ea92 (rwg_functions.c:18061-18150).
+//
+// Sexy::SelectLevelView (vftable 0x4df364) — the full-screen view behind
+// SelectLevelDialog / IntroductionDialog and host of the win/credits roll.
+// Its non-dialog roll logic (mode 1000 / >= 51) lives in CreditsView.js; the
+// class below keeps the SelectLevelDialog (HTML) driver + the view background.
 
 import { Widget, ButtonWidget } from './SexyApp.js';
 import { IMAGES, SOUNDS } from './Res.js';
 import { NewPlayerDialog } from './PlayerDialogs.js';
 import { getLevelDescription } from './LevelData.js';
-import { drawFitText } from './TextUtil.js';
 import { HtmlDialogs } from './HtmlDialogs.js';
 import { getTintedEggCel } from './Gem.js';
+import { drawFieldBackground, FONT_CSS, drawOutlinedText, FONT_ASCENT } from './CreditsView.js';
 
-const BTN_START = 1;       // ID 1 → start game (rwg_functions.c:18089)
-const BTN_OPTIONS = 2;     // ID 2 → OptionsDialog (line 18098)
-const BTN_EXIT = 3;        // ID 3 → Shutdown (line 18114)
-const BTN_CHANGE_PLAYER = 4; // ID 4 → ChangePlayerDialog (line 18130)
-const BTN_CREDITS = 5;     // dynamic ID, opens credits dialog id 1000
+// Child widget ids (FUN_0040e5cb:17813-17836 passes 1/2/3 to FUN_0042154d;
+// ButtonDepress FUN_0040ea92 dispatches 1,2,3,4 at rwg:18088-18146).
+const BTN_START = 1;         // id 1 → FUN_004088d0(-1, app)             rwg:18089-18093
+const BTN_OPTIONS = 2;       // id 2 → new OptionsDialog FUN_0040f57b, dialog id 6   rwg:18098-18112
+const BTN_EXIT = 3;          // id 3 → App vtable[0xa0] (Shutdown)       rwg:18115-18121
+const BTN_CHANGE_PLAYER = 4; // id 4 → new ChangePlayerDialog FUN_004028ca, dialog id 3  rwg:18123-18146
+// Credits link: its id is compared at rwg:18126 against the widget's own id
+// (+0x84); the value itself is not a constant in the decompiled. Any id that
+// is distinct from 1..4 is equivalent → 5. Action: FUN_004088d0(1000, app)
+// (rwg:18128) = SelectLevelView in credits mode (see CreditsView.js).
+const BTN_CREDITS = 5;
 
 // Per-level bullet hints shown below the description in the LEVEL N briefing.
 // Verified against screenshots 12 (level 1), 18 (level 2), 21 (level 3),
@@ -67,207 +79,165 @@ function _getLevelBullets(level) {
     return bullets;
 }
 
+// Text-only Sexy::ButtonWidget used for the "Change player" / "Credits" links.
+// Built by FUN_004215ad (rwg:41075): ButtonWidget(FUN_0043d2d7), label string,
+// font FONT_DLG_BUTTONS, color[0] (label) = color[1] (label hilite) =
+// RGB(255,255,255). MainMenuView::AddedToManager then overrides the font with
+// FONT_10 (DAT_004fff0c, rwg:18002/18009), color[1] with RGB(0,255,0)
+// (rwg:18004-18005 / 18011-18012) and sets byte +0xfe = 1 (rwg:18006/18013),
+// which skips the default frame drawn by ButtonWidget::Draw FUN_0043d4cc.
+class LabelButton extends ButtonWidget {
+    constructor(id, listener, label) {
+        super(id, listener);
+        this.mLabel = label;
+        this.mFontKey = 'FONT_10';
+        this.mColors = [[255, 255, 255], [0, 255, 0]];
+    }
+
+    draw(g) {
+        // ButtonWidget::Draw FUN_0043d4cc, label position (disassembly
+        // @0x43d5c9-0x43d61e, BUTTON_LABEL_CENTER):
+        //   x = (mWidth - StringWidth(label)) / 2
+        //   y = (mHeight + ascent - ascent/6 - 1) / 2       (integer math)
+        // Color index 1 when the mouse is over the widget (+0x55 mIsOver).
+        const ctx = g.ctx;
+        ctx.save();
+        ctx.font = FONT_CSS[this.mFontKey];
+        const asc = FONT_ASCENT[this.mFontKey];
+        const tw = ctx.measureText(this.mLabel).width;
+        const lx = Math.trunc((this.mWidth - tw) / 2);
+        const ly = Math.trunc((this.mHeight + asc - Math.trunc(asc / 6) - 1) / 2);
+        const [r, gg, b] = this.mColors[this.mIsOver ? 1 : 0];
+        drawOutlinedText(ctx, this.mLabel, g.mTransX + lx, g.mTransY + ly, `rgb(${r},${gg},${b})`);
+        ctx.restore();
+    }
+}
+
 export class MainMenuView extends Widget {
     constructor(gameApp) {
         super();
         this.mGameApp = gameApp;
+        // GameApp::showMainMenu FUN_00408799 (rwg:10755) resizes the view to
+        // (0, 0, app.mWidth, app.mHeight) = 800x600.
         this.resize(0, 0, 800, 600);
 
-        // Start button: x=0x1b3=435, y=0xeb=235 (rwg_functions.c:17992)
-        const startBtn = new ButtonWidget(BTN_START, this);
-        const sw = (IMAGES.IMAGE_MAIN_BUTTON_START && IMAGES.IMAGE_MAIN_BUTTON_START.img)
-            ? IMAGES.IMAGE_MAIN_BUTTON_START.img.width : 230;
-        const sh = (IMAGES.IMAGE_MAIN_BUTTON_START && IMAGES.IMAGE_MAIN_BUTTON_START.img)
-            ? IMAGES.IMAGE_MAIN_BUTTON_START.img.height : 64;
-        startBtn.resize(435, 235, sw, sh);
-        startBtn.mButtonImage = IMAGES.IMAGE_MAIN_BUTTON_START;
-        startBtn.mOverImage = IMAGES.IMAGE_MAIN_BUTTON_START_OVER;
-        this.addWidget(startBtn);
+        // Child widgets created in FUN_0040e5cb (rwg:17813-17845), in this
+        // order: Start (+0x8c), Options (+0x90), Exit (+0x94), Change player
+        // (+0x98), Credits (+0x9c). FUN_0042154d gives image buttons a size
+        // equal to their image (Resize(0,0,img.w,img.h), rwg:41063).
+        const mkImgBtn = (id, imgKey, overKey) => {
+            const b = new ButtonWidget(id, this);
+            b.mButtonImage = IMAGES[imgKey];   // +0xac
+            b.mOverImage = IMAGES[overKey];    // +0xb0
+            this.addWidget(b);
+            return b;
+        };
+        // DAT_00500030/34 = IMAGE_MAIN_BUTTON_START/_OVER (rwg:17813-17818)
+        this.mStartButton = mkImgBtn(BTN_START, 'IMAGE_MAIN_BUTTON_START', 'IMAGE_MAIN_BUTTON_START_OVER');
+        // DAT_00500038/3c = IMAGE_MAIN_BUTTON_OPTIONS/_OVER (rwg:17824-17829)
+        this.mOptionsButton = mkImgBtn(BTN_OPTIONS, 'IMAGE_MAIN_BUTTON_OPTIONS', 'IMAGE_MAIN_BUTTON_OPTIONS_OVER');
+        // DAT_00500040/44 = IMAGE_MAIN_BUTTON_EXIT/_OVER (rwg:17830-17836)
+        this.mExitButton = mkImgBtn(BTN_EXIT, 'IMAGE_MAIN_BUTTON_EXIT', 'IMAGE_MAIN_BUTTON_EXIT_OVER');
+        // "Change player" / "Credits" text buttons (rwg:17838-17845).
+        this.mChangePlayerButton = new LabelButton(BTN_CHANGE_PLAYER, this, 'Change player');
+        this.addWidget(this.mChangePlayerButton);
+        this.mCreditsButton = new LabelButton(BTN_CREDITS, this, 'Credits');
+        this.addWidget(this.mCreditsButton);
 
-        // Options button: y=0x136=310, x ≈ centered with Start (rwg_functions.c:17995)
-        const optBtn = new ButtonWidget(BTN_OPTIONS, this);
-        const ow = (IMAGES.IMAGE_MAIN_BUTTON_OPTIONS && IMAGES.IMAGE_MAIN_BUTTON_OPTIONS.img)
-            ? IMAGES.IMAGE_MAIN_BUTTON_OPTIONS.img.width : 190;
-        const oh = (IMAGES.IMAGE_MAIN_BUTTON_OPTIONS && IMAGES.IMAGE_MAIN_BUTTON_OPTIONS.img)
-            ? IMAGES.IMAGE_MAIN_BUTTON_OPTIONS.img.height : 64;
-        optBtn.resize(435 + Math.floor((sw - ow) / 2), 310, ow, oh);
-        optBtn.mButtonImage = IMAGES.IMAGE_MAIN_BUTTON_OPTIONS;
-        optBtn.mOverImage = IMAGES.IMAGE_MAIN_BUTTON_OPTIONS_OVER;
-        this.addWidget(optBtn);
+        this._layoutButtons();
 
-        // Exit button: y=0x181=385 (rwg_functions.c:17999)
-        const exitBtn = new ButtonWidget(BTN_EXIT, this);
-        const ew = (IMAGES.IMAGE_MAIN_BUTTON_EXIT && IMAGES.IMAGE_MAIN_BUTTON_EXIT.img)
-            ? IMAGES.IMAGE_MAIN_BUTTON_EXIT.img.width : 128;
-        const eh = (IMAGES.IMAGE_MAIN_BUTTON_EXIT && IMAGES.IMAGE_MAIN_BUTTON_EXIT.img)
-            ? IMAGES.IMAGE_MAIN_BUTTON_EXIT.img.height : 64;
-        exitBtn.resize(435 + Math.floor((sw - ew) / 2), 385, ew, eh);
-        exitBtn.mButtonImage = IMAGES.IMAGE_MAIN_BUTTON_EXIT;
-        exitBtn.mOverImage = IMAGES.IMAGE_MAIN_BUTTON_EXIT_OVER;
-        this.addWidget(exitBtn);
-
-        // "Change player" link: top-left at (0, 48, 138, 30) (rwg_functions.c:18001-18007)
-        // Hover color = green RGB(0, 0xff, 0)
-        this._changePlayerRect = { x: 0, y: 48, w: 138, h: 30 };
-        // "Credits" link: top-right at (640, 60, 138, 30) (rwg_functions.c:18008-18014)
-        this._creditsRect = { x: 640, y: 60, w: 138, h: 30 };
-
-        // Modal dialog state (NewPlayer / ChangePlayer)
-        this.mModal = null;
-
-        // First-launch detection (rwg_functions.c:18016-18028).
-        // Original test: `*(int *)(*(int *)(App+8) + 0x10) == 0` → no current player.
-        // We map this to Core.hasCurrentPlayer().
+        // First-launch gate (AddedToManager rwg:18016-18028): when the app has
+        // no current player (*(App+8)+0x10 == 0) open NewPlayerDialog
+        // (FUN_0040f117) as dialog id 1.
         if (gameApp && gameApp.mCore && !gameApp.mCore.hasCurrentPlayer()) {
             new NewPlayerDialog(gameApp.mCore, () => {}, 'firstLaunch').openHtml();
         }
     }
 
+    // MainMenuView::AddedToManager FUN_0040e83a (rwg:17988-18014).
+    _layoutButtons() {
+        const dim = (b) => {
+            const im = b.mButtonImage;
+            return im && im.img ? [im.mWidth || im.img.width, im.mHeight || im.img.height] : null;
+        };
+        const s = dim(this.mStartButton), o = dim(this.mOptionsButton), e = dim(this.mExitButton);
+        if (s) {
+            // iVar2 = start.w/2; iVar5 = iVar2 + 0x1b3 (rwg:17990-17991)
+            const half = Math.trunc(s[0] / 2);
+            const cx = half + 0x1b3;
+            // Start: (iVar5 - iVar2, 0xeb=235, w, h)  rwg:17992
+            this.mStartButton.resize(cx - half, 0xeb, s[0], s[1]);
+            // Options: (iVar5 - w/2, 0x136=310, w, h)  rwg:17995
+            if (o) this.mOptionsButton.resize(cx - Math.trunc(o[0] / 2), 0x136, o[0], o[1]);
+            // Exit: (iVar5 - w/2, 0x181=385, w, h)  rwg:17998-17999
+            if (e) this.mExitButton.resize(cx - Math.trunc(e[0] / 2), 0x181, e[0], e[1]);
+            this._buttonsLaidOut = true;
+        }
+        // Change player: Resize(0, 0x30=48, 0x8a=138, 0x1e=30)  rwg:18001
+        this.mChangePlayerButton.resize(0, 0x30, 0x8a, 0x1e);
+        // Credits: Resize(0x280=640, 0x3c=60, 0x8a=138, 0x1e=30)  rwg:18008
+        this.mCreditsButton.resize(0x280, 0x3c, 0x8a, 0x1e);
+    }
+
+    // MainMenuView::Draw FUN_0040e75a (rwg:17916-17957).
     draw(g) {
-        // If the player has no profile (first launch, or deleted their last one
-        // via ChangePlayerDialog), keep the HTML NewPlayer dialog open. Guarded
-        // by isDialogOpen so it isn't re-created every frame.
+        // Images may finish loading after construction; the original lays out
+        // in AddedToManager once resources exist.
+        if (!this._buttonsLaidOut) this._layoutButtons();
+        // JS-only: keep the HTML NewPlayer dialog up while there is no
+        // current player (the original re-checks in AddedToManager,
+        // rwg:18016-18028, every time the view is added).
         if (this.mGameApp && this.mGameApp.mCore
             && !this.mGameApp.mCore.hasCurrentPlayer()
             && !HtmlDialogs.isDialogOpen('new-player')) {
             new NewPlayerDialog(this.mGameApp.mCore, () => {}, 'firstLaunch').openHtml();
         }
-        // Background image: DAT_004fff94 = IMAGE_MAIN_MENU (rwg_functions.c:17938)
-        const bg = IMAGES.IMAGE_MAIN_MENU;
-        if (bg && bg.img) {
-            g.drawImage(bg, 0, 0);
-        } else {
-            g.setColor(40, 80, 30, 255);
-            g.fillRect(0, 0, 800, 600);
-            g.ctx.fillStyle = '#ffd700';
-            g.ctx.font = 'bold 48px Arial Black, Arial, sans-serif';
-            g.ctx.textAlign = 'center';
-            g.ctx.fillText('Chicken Chase', 400, 200);
-            g.ctx.textAlign = 'left';
-        }
+        // DrawImage(DAT_004fff94 = IMAGE_MAIN_MENU, 0, 0)  rwg:17938
+        g.drawImage(IMAGES.IMAGE_MAIN_MENU, 0, 0);
 
-        // Player name with "Welcome, " prefix.
-        // String "Welcome, " confirmed in chicken_chase.RWG binary (CORRECTION:
-        // earlier extraction missed this — it doesn't appear as a literal in the
-        // Ghidra .c export but is present in the binary string table).
-        // Font DAT_004fff1c (FONT_24), color DAT_005012a0 (white).
+        // SetFont(DAT_004fff1c = FONT_24) rwg:17939; SetColor(DAT_005012a0 =
+        // white) rwg:17940; string = "Welcome, " (0x4dd684) + player name
+        // (FUN_0040285f; "" when no player) via FUN_0040e09f rwg:17941-17944;
+        // DrawString(str, 0xe=14, 0x28=40) — disassembly @0x40e7dc-0x40e7e8.
+        // screenshots/04.png shows the bare "Welcome," with no player yet.
         const playerName = (this.mGameApp && this.mGameApp.mPlayerName) || '';
-        // Bigger font with dark stroke per screenshot 06 — each letter has a
-        // black/grey outline for readability against the bright background.
-        g.ctx.font = 'bold 28px Arial Black, Arial, sans-serif';
-        g.ctx.textAlign = 'left';
-        // Drop the trailing ", " when no name is set yet (very first launch
-        // before NewPlayerDialog completes), so it doesn't read "Welcome,".
-        const welcomeText = playerName ? 'Welcome, ' + playerName : 'Welcome!';
-        g.ctx.lineWidth = 4;
-        g.ctx.strokeStyle = '#333';
-        g.ctx.strokeText(welcomeText, 12, 38);
-        g.ctx.fillStyle = '#fff';
-        g.ctx.fillText(welcomeText, 12, 38);
-        // Show progress under the welcome line. mMaxLevelReached is bumped
-        // to 51 after the win screen (unlockNextLevel(level+1)), so use that
-        // as the "fully completed" signal.
-        const maxLevel = (this.mGameApp.mCore && this.mGameApp.mCore.mMaxLevelReached) || 1;
-        if (maxLevel > 1) {
-            g.ctx.fillStyle = '#ffd700';
-            g.ctx.font = '12px Arial, sans-serif';
-            const progressText = maxLevel > 50
-                ? 'All levels complete!'
-                : `Progress: Level ${maxLevel}`;
-            g.ctx.fillText(progressText, 12, 44);
-        }
-
-        // Portal logo top-right (rwg_functions.c:17950-17952)
-        const logo = IMAGES.IMAGE_PORTAL_LOGO;
-        if (logo && logo.img) {
-            const lw = logo.img.width;
-            g.ctx.drawImage(logo.img, 800 - lw - 10, 0);
-        }
-
-        // Screenshot 06: white text with a black outline, like Welcome.
-        // Keep browser-rendered text; 14px bold is an approximation of FONT_12.
-        // Hover color = green RGB(0, 0xff, 0) per rwg_functions.c:18001-18007.
-        const cpColor = this._changePlayerHover ? '#0f0' : '#fff';
         g.ctx.save();
-        g.ctx.fillStyle = cpColor;
-        g.ctx.font = 'bold 14px Arial, sans-serif';
-        const cpText = 'Change player';
-        const cpX = this._changePlayerRect.x + 16; // screenshots/06.png: left ink at x=16
-        const cpY = this._changePlayerRect.y + 18;
-        g.ctx.strokeStyle = '#000';
-        g.ctx.lineWidth = 2;
-        g.ctx.lineJoin = 'round';
-        g.ctx.strokeText(cpText, cpX, cpY);
-        g.ctx.fillText(cpText, cpX, cpY);
+        g.ctx.font = FONT_CSS.FONT_24;
+        drawOutlinedText(g.ctx, 'Welcome, ' + playerName, g.mTransX + 14, g.mTransY + 40, '#fff');
         g.ctx.restore();
 
-        // "Credits" link (top-right)
-        const crColor = this._creditsHover ? '#0f0' : '#fff';
-        g.ctx.fillStyle = crColor;
-        g.ctx.font = '13px Arial, sans-serif';
-        g.ctx.lineWidth = 1;
-        g.ctx.textAlign = 'right';
-        const crText = 'Credits';
-        const crRightX = this._creditsRect.x + this._creditsRect.w - 4;
-        const crY = this._creditsRect.y + 18;
-        g.ctx.fillText(crText, crRightX, crY);
-        const crW = g.ctx.measureText(crText).width;
-        g.ctx.strokeStyle = crColor;
-        g.ctx.beginPath();
-        g.ctx.moveTo(crRightX - crW, crY + 2);
-        g.ctx.lineTo(crRightX, crY + 2);
-        g.ctx.stroke();
-        g.ctx.textAlign = 'left';
+        // Portal logo: if (DAT_00500048) DrawImage(logo, 10, mHeight - logo.h - 10)
+        // rwg:17950-17952 / disassembly @0x40e80a-0x40e820. The resource
+        // ("images/portal_logo") is absent from app/images, so — as in the
+        // original when DAT_00500048 == 0 — nothing is drawn.
+        const logo = IMAGES.IMAGE_PORTAL_LOGO;
+        if (logo && logo.img) {
+            g.drawImage(logo, 10, this.mHeight - (logo.mHeight || logo.img.height) - 10);
+        }
 
-        // Draw child widgets (buttons)
+        // Children (Start, Options, Exit, Change player, Credits) are drawn by
+        // the widget manager on top of the view, in AddedToManager order.
         super.draw(g);
-
-        // Modal overlay (NewPlayer / ChangePlayer) on top of everything
-        if (this.mModal) this.mModal.draw(g);
-    }
-
-    mouseMove(x, y) {
-        const cp = this._changePlayerRect, cr = this._creditsRect;
-        this._changePlayerHover = x >= cp.x && x <= cp.x + cp.w && y >= cp.y && y <= cp.y + cp.h;
-        this._creditsHover = x >= cr.x && x <= cr.x + cr.w && y >= cr.y && y <= cr.y + cr.h;
-        super.mouseMove(x, y);
-    }
-
-    mouseDown(x, y, btn) {
-        // Modal eats clicks first
-        if (this.mModal && this.mModal.isShown()) {
-            this.mModal.mouseDown(x, y, btn);
-            return true;
-        }
-        // Change player link
-        const cp = this._changePlayerRect;
-        if (x >= cp.x && x <= cp.x + cp.w && y >= cp.y && y <= cp.y + cp.h) {
-            this.buttonDepress(BTN_CHANGE_PLAYER);
-            return true;
-        }
-        // Credits link
-        const cr = this._creditsRect;
-        if (x >= cr.x && x <= cr.x + cr.w && y >= cr.y && y <= cr.y + cr.h) {
-            this.buttonDepress(BTN_CREDITS);
-            return true;
-        }
-        return super.mouseDown(x, y, btn);
     }
 
     keyDown(key) {
-        if (this.mModal && this.mModal.isShown()) {
-            this.mModal.keyDown(key);
-            return true;
-        }
+        // MainMenuView vtable overrides no key handler (vftable 0x4dd694).
         return false;
     }
 
+    // MainMenuView::ButtonDepress FUN_0040ea92 (rwg:18061-18150).
     buttonDepress(id) {
+        // PlaySample(DAT_004fed84 = SOUND_CLICK) before dispatch  rwg:18087
         if (SOUNDS.SOUND_CLICK) SOUNDS.SOUND_CLICK.play();
 
         switch (id) {
             case BTN_START:
-                // Original opens SelectLevelDialog (FUN_0041c48a). If max-level == 1, jump straight to level 1.
+                // FUN_004088d0(-1, app) rwg:18089-18093 shows SelectLevelView;
+                // its AddedToManager FUN_0041d22e (rwg:35539) opens
+                // IntroductionDialog FUN_0040d936 when FUN_0041614b() == 1
+                // (no level completed yet, rwg:28638), else SelectLevelDialog
+                // FUN_0041c48a (param < 0x33). The JS IntroductionDialog is
+                // driven by GameView at level 1, hence startGame(1).
                 if (this.mGameApp.mCore && this.mGameApp.mCore.mMaxLevelReached > 1
                     && this.mGameApp.showSelectLevel) {
                     this.mGameApp.showSelectLevel();
@@ -276,15 +246,20 @@ export class MainMenuView extends Widget {
                 }
                 break;
             case BTN_OPTIONS:
+                // new OptionsDialog (FUN_0040f57b), AddDialog id 6  rwg:18098-18112
                 this.mGameApp.showOptions();
                 break;
             case BTN_EXIT:
-                // Can't exit in browser, just show message
+                // App vtable[0xa0] (Shutdown) rwg:18115-18121. A browser page
+                // cannot shut itself down — intentionally a no-op.
                 break;
             case BTN_CHANGE_PLAYER:
+                // new ChangePlayerDialog (FUN_004028ca), AddDialog id 3  rwg:18123-18146
                 if (this.mGameApp.showChangePlayer) this.mGameApp.showChangePlayer();
                 break;
             case BTN_CREDITS:
+                // FUN_004088d0(1000, app) rwg:18126-18128 → SelectLevelView
+                // credits roll (CreditsView 'credits').
                 if (this.mGameApp.showCredits) this.mGameApp.showCredits();
                 break;
         }
@@ -362,206 +337,23 @@ export class SelectLevelView extends Widget {
         }
     }
 
+    // SelectLevelView::Draw FUN_0041cf6f (rwg:35400-35512). While no roll is
+    // active (+0x8c == 0, rwg:35427-35434) it draws FUN_004248b4(g,
+    // playerDecorations, -1): IMAGE_GAME_BACK + the player's decoration list
+    // (FUN_00408234 copies it from the current player). screenshots/18.png
+    // shows this field background behind SelectLevelDialog.
+    // NOTE: GameApp.showSelectLevel currently keeps mMainMenuView as the
+    // current view, so this draw only runs once GameApp routes to this view.
     draw(g) {
-        // Background — main menu image (the dialog overlays it)
-        const bg = IMAGES.IMAGE_MAIN_MENU;
-        if (bg && bg.img) {
-            g.drawImage(bg, 0, 0);
-            g.setColor(0, 0, 0, 100);
-            g.fillRect(0, 0, 800, 600);
-        } else {
-            g.setColor(40, 60, 30, 255);
-            g.fillRect(0, 0, 800, 600);
-        }
-
-        // Box (178, 77, 444, 445) — verified from FUN_0041c860:34755. 9-sliced so
-        // the baked title plate stays a fixed size at the top.
-        const bx = 178, by = 77, bw = 444, bh = 445;
-        const plate = g.drawDialogBox(IMAGES.IMAGE_DIALOG_BOX, bx, by, bw, bh);
-
-        // Title — green plate with white text (screenshot 18 shows a GREEN plate,
-        // matching the START LEVEL button), drawn over the box's title-plate band.
-        // The 'LEVEL N' text is not a decompiled literal (header formatter args
-        // unresolved) — read from screenshot 18. FONT_DLG_HEADER (resources.xml:61).
-        const titleCx = bx + bw / 2, titleCy = plate.plateCenterY;
-        g.ctx.fillStyle = '#4caf26';
-        g.ctx.strokeStyle = '#2a6a18';
-        g.ctx.lineWidth = 2;
-        const badgeW = 190, badgeH = 34;
-        g.ctx.fillRect(titleCx - badgeW / 2, titleCy - badgeH / 2, badgeW, badgeH);
-        g.ctx.strokeRect(titleCx - badgeW / 2, titleCy - badgeH / 2, badgeW, badgeH);
-        g.ctx.fillStyle = '#fff';
-        g.ctx.textAlign = 'center';
-        g.ctx.textBaseline = 'middle';
-        drawFitText(g.ctx, `LEVEL ${this.mSelectedLevel}`, titleCx, titleCy, badgeW - 20,
-            'bold 18px "Arial Black", Arial, sans-serif');
-        g.ctx.textBaseline = 'alphabetic';
-
-        // Description — per-level intro (FUN_0042399c assigns this+0x35;
-        // strings CONFIRMED, e.g. rwg:43557/43561). FONT_DLG_LINES (resources.xml:62),
-        // dark text on the tan box (screenshot 18).
-        const desc = getLevelDescription(this.mSelectedLevel);
-        g.ctx.fillStyle = '#3a1a05';
-        g.ctx.font = 'bold 13px "Arial Black", Arial, sans-serif';
-        g.ctx.textAlign = 'center';
-        const wrapW = bw - 80;
-        const words = desc.split(' ');
-        let line = '';
-        let y = by + 120;
-        for (const word of words) {
-            const test = line ? line + ' ' + word : word;
-            if (g.ctx.measureText(test).width > wrapW && line) {
-                g.ctx.fillText(line, bx + bw / 2, y);
-                line = word;
-                y += 18;
-                if (y > by + bh - 200) break;
-            } else {
-                line = test;
-            }
-        }
-        if (line) {
-            g.ctx.fillText(line, bx + bw / 2, y);
-            y += 18;
-        }
-
-        // Per-level bullet hints (per screenshots 12/18/21/27) — small icon +
-        // short note for each new entity introduced at this level.
-        // Bullet rows: blue dot + icon + caption (screenshot 18). Caption strings
-        // are NOT in the decompiled — read from screenshots 12/18/21/27.
-        const bullets = _getLevelBullets(this.mSelectedLevel);
-        y += 12;
-        for (const b of bullets) {
-            // Blue round marker (screenshot 18)
-            const markX = bx + 50;
-            g.ctx.fillStyle = '#2f6fd0';
-            g.ctx.beginPath();
-            g.ctx.arc(markX + 4, y + 8, 5, 0, Math.PI * 2);
-            g.ctx.fill();
-            // Icon (chick preview or raven sprite)
-            const iconImg = b.iconKey ? IMAGES[b.iconKey] : null;
-            const iconX = markX + 18;
-            if (iconImg && iconImg.img && g._isReady && g._isReady(iconImg.img)) {
-                g.ctx.drawImage(iconImg.img, iconX, y - 4, 24, 24);
-            }
-            // Text — FONT_DLG_LINES (resources.xml:62), dark.
-            g.ctx.fillStyle = '#3a1a05';
-            g.ctx.font = '12px "Arial Black", Arial, sans-serif';
-            g.ctx.textAlign = 'left';
-            g.ctx.fillText(b.text, iconX + 30, y + 14);
-            y += 28;
-            if (y > by + bh - 130) break;
-        }
-        g.ctx.textAlign = 'center';
-
-        // Prev/Next nav buttons. CONFIRMED rwg:34942/34945/34937:
-        //   prevX = bx+0x17 = 201; nextX = bx-0x62+bw = 524; navY = 415.
-        // Arrows 74x36 (image-native). Prev disabled at level 1 (rwg:34810),
-        // next disabled past 50 (rwg:34812).
-        const navY = 415;
-        const prevImg = IMAGES.IMAGE_BUTTON_PREV;
-        const nextImg = IMAGES.IMAGE_BUTTON_NEXT;
-        const prevW = (prevImg && prevImg.img) ? prevImg.mWidth : 74;
-        const prevH = (prevImg && prevImg.img) ? prevImg.mHeight : 36;
-        const nextW = (nextImg && nextImg.img) ? nextImg.mWidth : 74;
-        const nextH = (nextImg && nextImg.img) ? nextImg.mHeight : 36;
-        const prevX = 201, nextX = 524;
-        const prevEnabled = this.mSelectedLevel > 1;
-        const nextEnabled = this.mSelectedLevel < Math.min(this.mMaxLevel, 50);
-        g.ctx.globalAlpha = prevEnabled ? 1 : 0.4;
-        if (prevImg && prevImg.img && g._isReady && g._isReady(prevImg.img)) {
-            g.ctx.drawImage(prevImg.img, prevX, navY, prevW, prevH);
-        } else {
-            g.setColor(100, 60, 20, 255);
-            g.fillRect(prevX, navY, prevW, prevH);
-        }
-        g.ctx.globalAlpha = nextEnabled ? 1 : 0.4;
-        if (nextImg && nextImg.img && g._isReady && g._isReady(nextImg.img)) {
-            g.ctx.drawImage(nextImg.img, nextX, navY, nextW, nextH);
-        } else {
-            g.setColor(100, 60, 20, 255);
-            g.fillRect(nextX, navY, nextW, nextH);
-        }
-        g.ctx.globalAlpha = 1;
-        this._prevRect = { x: prevX, y: navY, w: prevW, h: prevH };
-        this._nextRect = { x: nextX, y: navY, w: nextW, h: nextH };
-
-        // START LEVEL button (string CONFIRMED rwg:34699). Wide bar near the
-        // bottom (screenshot 18). FONT_DLG_BUTTONS (resources.xml:63).
-        const btnImg = IMAGES.IMAGE_DIALOG_BUTTON;
-        const btnW = bw - 56, btnH = 30;
-        const btnX = bx + (bw - btnW) / 2;
-        const btnY = by + bh - btnH - 30;
-        if (btnImg && btnImg.img && g._isReady && g._isReady(btnImg.img)) {
-            g.ctx.drawImage(btnImg.img, btnX, btnY, btnW, btnH);
-        } else {
-            g.setColor(80, 160, 40, 255);
-            g.fillRect(btnX, btnY, btnW, btnH);
-        }
-        g.ctx.fillStyle = '#fff';
-        g.ctx.font = '12px "Arial Black", Arial, sans-serif';
-        g.ctx.textAlign = 'center';
-        g.ctx.fillText('START LEVEL', btnX + btnW / 2, btnY + btnH / 2 + 4);
-        this._startRect = { x: btnX, y: btnY, w: btnW, h: btnH };
-        // No '< BACK' link — not present in screenshots 12/18/21/27 (Escape
-        // still returns to the main menu via keyDown).
-        this._backRect = null;
-        g.ctx.textAlign = 'left';
+        drawFieldBackground(g, this._playerDecorations());
     }
 
-    mouseDown(x, y, btn) {
-        if (btn !== 0) return false;
-        // Back link
-        if (this._backRect && x >= this._backRect.x && x <= this._backRect.x + this._backRect.w
-            && y >= this._backRect.y && y <= this._backRect.y + this._backRect.h) {
-            this.mGameApp.showMainMenu();
-            return true;
-        }
-        // Prev (FUN_0041c98e: level >= 2 → level--)
-        if (this._prevRect && x >= this._prevRect.x && x <= this._prevRect.x + this._prevRect.w
-            && y >= this._prevRect.y && y <= this._prevRect.y + this._prevRect.h) {
-            if (this.mSelectedLevel > 1) this.mSelectedLevel--;
-            return true;
-        }
-        // Next (FUN_0041c98e: level < maxUnlocked → level++). Cap at 50 —
-        // mMaxLevelReached is bumped to 51 after the player beats the final
-        // level (unlockNextLevel +1), which would otherwise let the player
-        // navigate to a nonexistent level 51 via the next arrow.
-        const navMax = Math.min(this.mMaxLevel, 50);
-        if (this._nextRect && x >= this._nextRect.x && x <= this._nextRect.x + this._nextRect.w
-            && y >= this._nextRect.y && y <= this._nextRect.y + this._nextRect.h) {
-            if (this.mSelectedLevel < navMax) this.mSelectedLevel++;
-            return true;
-        }
-        // START LEVEL
-        if (this._startRect && x >= this._startRect.x && x <= this._startRect.x + this._startRect.w
-            && y >= this._startRect.y && y <= this._startRect.y + this._startRect.h) {
-            if (this.mSelectedLevel <= navMax) {
-                this.mGameApp.startGame(this.mSelectedLevel);
-            }
-            return true;
-        }
-        return false;
-    }
-
-    keyDown(key) {
-        const navMax = Math.min(this.mMaxLevel, 50);
-        if (key === 'Escape') {
-            this.mGameApp.showMainMenu();
-            return true;
-        }
-        if (key === 'ArrowLeft' && this.mSelectedLevel > 1) {
-            this.mSelectedLevel--;
-            return true;
-        }
-        if (key === 'ArrowRight' && this.mSelectedLevel < navMax) {
-            this.mSelectedLevel++;
-            return true;
-        }
-        if ((key === 'Enter' || key === ' ') && this.mSelectedLevel <= navMax) {
-            this.mGameApp.startGame(this.mSelectedLevel);
-            return true;
-        }
-        return false;
+    // UNKNOWN — not found in decompiled: how the JS profile's upgrade keys
+    // (Core.mUpgradesPurchased, e.g. 'house_1') map to the 17 decoration
+    // indices (0..16) that FUN_00408234 returns. Until that mapping is
+    // ported, only the bare IMAGE_GAME_BACK is drawn.
+    _playerDecorations() {
+        return [];
     }
 }
 

@@ -9,6 +9,8 @@ import { HintController, HintType } from './HintController.js';
 import { openUpgradeChoices, UPGRADE_TIERS } from './UpgradeSelectDialog.js';
 import { SelectLevelView } from './MainMenuView.js';
 import { ShopDialog, SpecialShopDialog } from './ShopDialogs.js';
+import { RiskCaseNothing, RiskCaseOffensive, RiskCasePlusMoney, RiskCasePlusTime, RiskCaseRavensScared, RiskCaseStealChickens, RiskCaseMinusMoney, RiskCaseChickFlu, RiskCaseRavensAttack } from './RiskController.js';
+import { openSurpriseResult } from './SurpriseDialog.js';
 
 const response = await fetch('./index.html');
 if (!response.ok) throw new Error(`Cannot load dialog markup: ${response.status}`);
@@ -38,6 +40,16 @@ const previews = [
     ['OPTIONS', 'dialog=options'],
     ['OPTIONS — во время игры', 'dialog=options&ingame=1'],
     ['QUIT?', 'dialog=quit-confirm'],
+    ['SURPRISE! — вопрос', 'dialog=surprise-ask'],
+    ['SURPRISE! — результат', 'dialog=surprise-result'],
+    ['SURPRISE! — грипп', 'dialog=surprise-result&case=flu'],
+    ['SURPRISE! — апгрейд', 'dialog=surprise-result&case=upgrade'],
+    ['SURPRISE! — выигрыш', 'dialog=surprise-result&case=plusmoney'],
+    ['SURPRISE! — кража', 'dialog=surprise-result&case=steal'],
+    ['SURPRISE! — проигрыш', 'dialog=surprise-result&case=minusmoney'],
+    ['SURPRISE! — ничего', 'dialog=surprise-result&case=nothing'],
+    ['SURPRISE! — пугало', 'dialog=surprise-result&case=scarecrow'],
+    ['SURPRISE! — вороны', 'dialog=surprise-result&case=attack'],
     ['NEW PLAYER', 'dialog=new-player'],
     ['NEW PLAYER — с отменой', 'dialog=new-player&cancel=1'],
     ['WHO ARE YOU?', 'dialog=change-player'],
@@ -207,4 +219,34 @@ if (name === 'shop-buy') {
         spendMoney(price) { this.mMoney -= price; },
     };
     new SpecialShopDialog(field, () => {}).openHtml();
+}
+if (name === 'surprise-ask') {
+    // FUN_0041b94a rwg:33711-33716. Preview buttons only dismiss: no roll,
+    // no player+0x1d change, no save.
+    HtmlDialogs.open(name, {
+        actions: {
+            yes: () => HtmlDialogs.close(name),
+            no: () => HtmlDialogs.close(name),
+        },
+    });
+}
+if (name === 'surprise-result') {
+    // FUN_0041ba27 rwg:33817-33826: body is the rolled case's description
+    // (index.html [data-risk-case] templates). No roll / apply here: the
+    // case is constructed and mValue is set to a preview sample (&value=...).
+    // &case=upgrade|plusmoney|steal|minusmoney|nothing|time|scarecrow|flu|attack
+    // (default time).
+    const cases = {
+        upgrade: [RiskCaseOffensive, 'Seed upgrade'], // sample name only (names UNKNOWN in JS)
+        plusmoney: [RiskCasePlusMoney, 500],          // FUN_0041afd1 minimum amount
+        steal: [RiskCaseStealChickens, 1],            // FUN_0041b0f3 minimum count
+        minusmoney: [RiskCaseMinusMoney, 25],         // sample only
+        nothing: [RiskCaseNothing], time: [RiskCasePlusTime],
+        scarecrow: [RiskCaseRavensScared], flu: [RiskCaseChickFlu],
+        attack: [RiskCaseRavensAttack],
+    };
+    const [Klass, sample] = cases[params.get('case')] || cases.time;
+    const riskCase = new Klass();
+    if (sample !== undefined) riskCase.mValue = params.get('value') ?? sample;
+    openSurpriseResult(riskCase, () => HtmlDialogs.close(name));
 }
