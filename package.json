@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Chicken Chase \u2014 JS/HTML5 port",
+  "description": "Chicken Chase — JS/HTML5 port",
   "scripts": {
     "start": "vite",
     "dev": "vite",
