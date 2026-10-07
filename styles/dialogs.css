@@ -341,9 +341,16 @@
 .cc-btn:hover::before {
     border-image-source: url("assets/dialog_btn_over.png");
 }
-.cc-btn:active::before {
-    border-image-source: url("assets/dialog_btn_highlight_over.png");
+/* DialogButton::Draw FUN_0043ea73: image = (mIsOver && overImage) ? OVER :
+   normal (asm 0x43eb69-0x43eb79); while pressed (IsButtonDown, vt+0xe0) the
+   whole button incl. label is translated by (mTranslateX, mTranslateY) =
+   (1, 1) (asm 0x43eb55-0x43eb64; ctor FUN_0043e9f1 asm 0x43ea36/0x43ea3c).
+   No blue image: DIALOG_BUTTON_HIGHLIGHT(_OVER) is only the HUD SELL glow. */
+.cc-btn:active:hover::before {
+    border-image-source: url("assets/dialog_btn_over.png");
 }
+.cc-btn:active:hover { transform: translate(1px, 1px); }
+.cc-box-shopbuy .cc-btn-buy:active:hover { transform: translate(1px, calc(-50% + 1px)); }
 .cc-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
 
