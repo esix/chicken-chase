@@ -269,7 +269,11 @@ export class HintController {
             },
         });
         const row = node && node.querySelector ? node.querySelector('.cc-dontshow') : null;
-        if (row) row.style.display = (this.mCurrentHint.showCheckbox === false) ? 'none' : '';
+        // Checkbox->SetVisible(arg) (asm 0x40d602-0x40d613) only hides the
+        // widget; the dialog is then always Resize(200,100,400,400) (asm
+        // 0x40d616-0x40d626), so the OK button keeps its place. visibility
+        // (not display) keeps the row's layout space like SetVisible(0).
+        if (row) row.style.visibility = (this.mCurrentHint.showCheckbox === false) ? 'hidden' : '';
     }
 
     // OK: FUN_0040d821 (rwg_functions.c:16716-16719) game+4 = 0, +0xd = 0
