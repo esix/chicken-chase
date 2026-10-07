@@ -2,6 +2,8 @@
 
 A browser port of the Windows game *Chicken Chase* (PopCap Sexy framework, 800×600), translated function by function from the decompiled original into JavaScript. Gameplay runs on a canvas; dialogs are HTML/CSS.
 
+![Level 5 in the browser port](docs/screenshot.png)
+
 ## Requirements
 
 - Node.js 18 or newer (Vite 5)
@@ -46,6 +48,7 @@ This serves `dist/` at http://127.0.0.1:8765.
 | `index.html`, `styles/` | Page, HTML dialogs and their CSS and art |
 | `assets/` | Original images, sounds and music used at runtime (served from the web root) |
 | `tools/` | Helper scripts, e.g. `prepare_dialog_art.py` |
+| `docs/` | README screenshot |
 | `DECOMPILED_MAP.md` | Reference: game behaviour → decompiled function → JS file |
 | `CLAUDE.md` / `AGENTS.md` | Porting rules |
 
