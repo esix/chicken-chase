@@ -63,3 +63,7 @@ for name in ('button_prev', 'button_next'):
 letter = Image.open(ROOT / 'app/images/letter.jpg').convert('RGBA')
 letter.putalpha(Image.open(ROOT / 'app/images/letter_.jpg').convert('L'))
 screenshot_palette(letter).save(OUT / 'letter.png')
+
+# SpecialShop row slot IMAGE_SHOP_SLOT_BIG (DAT_004fff90, rwg:31344), 111x111,
+# drawn by FUN_00420758 at (0x14, rowTop) (asm 0x4207d9-0x4207e8).
+rgba('shop_slot_big').save(OUT / 'shop_slot_big.png')

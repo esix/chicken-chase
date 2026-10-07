@@ -123,18 +123,39 @@
 .cc-box-shopsell .cc-shop-row[data-juvenile="true"] .cc-age-bar { background: linear-gradient(#ffe794, #ffcc55); }
 .cc-box-shopsell .cc-btn-sell { height: 30px; min-height: 30px; font-size: 14px; padding: 0 12px; }
 .cc-box-shop .cc-info { position: absolute; bottom: 42px; left: -3px; right: -3px; font-size: 12px; line-height: 14px; }
-/* SPECIAL SHOP: FUN_00420232:39763, (150,25,500,550).
-   FUN_00420a27:40271-40285: BUY (+376,+165), 100x30, stride 116.
-   FUN_00420758:40114: content starts y=130. Missing screenshot: icon/text
-   columns follow the existing canvas approximation (shared shop decoration). */
+/* SPECIAL SHOP: FUN_00420232:39763, (150,25,500,550). Dialog-relative
+   geometry (box origin; .cc-body sits at +27,+80, so the list is shifted
+   back by -27/-80+130):
+   - PAGE label FUN_004205e3 asm 0x420659-0x420698: "PAGE %i OF %i"
+     (0x4df47c), FONT_DLG_LINES, x centred, baseline y=0x5f=95.
+   - PREV (+30,+75), NEXT (+500-74-30,+75): FUN_00420a27:40280-40285.
+   - Row FUN_00420758: rowTop = row*0x74+0x82 (asm 0x420769-0x42077b).
+     Slot IMAGE_SHOP_SLOT_BIG 111x111 at (0x14, rowTop) (asm 0x4207d9-0x4207e8).
+     Icon 98x98 at x = 0x14+(111-98)/2 = 26, y = rowTop+5+(111-98)/rowTop
+     = rowTop+5 (asm 0x420810-0x42082c).
+     Description: Widget::WriteWordWrapped (vt+0xc0 = FUN_00439030 ->
+     Graphics FUN_00467146) Rect(0x91, rowTop+0x19, 0xdc, 0x64) = (145, +25,
+     220x100), line spacing -1 (= font line spacing, 23px), justification -1
+     (left), FONT_DLG_LINES white; first baseline = rect.y + ascent 18
+     (asm 0x4208d0-0x420917).
+     Price "FREE"/"%i": FONT_8 (DAT_004fff08), DrawString at x=0x34=52,
+     baseline rowTop+0x66 = +102 (asm 0x42091d-0x420936).
+   - BUY (+376, +165+row*116), 100x30: FUN_00420a27:40271-40276. */
 .cc-box-shopbuy { width: 500px; }
-.cc-box-shopbuy .cc-list { position: absolute; top: 25px; left: -3px; right: -3px; height: 348px; max-height: none; border: 0; background: none; overflow: visible; }
-.cc-box-shopbuy .cc-buy-row { position: relative; height: 116px; padding: 0; color: #fff; }
-.cc-box-shopbuy .cc-buy-icon { position: absolute; left: 31px; top: 26px; width: 56px; height: 56px; object-fit: contain; }
-.cc-box-shopbuy .cc-buy-name { position: absolute; left: 111px; top: 23px; font-size: 16px; line-height: 23px; }
-.cc-box-shopbuy .cc-buy-price { position: absolute; left: 111px; top: 51px; font-size: 14px; line-height: 23px; }
-/* User-requested adaptation: center BUY vertically in its 116px product row. */
-.cc-box-shopbuy .cc-btn-buy { position: absolute; left: 352px; top: 50%; transform: translateY(-50%); width: 100px; height: 30px; min-height: 30px; padding: 0 12px; font-size: 14px; }
+.cc-box-shopbuy .cc-pager { align-items: flex-start; }
+/* 23px line box: baseline at top+18 (ascent) -> top 77 = baseline 95. */
+.cc-box-shopbuy .cc-page { margin-top: 2px; line-height: 23px; }
+.cc-box-shopbuy .cc-list { position: absolute; top: 50px; left: -27px; width: 500px; height: 348px; max-height: none; border: 0; background: none; overflow: visible; }
+.cc-box-shopbuy .cc-buy-row { position: relative; display: block; height: 116px; padding: 0; color: #fff; }
+.cc-box-shopbuy .cc-buy-row::before { content: ""; position: absolute; left: 20px; top: 0; width: 111px; height: 111px; background: url("assets/shop_slot_big.png") no-repeat; }
+.cc-box-shopbuy .cc-buy-icon { position: absolute; left: 26px; top: 5px; width: 98px; height: 98px; }
+.cc-box-shopbuy .cc-buy-name { position: absolute; left: 145px; top: 25px; width: 220px; height: 100px; font-size: 16px; line-height: 23px; text-align: left; white-space: normal; overflow-wrap: break-word; }
+/* FONT_8 = ArialBlack8 -> 10.5px (FieldController HUD_FONT_8 calibration);
+   12px line box puts the baseline at top+10 -> top 92 = baseline 102. */
+.cc-box-shopbuy .cc-buy-price { position: absolute; left: 52px; top: 92px; font-size: 10.5px; line-height: 12px; }
+/* User-requested adaptation: center BUY vertically in its 116px product row
+   (original y is rowTop+35, FUN_00420a27:40271). */
+.cc-box-shopbuy .cc-btn-buy { position: absolute; left: 376px; top: 50%; transform: translateY(-50%); width: 100px; height: 30px; min-height: 30px; padding: 0 12px; font-size: 14px; }
 /* FUN_0040dc45, rwg:17054-17071: normal 500x400, bonus 450x300.
    Screenshot 17 shares HINT's bottom button inset and body ink offset. */
 .cc-box-complete { width: 500px; height: 400px; }
