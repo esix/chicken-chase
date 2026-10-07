@@ -5,7 +5,9 @@
 
 import { Image, SoundInstance } from './SexyApp.js';
 
-const BASE_PATH = 'original-app/';
+// Runtime copies of the original game files live in assets/ (Vite publicDir,
+// served at the web root and copied into dist/ by `vite build`).
+const BASE_PATH = '';
 
 export const IMAGES = {};
 export const SOUNDS = {};

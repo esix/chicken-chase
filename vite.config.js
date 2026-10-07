@@ -5,12 +5,13 @@
 //     visible while the new styles apply, no page reload, no state lost.
 //   - index.html / src/*.js edits trigger a full page reload.
 //
-// Vite serves the project root as the web root; the original game assets
-// are served from /original-app/ (e.g. /original-app/images/letter.jpg).
+// Vite serves the project root as the web root. The game's runtime copies of
+// the original files are in assets/ (publicDir): served at /images/...,
+// /sounds/..., /music/... and copied into dist/ by `vite build`.
 
 export default {
     root: '.',
-    publicDir: false,           // we don't use a separate public/ dir
+    publicDir: 'assets',        // original game images/sounds/music used at runtime
     server: {
         port: 8765,             // match the old python http.server port
         host: '127.0.0.1',

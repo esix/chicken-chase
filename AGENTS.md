@@ -32,6 +32,7 @@ This is a strict port of the original "Chicken Chase" game (Windows, PopCap Sexy
 ## Working files
 
 - `src/*.js` — the port
+- `assets/` — runtime copies of the original images/sounds/music the game loads (Vite publicDir; regenerate from `original-app/` if needed, never edit)
 - `DECOMPILED_MAP.md` — structured reference (behavior → decompiled function → JS file)
 
 ## Common decompiled prefixes
