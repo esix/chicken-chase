@@ -5,13 +5,13 @@
 
 import { Image, SoundInstance } from './SexyApp.js';
 
-const BASE_PATH = 'app/';
+const BASE_PATH = 'original-app/';
 
 export const IMAGES = {};
 export const SOUNDS = {};
 export const FONTS = {};
 
-// Set of image paths (relative to app/) that have a "_" alpha mask file
+// Set of image paths (relative to original-app/) that have a "_" alpha mask file
 const HAS_ALPHA_MASK = new Set([
     'images/alien_catch.jpg','images/alien_down.jpg','images/alien_up.jpg',
     'images/button_next.png','images/button_prev.png','images/chick_hungry.png',
@@ -70,7 +70,7 @@ const HAS_ALPHA_MASK = new Set([
 ]);
 
 // The only image whose "_" mask file uses a different extension case than the
-// colour file (app/images/shop_slot_open.PNG + app/images/shop_slot_open_.png).
+// colour file (original-app/images/shop_slot_open.PNG + original-app/images/shop_slot_open_.png).
 // Sexy's image loader resolves the mask by base name, independent of the
 // extension; a case-sensitive web server needs the exact name.
 const MASK_PATH_OVERRIDE = {

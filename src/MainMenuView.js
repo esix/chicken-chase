@@ -1,7 +1,7 @@
 // Sexy::MainMenuView (vftable 0x4dd690 / 0x4dd694).
 // Constructor FUN_0040e5cb (rwg_functions.c:17785).
 // Draw FUN_0040e75a (rwg_functions.c:17916; args recovered from the
-//   disassembly of app/chicken_chase.RWG @0x40e75a..0x40e837).
+//   disassembly of original-app/chicken_chase.RWG @0x40e75a..0x40e837).
 // AddedToManager FUN_0040e83a (rwg_functions.c:17961-18030).
 // RemovedFromManager FUN_0040ea3b (rwg_functions.c:18040).
 // ButtonDepress FUN_0040ea92 (rwg_functions.c:18061-18150).
@@ -36,7 +36,7 @@ const BTN_CREDITS = 5;
 // other entry stays 0. SelectLevelDialog::Draw FUN_0041ca58 (rwg:35043-35070,
 // @0x41cae8-0x41cb08) draws DAT_00500594[level] — only when non-null —
 // horizontally centred, y = dialog+0x16c + 0xc3. The picture already holds
-// the icons and "- ..." texts (app/images/descriptions/*.png).
+// the icons and "- ..." texts (original-app/images/descriptions/*.png).
 // (Replaces an earlier hand-written icon/text bullet list that had no source.)
 const LEVEL_DESC_IMAGES = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 15, 17, 19, 21, 22, 24, 26, 27];
 
@@ -169,7 +169,7 @@ export class MainMenuView extends Widget {
 
         // Portal logo: if (DAT_00500048) DrawImage(logo, 10, mHeight - logo.h - 10)
         // rwg:17950-17952 / disassembly @0x40e80a-0x40e820. The resource
-        // ("images/portal_logo") is absent from app/images, so — as in the
+        // ("images/portal_logo") is absent from original-app/images, so — as in the
         // original when DAT_00500048 == 0 — nothing is drawn.
         const logo = IMAGES.IMAGE_PORTAL_LOGO;
         if (logo && logo.img) {
@@ -271,7 +271,7 @@ export class SelectLevelView extends Widget {
             if (art) art.style.height = 'auto';
             const ic = row.querySelector('.cc-bullet-icon');
             if (ic) {
-                ic.src = image.mPath;   // app/images/descriptions/<level>.png (own alpha)
+                ic.src = image.mPath;   // original-app/images/descriptions/<level>.png (own alpha)
                 ic.style.maxWidth = 'none';
                 ic.style.maxHeight = 'none';
                 ic.style.margin = '0 auto';

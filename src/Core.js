@@ -25,7 +25,7 @@
 //   written FUN_00443cd2:79767-79773). Defaults from the SexyAppBase ctor
 //   FUN_00440396 rwg:77186/77188: _DAT_004e9348 = 0.6 (music),
 //   _DAT_004e9340 = 0.85 (sfx) — values read from the .rdata of
-//   app/chicken_chase.RWG.
+//   original-app/chicken_chase.RWG.
 //
 // Web port: localStorage replaces the files/registry (format necessarily
 // differs). Key "cc_players" holds the list, "cc_current_player" the active
@@ -227,7 +227,7 @@ export class Core {
     //   rwg:28719 — list size, duplicates count): add 15 if not owned, add 16
     //   if not owned.
     // PREREQ = int table DAT_004de1c0 (rwg:28704), read from the .data of
-    // app/chicken_chase.RWG.
+    // original-app/chicken_chase.RWG.
     getAvailableUpgrades() {
         const owned = new Set(this.mUpgradeIds || []);
         const out = [];

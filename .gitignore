@@ -1,12 +1,17 @@
-# Runtime assets
-/app
-
-# Game screenshots
+# Original game (copyrighted binaries/assets) and material derived from it
+/original-app
+/chicken-chase.exe
+/ghidra_project
+/decompiled
 /screenshots
 
-.DS_Store
-
-# npm / Vite dev server
+# npm / Vite
 /node_modules
 /dist
 .vite
+
+# Editor / tooling state
+/.idea
+/.claude
+/.playwright-mcp
+.DS_Store

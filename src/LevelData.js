@@ -1,7 +1,7 @@
 // Port of the per-level setup of the original game.
 //
 // Sources (rwg_functions.c unless noted; addresses verified against the
-// binary app/chicken_chase.RWG with llvm-objdump where Ghidra lost register
+// binary original-app/chicken_chase.RWG with llvm-objdump where Ghidra lost register
 // arguments — ESI slot indices of FUN_0040bfb3, the AL 4th flag of
 // FUN_00423c04 and the EAX time argument of FUN_00423cb3):
 //   FUN_0042166f:41154  level object ctor. Spawns the starting chickens

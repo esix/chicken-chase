@@ -1,14 +1,14 @@
-"""Extract reusable CSS chrome from the original art; never change app/images.
+"""Extract reusable CSS chrome from the original art; never change original-app/images.
 
 StdDialog resources: FUN_00421251 (rwg:40838), resource loads rwg:31352-31372.
-Crop bounds are measured in app/images/dialog.png and screenshots/04.png, 06.png.
+Crop bounds are measured in original-app/images/dialog.png and screenshots/04.png, 06.png.
 Run from any directory with: python3 js/tools/prepare_dialog_art.py (Pillow).
 """
 from pathlib import Path
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / 'js/styles/assets'
+ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / 'styles/assets'
 OUT.mkdir(exist_ok=True)
 
 
@@ -27,9 +27,9 @@ def screenshot_palette(art):
 
 
 def rgba(name):
-    art = Image.open(ROOT / f'app/images/{name}.png').convert('RGBA')
+    art = Image.open(ROOT / f'original-app/images/{name}.png').convert('RGBA')
     # Same separate grayscale alpha mask used by Res / SexyApp.Image.
-    art.putalpha(Image.open(ROOT / f'app/images/{name}_.png').convert('L'))
+    art.putalpha(Image.open(ROOT / f'original-app/images/{name}_.png').convert('L'))
     return screenshot_palette(art)
 
 
@@ -47,7 +47,7 @@ for name in ('dialog_btn', 'dialog_btn_over', 'dialog_btn_highlight', 'dialog_bt
 # Options resize FUN_0040fbff (rwg:19453-19462); checkbox has no sidecar mask.
 for name in ('slider', 'slider_thumb'):
     rgba(name).save(OUT / f'{name}.png')
-checkbox = screenshot_palette(Image.open(ROOT / 'app/images/checkbox.png').convert('RGBA'))
+checkbox = screenshot_palette(Image.open(ROOT / 'original-app/images/checkbox.png').convert('RGBA'))
 checkbox.crop((0, 0, 40, 40)).save(OUT / 'checkbox-off.png')
 checkbox.crop((40, 0, 80, 40)).save(OUT / 'checkbox-on.png')
 
@@ -55,13 +55,13 @@ checkbox.crop((40, 0, 80, 40)).save(OUT / 'checkbox-on.png')
 # same native mask. Legend art/coin values are visible in screenshots 12/18.
 for name in ('button_prev', 'button_next'):
     rgba(name).save(OUT / f'{name}.png')
-    over = Image.open(ROOT / f'app/images/{name}_over.png').convert('RGBA')
-    over.putalpha(Image.open(ROOT / f'app/images/{name}_.png').convert('L'))
+    over = Image.open(ROOT / f'original-app/images/{name}_over.png').convert('RGBA')
+    over.putalpha(Image.open(ROOT / f'original-app/images/{name}_.png').convert('L'))
     screenshot_palette(over).save(OUT / f'{name}_over.png')
 
 # Introduction letter transparency (FUN_0040d9ef:16891; screenshot 10).
-letter = Image.open(ROOT / 'app/images/letter.jpg').convert('RGBA')
-letter.putalpha(Image.open(ROOT / 'app/images/letter_.jpg').convert('L'))
+letter = Image.open(ROOT / 'original-app/images/letter.jpg').convert('RGBA')
+letter.putalpha(Image.open(ROOT / 'original-app/images/letter_.jpg').convert('L'))
 screenshot_palette(letter).save(OUT / 'letter.png')
 
 # SpecialShop row slot IMAGE_SHOP_SLOT_BIG (DAT_004fff90, rwg:31344), 111x111,

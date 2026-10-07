@@ -5,8 +5,8 @@
 //     visible while the new styles apply, no page reload, no state lost.
 //   - index.html / src/*.js edits trigger a full page reload.
 //
-// Vite serves the project root (this js/ directory) as the web root, so the
-// `app/` symlink (→ ../app) keeps working for /app/images/letter.jpg etc.
+// Vite serves the project root as the web root; the original game assets
+// are served from /original-app/ (e.g. /original-app/images/letter.jpg).
 
 export default {
     root: '.',
@@ -16,7 +16,6 @@ export default {
         host: '127.0.0.1',
         strictPort: true,       // fail loud if 8765 is busy instead of jumping
         open: true,             // pop the browser open on `npm run dev`
-        fs: { allow: ['..'] },  // let Vite serve the app/ symlink (../app/)
     },
     preview: {
         port: 8765,

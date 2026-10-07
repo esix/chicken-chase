@@ -58,7 +58,7 @@
 // like the original; mX/mY are screen accessors through FUN_00409567
 // (screen = (6x+10, 2.8y-6z+367)) so the rest of the port keeps working.
 //
-// Constants read from app/chicken_chase.RWG .rdata: _DAT_004e9228=0.05f as double,
+// Constants read from original-app/chicken_chase.RWG .rdata: _DAT_004e9228=0.05f as double,
 // _DAT_004e90c8=0.5 (d), _DAT_004e9350=1.5 (d), _DAT_004e9260=1.1 (d),
 // _DAT_004e9304=1.3 (f), _DAT_004e92a8=1.2 (f), _DAT_004dc858=0.5 (f),
 // _DAT_004e9148=0.03f (d), _DAT_004e9168=61.0 (d), _DAT_004e9238=0.11f (d),

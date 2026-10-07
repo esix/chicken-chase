@@ -175,7 +175,7 @@ export class HintController {
         const ctx = g.ctx;
         const text = this.getVisibleText();
         // Bitmap font approximated with canvas text; the _hint font art has a
-        // dark outline around white glyphs (app/fonts/ArialBlack14_hint.png,
+        // dark outline around white glyphs (original-app/fonts/ArialBlack14_hint.png,
         // screenshot 14). Size calibrated like CreditsView FONT_CSS: the
         // ArialBlack14_hint.txt WidthList gives 402 px for "Collect 15 coins
         // to complete the level." (= screenshot 14: x 393 = 800 - 402 - 5);
@@ -383,7 +383,7 @@ export class LevelTutorial {
                       // by FUN_0041eb94 = fc.mUpgradePrice) && FUN_0041eae5(0)
                       // (special-shop item list) not empty
                 if (secs > 0x3c && money > storePrice(fc) && ctx.specialShopAvailable && ctx.specialShopAvailable()) {
-                    // DAT_004dfd20 (string read from app/chicken_chase.RWG; \x92 = ’)
+                    // DAT_004dfd20 (string read from original-app/chicken_chase.RWG; \x92 = ’)
                     text = 'To make playing easier, buy upgrades in the specialty shop. When it’s available, look for the BUY button located above the SELL button.';
                 }
                 break;

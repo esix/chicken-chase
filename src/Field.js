@@ -14,7 +14,7 @@
 //   screenY = ftol(0*x + 2.8*y - 6.0*z + 0.5)  + 367
 // (matrix _DAT_004fc3ec..4fc400 = 6,0,0 / 0,2.8,-6, origin _DAT_004fc3e4 = 10,
 // _DAT_004fc3e8 = 367, _DAT_004e90c8 = 0.5; values read from the .data/.rdata
-// of app/chicken_chase.RWG, the PE the decompilation was produced from).
+// of original-app/chicken_chase.RWG, the PE the decompilation was produced from).
 // The inverse used for mouse input is FUN_00409533 (rwg_functions.c:11965):
 //   x = (screenX - 10) / 6.0,  y = (screenY - 367) / 2.8.
 // The JS port keeps chickens/gems/pets in screen pixels (their mX/mY), so

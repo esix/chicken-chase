@@ -17,7 +17,7 @@
 //   +0x0c/+0x10 field x/y (copied from the spawning chick), +0x14 float timer,
 //   +0x18 tick counter (diamonds), +0x1c value override (DiamondRed).
 //
-// Float constants read from the original binary's .rdata (app/chicken_chase.RWG,
+// Float constants read from the original binary's .rdata (original-app/chicken_chase.RWG,
 // the PE the decompilation was produced from):
 //   _DAT_004e9128 (double) = 0.0025  coin timer decrement per tick
 //   _DAT_004e9120 (float)  = 0.3     coin low tier threshold

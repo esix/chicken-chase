@@ -21,7 +21,7 @@
 //   set state       FUN_0041cb16 rwg:35075   → _setState()
 //   next state      FUN_0041cce4 rwg:35204   → _nextState()
 // Draw arguments and float constants were recovered from the disassembly /
-// data of app/chicken_chase.RWG (addresses cited inline).
+// data of original-app/chicken_chase.RWG (addresses cited inline).
 
 import { Widget, ButtonWidget } from './SexyApp.js';
 import { IMAGES, SOUNDS } from './Res.js';
@@ -29,7 +29,7 @@ import { IMAGES, SOUNDS } from './Res.js';
 // ---------------------------------------------------------------------------
 // Fonts. Text is rendered with canvas "Arial Black" (project convention: no
 // bitmap glyphs). Pixel sizes are calibrated so canvas advance widths match
-// the bitmap font WidthList in app/fonts/ArialBlack<N>.txt (median ratio vs
+// the bitmap font WidthList in original-app/fonts/ArialBlack<N>.txt (median ratio vs
 // the Arial Black hmtx: 10 → 13.2px, 12 → 16.5px, 16 → 21.0px, 24 → 31.8px).
 // Ascents are LayerSetAscent from the same .txt files.
 // Font globals: FONT_10 = DAT_004fff0c, FONT_16 = DAT_004fff14,
@@ -47,7 +47,7 @@ export const FONT_ASCENT = { FONT_10: 14, FONT_16: 23, FONT_24: 35, FONT_DLG_BUT
 const FONT_16_HEIGHT = 29;
 
 // The bitmap fonts bake a 1px black outline around white glyphs
-// (app/fonts/ArialBlack24.png + _ArialBlack24.png alpha), and the draw color
+// (original-app/fonts/ArialBlack24.png + _ArialBlack24.png alpha), and the draw color
 // multiplies the white part. Emulate with a 2px black stroke under the fill.
 export function drawOutlinedText(ctx, text, x, y, fill) {
     ctx.textAlign = 'left';
@@ -67,7 +67,7 @@ export function drawOutlinedText(ctx, text, x, y, fill) {
 //       DrawImage(DAT_00500564[i] = IMAGE_GAME_BACK_UPGRADE<i>, X[i], Y[i])
 //   if (extra != -1) DrawImage(DAT_00500564[extra], X[extra], Y[extra])
 // X/Y come from the int pair table at 0x4fc430/0x4fc434 (8 bytes per entry,
-// .data of app/chicken_chase.RWG). The 17 images are loaded at rwg:30965-30977.
+// .data of original-app/chicken_chase.RWG). The 17 images are loaded at rwg:30965-30977.
 export const DECORATION_POS = [
     [217, 127], [359, 158], [0, 0], [14, 139], [0, 29], [544, 257],
     [544, 0], [587, 111], [650, 21], [734, 127], [689, 113], [509, 0],
@@ -99,7 +99,7 @@ export const WIN_LINES = [
 // Block 2 — FUN_0041d828 (rwg:35977), assigned in ctor rwg:35310-35314.
 export const LETTER_LINES = [
     'Good day, Earth dweller!',                                               // rwg:35998
-    // rwg:36003 &DAT_004df1c4 — string read from app/chicken_chase.RWG .rdata:
+    // rwg:36003 &DAT_004df1c4 — string read from original-app/chicken_chase.RWG .rdata:
     // "We are from the planet Omicron Persey \x96 8." (0x96 = cp1252 en dash).
     'We are from the planet Omicron Persey – 8.',
     'We came to let you know important news:',                                // rwg:36008
@@ -138,7 +138,7 @@ export const CREDITS_NAMES = [
 // (FUN_0041da0f, rwg:36084), so it has >= 5 entries; only 0 and 2 are filled.
 const BLOCKS = [WIN_LINES, [], LETTER_LINES, [], []];
 
-// Float constants (.rdata/.data of app/chicken_chase.RWG).
+// Float constants (.rdata/.data of original-app/chicken_chase.RWG).
 const POS_START = 600.0;          // _DAT_004e9100
 const UFO_STOP_Y = 180.0;         // _DAT_004e9104
 const SPEED_TEXT = 0.5;           // _DAT_004fc420 (states 0 and 4)

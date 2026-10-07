@@ -342,7 +342,7 @@ export class SoundManager {
 
     // AudiereMusicInterface::SetVolume FUN_00477d50 stores the float (+0x14)
     // and hands it to audiere's OutputStream::setVolume. The device is
-    // AdrOpenDevice("") (rwg:123736 → autodetect; app/audiere.dll lists
+    // AdrOpenDevice("") (rwg:123736 → autodetect; original-app/audiere.dll lists
     // "directsound" first). DSOutputStream::setVolume (audiere.dll asm
     // 0x10006e00: fstps → float32, IDirectSoundBuffer::SetVolume vt+0x3c) with
     // the conversion at 0x10006490: v == 0.0 → -10000, else
@@ -367,7 +367,7 @@ export class SoundManager {
     // setVolume, setRepeat(!noLoop), play(). It never calls reset(), and
     // StopAllMusic FUN_00477b27 only calls stop() (vt+0xc) — so a track that
     // was stopped earlier resumes from where it stopped. Verified in
-    // app/audiere.dll: DSOutputStream stop (0x10006c80 → 0x10007100) and
+    // original-app/audiere.dll: DSOutputStream stop (0x10006c80 → 0x10007100) and
     // DSOutputBuffer stop (0x10006820) only call IDirectSoundBuffer::Stop
     // (vt+0x48); play (0x10006c60 / 0x10006800) calls Play(0,0,flags) without
     // SetCurrentPosition; only reset() (vt+0x14, 0x10006ca0) rewinds.

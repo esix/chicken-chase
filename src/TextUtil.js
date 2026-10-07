@@ -1,7 +1,7 @@
 // Shared canvas-text helpers for dialogs.
 //
 // NOT a port of a specific decompiled function. The original rendered dialog
-// text with the Sexy framework's BITMAP fonts (app/fonts/ArialBlack*.png +
+// text with the Sexy framework's BITMAP fonts (original-app/fonts/ArialBlack*.png +
 // .txt descriptors with fixed per-glyph widths) laid out by the Sexy Dialog
 // widget. This port draws dialog text with the browser's canvas fillText
 // instead, whose metrics vary by platform — so fixed coordinates that fit in

@@ -24,7 +24,7 @@ import { HtmlDialogs } from './HtmlDialogs.js';
 import { openUpgradeChoices, upgradeOptions } from './UpgradeSelectDialog.js';
 import { drawFieldBackground, DialogButton } from './CreditsView.js';
 
-// DAT_004de0f0 (int[51], .data of app/chicken_chase.RWG), indexed by level.
+// DAT_004de0f0 (int[51], .data of original-app/chicken_chase.RWG), indexed by level.
 // Non-zero → completing that level for the first time offers an upgrade
 // (FUN_00421948 rwg:41359-41366, disassembly @0x421992-0x4219b2).
 export const UPGRADE_LEVEL_TABLE = (() => {
